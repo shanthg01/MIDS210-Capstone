@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Response, status
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.fit_score import FitWeights
 from portalpoint.api.schemas.user import (
     ImportanceWeights,
@@ -28,13 +29,13 @@ _STUB_SHORTLIST = [
 
 
 @router.get("/{user_id}/preferences", response_model=UserPreferences)
-async def get_preferences(user_id: int):
+async def get_preferences(user_id: int, current_user: CurrentUser):
     # STUB — replace with DB lookup in Phase 2
     return _STUB_PREFS
 
 
 @router.put("/{user_id}/preferences", response_model=UserPreferences)
-async def update_preferences(user_id: int, body: UserPreferencesUpdate):
+async def update_preferences(user_id: int, body: UserPreferencesUpdate, current_user: CurrentUser):
     # STUB — merge incoming fields over defaults and return
     updated = _STUB_PREFS
     if body.importance_weights is not None:
@@ -47,13 +48,13 @@ async def update_preferences(user_id: int, body: UserPreferencesUpdate):
 
 
 @router.get("/{user_id}/shortlist", response_model=ShortlistResponse)
-async def get_shortlist(user_id: int):
+async def get_shortlist(user_id: int, current_user: CurrentUser):
     # STUB — replace with DB query in Phase 2
     return ShortlistResponse(user_id=user_id, schools=_STUB_SHORTLIST, total=len(_STUB_SHORTLIST))
 
 
 @router.post("/{user_id}/shortlist/{school_id}", response_model=ShortlistItem, status_code=201)
-async def add_to_shortlist(user_id: int, school_id: int):
+async def add_to_shortlist(user_id: int, school_id: int, current_user: CurrentUser):
     # STUB — replace with DB insert + fit score lookup in Phase 2
     return ShortlistItem(
         school_id=school_id,
@@ -65,6 +66,6 @@ async def add_to_shortlist(user_id: int, school_id: int):
 
 
 @router.delete("/{user_id}/shortlist/{school_id}", status_code=204)
-async def remove_from_shortlist(user_id: int, school_id: int):
+async def remove_from_shortlist(user_id: int, school_id: int, current_user: CurrentUser):
     # STUB — replace with DB delete in Phase 2
     return Response(status_code=status.HTTP_204_NO_CONTENT)

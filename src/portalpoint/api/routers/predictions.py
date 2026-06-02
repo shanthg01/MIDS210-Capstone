@@ -2,6 +2,7 @@ import random
 
 from fastapi import APIRouter, Query
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.prediction import (
     PredictedRole,
     PredictionResponse,
@@ -28,6 +29,7 @@ _SHAP_POOL = [
 
 @router.get("", response_model=PredictionResponse)
 async def get_prediction(
+    current_user: CurrentUser,
     player_id: int = Query(...),
     school_id: int = Query(...),
 ):

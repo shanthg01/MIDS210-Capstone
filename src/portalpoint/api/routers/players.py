@@ -3,6 +3,7 @@ from datetime import date
 
 from fastapi import APIRouter, Query
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.player import (
     ClassYear,
     ClaimPlayerRequest,
@@ -90,7 +91,7 @@ async def get_player(player_id: int):
 
 
 @router.post("/{player_id}/claim", response_model=ClaimPlayerResponse)
-async def claim_player(player_id: int, body: ClaimPlayerRequest):
+async def claim_player(player_id: int, body: ClaimPlayerRequest, current_user: CurrentUser):
     # STUB — replace with identity verification flow in Step 5
     return ClaimPlayerResponse(
         success=True,

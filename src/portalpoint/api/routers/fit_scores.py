@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.fit_score import (
     FitBreakdown,
     FitScoreResponse,
@@ -73,6 +74,7 @@ def _stub_fit_score(player_id: int, school_id: int) -> FitScoreResponse:
 
 @router.get("", response_model=FitScoreResponse)
 async def get_fit_score(
+    current_user: CurrentUser,
     player_id: int = Query(...),
     school_id: int = Query(...),
 ):

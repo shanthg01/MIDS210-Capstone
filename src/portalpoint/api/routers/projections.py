@@ -2,6 +2,7 @@ import random
 
 from fastapi import APIRouter, Query
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.projection import TeamRatingProjectionResponse
 
 router = APIRouter(prefix="/api/projections", tags=["projections"])
@@ -9,6 +10,7 @@ router = APIRouter(prefix="/api/projections", tags=["projections"])
 
 @router.get("/team-rating", response_model=TeamRatingProjectionResponse)
 async def get_team_rating_projection(
+    current_user: CurrentUser,
     player_id: int = Query(...),
     school_id: int = Query(...),
 ):

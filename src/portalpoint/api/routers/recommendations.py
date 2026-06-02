@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.recommendation import FitComponents, RecommendationItem, RecommendationsResponse
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
@@ -22,7 +23,7 @@ _SCHOOL_STUBS = [
 
 
 @router.get("", response_model=RecommendationsResponse)
-async def get_recommendations(user_id: int = Query(...)):
+async def get_recommendations(current_user: CurrentUser, user_id: int = Query(...)):
     # STUB — replace with Model 7 (30% SVD collab filter + 30% content-based + 40% fit scores)
     items = [
         RecommendationItem(

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from portalpoint.api.deps import CurrentUser
 from portalpoint.api.schemas.comparison import (
     CompareRequest,
     CompareResponse,
@@ -128,7 +129,7 @@ def _stub_prediction(player_id: int, school_id: int) -> PredictionResponse:
 
 
 @router.post("", response_model=CompareResponse)
-async def compare_schools(body: CompareRequest):
+async def compare_schools(body: CompareRequest, current_user: CurrentUser):
     # STUB — replace with parallel fit score + prediction fetches in Phase 2
     entries = [
         ComparisonSchoolEntry(
