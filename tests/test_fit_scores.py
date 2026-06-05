@@ -1,0 +1,94 @@
+import pytest
+
+
+def test_requires_auth(client):
+    assert client.get("/api/fit-scores?player_id=101&school_id=301").status_code == 401
+
+
+def test_returns_200(client, H):
+    assert client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).status_code == 200
+
+
+def test_requires_both_params(client, H):
+    assert client.get("/api/fit-scores?player_id=101", headers=H).status_code == 422
+    assert client.get("/api/fit-scores?school_id=301", headers=H).status_code == 422
+
+
+def test_top_level_schema(client, H):
+    data = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()
+    for field in (
+        "player_id", "school_id", "overall_fit", "gap_match", "scheme_fit",
+        "opportunity", "personal_fit", "breakdown", "weights_used", "computed_at", "model_version",
+    ):
+        assert field in data, f"missing top-level field: {field}"
+
+
+def test_component_scores_in_range(client, H):
+    data = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()
+    for field in ("overall_fit", "gap_match", "scheme_fit", "opportunity", "personal_fit"):
+        assert 0 <= data[field] <= 100, f"{field}={data[field]} out of [0, 100]"
+
+
+def test_overall_matches_weighted_sum(client, H):
+    data = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()
+    w = data["weights_used"]
+    expected = (
+        data["gap_match"] * w["gap"]
+        + data["scheme_fit"] * w["scheme"]
+        + data["opportunity"] * w["opportunity"]
+        + data["personal_fit"] * w["personal"]
+    )
+    assert data["overall_fit"] == pytest.approx(expected, abs=0.2)
+
+
+def test_default_weights_sum_to_one(client, H):
+    w = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["weights_used"]
+    assert sum(w.values()) == pytest.approx(1.0, abs=0.01)
+
+
+def test_scheme_breakdown_fields_in_range(client, H):
+    scheme = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["breakdown"]["scheme"]
+    for field in ("three_point_match", "pace_match", "usage_match", "rim_attack_match", "ball_movement_match"):
+        assert 0 <= scheme[field] <= 100, f"scheme.{field} out of range"
+
+
+def test_opportunity_breakdown(client, H):
+    opp = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["breakdown"]["opportunity"]
+    assert opp["projected_minutes"] > 0
+    ci_lo, ci_hi = opp["confidence_interval"]
+    assert ci_lo < opp["projected_minutes"] < ci_hi, "projected minutes must be inside CI"
+    assert 0 <= opp["starter_probability"] <= 1
+    assert opp["depth_chart_position"] >= 1
+
+
+def test_personal_breakdown_in_range(client, H):
+    personal = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["breakdown"]["personal"]
+    for field in ("nil_score", "geographic_score", "academic_score", "cultural_score"):
+        assert 0 <= personal[field] <= 100, f"personal.{field} out of range"
+    assert personal["distance_miles"] >= 0
+
+
+def test_gap_breakdown_present(client, H):
+    gap = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["breakdown"]["gap"]
+    assert isinstance(gap["archetype_needed"], bool)
+    assert 0 <= gap["position_depth_score"] <= 100
+    assert gap["redundancy_penalty"] <= 0
+
+
+def test_deterministic(client, H):
+    r1 = client.get("/api/fit-scores?player_id=77&school_id=200", headers=H).json()
+    r2 = client.get("/api/fit-scores?player_id=77&school_id=200", headers=H).json()
+    assert r1["overall_fit"] == r2["overall_fit"]
+    assert r1["breakdown"]["opportunity"]["projected_minutes"] == r2["breakdown"]["opportunity"]["projected_minutes"]
+
+
+def test_different_schools_produce_different_scores(client, H):
+    r1 = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["overall_fit"]
+    r2 = client.get("/api/fit-scores?player_id=101&school_id=302", headers=H).json()["overall_fit"]
+    assert r1 != r2
+
+
+def test_different_players_produce_different_scores(client, H):
+    r1 = client.get("/api/fit-scores?player_id=101&school_id=301", headers=H).json()["overall_fit"]
+    r2 = client.get("/api/fit-scores?player_id=102&school_id=301", headers=H).json()["overall_fit"]
+    assert r1 != r2
