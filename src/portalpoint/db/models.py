@@ -102,6 +102,7 @@ class Player(Base):
     twitter_handle: Mapped[Optional[str]] = mapped_column(String(100))
     social_followers: Mapped[Optional[int]] = mapped_column(Integer)
     espn_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True)
+    barttorvik_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True)
     cbbpy_id: Mapped[Optional[str]] = mapped_column(String(50))
     verbalcommits_id: Mapped[Optional[str]] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

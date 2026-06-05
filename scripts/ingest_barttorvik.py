@@ -19,24 +19,26 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
 import gzip
 import hashlib
 import json
 import logging
+import sys
 import time
 from io import StringIO
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 import requests
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from portalpoint.core.config import settings
-from portalpoint.db.base import Base
 from portalpoint.db.models import Player, PlayerSeasonStats, School, TeamSeasonStats
 from portalpoint.db.session import AsyncSessionLocal
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -357,9 +359,8 @@ async def ingest_team_season_stats(
 async def ingest_players(
     session,
     player_rows: list[dict],
-    school_map: dict[str, int],
 ) -> dict[str, int]:
-    """Upsert players. Returns {barttorvik_player_id: player_id}."""
+    """Upsert players. Returns {barttorvik_id: player.id}."""
     CLASS_YEAR_MAP = {"Fr": "freshman", "So": "sophomore", "Jr": "junior", "Sr": "senior", "Gr": "graduate"}
 
     rows = []
@@ -374,24 +375,25 @@ async def ingest_players(
             "height_inches": _parse_height(r.get("ht")),
             "class_year": CLASS_YEAR_MAP.get(str(r.get("yr") or "").strip(), "freshman"),
             "hometown": str(r.get("hometown") or "").strip() or None,
+            "barttorvik_id": bart_pid,
             "cbbpy_id": None,
             "verbalcommits_id": None,
         })
 
-    # Deduplicate by full_name (multiple seasons = same player)
+    # Deduplicate by barttorvik_id (same player across multiple season rows)
     seen: set[str] = set()
     deduped = []
     for row in rows:
-        key = row["full_name"]
+        key = row["barttorvik_id"]
         if key not in seen:
             seen.add(key)
             deduped.append(row)
 
-    n = await _upsert(session, Player, ["full_name"], deduped)
+    n = await _upsert(session, Player, ["barttorvik_id"], deduped)
     log.info("players upserted: %d", n)
 
-    result = await session.execute(select(Player.id, Player.full_name))
-    return {row.full_name: row.id for row in result}
+    result = await session.execute(select(Player.id, Player.barttorvik_id))
+    return {row.barttorvik_id: row.id for row in result if row.barttorvik_id}
 
 
 # ---------------------------------------------------------------------------
@@ -407,8 +409,8 @@ async def ingest_player_season_stats(
 ) -> int:
     rows = []
     for r in player_rows:
-        name = str(r.get("player") or "").strip()
-        player_id = player_map.get(name)
+        bart_pid = str(r.get("player_id") or "").strip()
+        player_id = player_map.get(bart_pid)
         school_name = _normalize_name(r.get("team"))
         school_id = school_map.get(school_name)
 
@@ -486,36 +488,24 @@ async def run(seasons: list[int], use_cache: bool = True) -> None:
                 use_cache=use_cache,
             )
 
-            # 3. Player stats
+            # 3. Player stats — endpoint returns headerless CSV; apply positional names
             log.info("fetching player stats")
             player_raw = read_csv_endpoint(
                 "getadvstats.php",
                 params={"year": season, "csv": 1},
+                has_header=False,
                 use_cache=use_cache,
             )
-            # Apply known column names if the endpoint returns positional headers
-            if player_raw and all(k.startswith("col") or k.isdigit() for k in list(player_raw[0].keys())[:3]):
-                keys = list(player_raw[0].keys())
-                player_rows = []
-                for r in player_raw:
-                    vals = list(r.values())
-                    named = {PLAYER_STATS_COLS[i]: vals[i] for i in range(min(len(PLAYER_STATS_COLS), len(vals)))}
-                    player_rows.append(named)
-            else:
-                # Headers already present — normalize to our known names
-                col_remap = {
-                    "min%": "min_per", "o-rtg": "ortg", "ts%": "ts_pct",
-                    "or%": "or_pct", "dr%": "dr_pct", "ast%": "ast_pct", "to%": "to_pct",
-                }
-                player_rows = [
-                    {col_remap.get(k.lower().strip(), k.lower().strip()): v for k, v in r.items()}
-                    for r in player_raw
-                ]
+            player_rows = []
+            for r in player_raw:
+                vals = list(r.values())
+                named = {PLAYER_STATS_COLS[i]: vals[i] for i in range(min(len(PLAYER_STATS_COLS), len(vals)))}
+                player_rows.append(named)
 
             # 4. Upsert
             school_map = await ingest_schools(session, team_rows)
             await ingest_team_season_stats(session, team_rows, ff_rows, season, school_map)
-            player_map = await ingest_players(session, player_rows, school_map)
+            player_map = await ingest_players(session, player_rows)
             await ingest_player_season_stats(session, player_rows, season, school_map, player_map)
 
     log.info("ingest complete")
