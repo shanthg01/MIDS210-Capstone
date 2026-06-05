@@ -3,8 +3,10 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portalpoint.core.security import decode_access_token
+from portalpoint.db.session import get_db
 
 _bearer = HTTPBearer()
 
@@ -12,11 +14,6 @@ _bearer = HTTPBearer()
 async def get_current_user_id(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> int:
-    """Validate Bearer JWT and return the encoded user_id.
-
-    Permissive stub: verifies signature and expiry but does NOT check that the
-    user exists in the DB. Add a DB lookup here in Phase 2.
-    """
     try:
         return decode_access_token(credentials.credentials)
     except (JWTError, ValueError):
@@ -27,5 +24,6 @@ async def get_current_user_id(
         )
 
 
-# Convenience alias — import this in routers
+# Convenience aliases — import these in routers
 CurrentUser = Annotated[int, Depends(get_current_user_id)]
+DbSession = Annotated[AsyncSession, Depends(get_db)]
