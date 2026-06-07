@@ -7,6 +7,9 @@ import ProtectedRoute from './components/ProtectedRoute';
 import AppLayout from './components/AppLayout';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
+import DashboardPage from './pages/DashboardPage';
+import PlayerSearchPage from './pages/PlayerSearchPage';
+import PlayerProfilePage from './pages/PlayerProfilePage';
 import PlaceholderPage from './pages/PlaceholderPage';
 
 const theme = createTheme({
@@ -38,22 +41,13 @@ export default function App() {
               {/* Protected — share AppLayout shell */}
               <Route element={<ProtectedRoute />}>
                 <Route element={<AppLayout />}>
-                  <Route path="/dashboard" element={
-                    <PlaceholderPage
-                      title="Dashboard"
-                      description="Top-20 portal player recommendations for your program. Coming in the next session."
-                    />
-                  } />
-                  <Route path="/players/search" element={
-                    <PlaceholderPage
-                      title="Player Search"
-                      description="Search all 4,500+ portal players and view detailed profiles."
-                    />
-                  } />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/players/search" element={<PlayerSearchPage />} />
+                  <Route path="/players/:id" element={<PlayerProfilePage />} />
                   <Route path="/pipeline" element={
                     <PlaceholderPage
                       title="Recruiting Pipeline"
-                      description="Players your program has shortlisted."
+                      description="Players your program has shortlisted — coming next session."
                     />
                   } />
                   <Route path="/compare" element={
