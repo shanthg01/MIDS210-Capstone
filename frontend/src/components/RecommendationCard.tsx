@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import CheckIcon from '@mui/icons-material/Check';
+import BarChartIcon from '@mui/icons-material/BarChart';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
@@ -104,23 +105,33 @@ export default function RecommendationCard({ item }: Props) {
           </Alert>
         )}
 
-        <Button
-          size="small"
-          variant={added ? 'contained' : 'outlined'}
-          color={added ? 'success' : 'primary'}
-          startIcon={
-            adding
-              ? <CircularProgress size={14} color="inherit" />
-              : added
-                ? <CheckIcon />
-                : <AddIcon />
-          }
-          onClick={handleAdd}
-          disabled={adding || added}
-          fullWidth
-        >
-          {added ? 'In Pipeline' : 'Add to Pipeline'}
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            size="small"
+            variant={added ? 'contained' : 'outlined'}
+            color={added ? 'success' : 'primary'}
+            startIcon={
+              adding
+                ? <CircularProgress size={14} color="inherit" />
+                : added
+                  ? <CheckIcon />
+                  : <AddIcon />
+            }
+            onClick={handleAdd}
+            disabled={adding || added}
+            sx={{ flex: 1 }}
+          >
+            {added ? 'In Pipeline' : 'Add to Pipeline'}
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<BarChartIcon />}
+            onClick={() => navigate(`/fit/${item.player_id}`)}
+          >
+            Fit
+          </Button>
+        </Box>
       </CardContent>
     </Card>
   );

@@ -17,7 +17,7 @@ export interface LoginRequest {
   password: string;
 }
 
-// ── Fit scores ────────────────────────────────────────────────────────────────
+// ── Preferences ───────────────────────────────────────────────────────────────
 
 export interface FitWeights {
   gap: number;
@@ -47,6 +47,12 @@ export interface UserPreferences {
   importance_weights: ImportanceWeights;
   filters: UserFilters;
   fit_weights: FitWeights;
+}
+
+export interface UserPreferencesUpdate {
+  importance_weights?: ImportanceWeights;
+  filters?: UserFilters;
+  fit_weights?: FitWeights;
 }
 
 // ── Players ───────────────────────────────────────────────────────────────────
@@ -112,6 +118,147 @@ export interface PlayerSearchResponse {
   query: string;
 }
 
+// ── Fit Scores ────────────────────────────────────────────────────────────────
+
+export interface SchemeBreakdown {
+  three_point_match: number;
+  pace_match: number;
+  usage_match: number;
+  rim_attack_match: number;
+  ball_movement_match: number;
+}
+
+export interface RoleFitBreakdown {
+  projected_minutes: number;
+  confidence_interval: [number, number];
+  starter_probability: number;
+  depth_chart_position: number;
+}
+
+export interface GapMatchBreakdown {
+  archetype_needed: boolean;
+  position_depth_score: number;
+  uniqueness_bonus: number;
+  redundancy_penalty: number;
+}
+
+export interface ProgramFitBreakdown {
+  nil_score: number;
+  geographic_score: number;
+  academic_score: number;
+  cultural_score: number;
+  nil_budget_alignment: number;
+}
+
+export interface FitBreakdown {
+  scheme: SchemeBreakdown;
+  role_fit: RoleFitBreakdown;
+  gap: GapMatchBreakdown;
+  program_fit: ProgramFitBreakdown;
+}
+
+export interface FitScoreResponse {
+  player_id: number;
+  school_id: number;
+  overall_fit: number;
+  gap_match: number;
+  scheme_fit: number;
+  role_fit: number;
+  program_fit: number;
+  breakdown: FitBreakdown;
+  weights_used: FitWeights;
+  computed_at: string;
+  model_version: string;
+  cache_hit: boolean;
+}
+
+// ── Team Rating Projection ────────────────────────────────────────────────────
+
+export interface TeamRatingProjectionResponse {
+  player_id: number;
+  school_id: number;
+  current_adjEM: number;
+  projected_adjEM: number;
+  delta_adjEM: number;
+  confidence_interval: [number, number];
+  national_percentile: number;
+  conference_rank: number;
+  context: string;
+  expected_minutes_input: number;
+  model_version: string;
+}
+
+// ── Predictions ───────────────────────────────────────────────────────────────
+
+export type PredictedRole = 'starter' | 'rotation' | 'bench' | 'reserve';
+
+export interface SimilarTransfer {
+  player_name: string;
+  season: string;
+  from_school: string;
+  to_school: string;
+  per_before: number;
+  per_after: number;
+  per_change: number;
+  minutes_before: number;
+  minutes_after: number;
+  outcome_score: number;
+}
+
+export interface SHAPExplanation {
+  feature: string;
+  impact: number;
+  description: string;
+}
+
+export interface PredictionResponse {
+  player_id: number;
+  school_id: number;
+  predicted_per_change: number;
+  predicted_minutes: number;
+  predicted_role: PredictedRole;
+  confidence: number;
+  similar_transfers: SimilarTransfer[];
+  shap_explanations: SHAPExplanation[];
+  model_version: string;
+}
+
+// ── Comparison ────────────────────────────────────────────────────────────────
+
+export interface ComparisonPlayerEntry {
+  player: PlayerBase;
+  fit_score: FitScoreResponse;
+  prediction: PredictionResponse;
+}
+
+export interface ComparisonMatrix {
+  overall_fit: Record<string, number>;
+  gap_match: Record<string, number>;
+  scheme_fit: Record<string, number>;
+  role_fit: Record<string, number>;
+  program_fit: Record<string, number>;
+}
+
+export interface TradeOff {
+  factor: string;
+  description: string;
+  best_player_name: string;
+  best_player_id: number;
+}
+
+export interface CompareRequest {
+  program_id: number;
+  player_ids: number[];
+}
+
+export interface CompareResponse {
+  program_id: number;
+  players: ComparisonPlayerEntry[];
+  comparison_matrix: ComparisonMatrix;
+  trade_offs: TradeOff[];
+  generated_at: string;
+}
+
 // ── Recommendations ───────────────────────────────────────────────────────────
 
 export interface FitComponents {
@@ -139,7 +286,7 @@ export interface RecommendationsResponse {
   model_version: string;
 }
 
-// ── Shortlist ─────────────────────────────────────────────────────────────────
+// ── Shortlist / Pipeline ──────────────────────────────────────────────────────
 
 export interface ShortlistItem {
   player_id: number;

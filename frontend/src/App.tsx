@@ -10,6 +10,10 @@ import SignupPage from './pages/SignupPage';
 import DashboardPage from './pages/DashboardPage';
 import PlayerSearchPage from './pages/PlayerSearchPage';
 import PlayerProfilePage from './pages/PlayerProfilePage';
+import PipelinePage from './pages/PipelinePage';
+import FitScorePage from './pages/FitScorePage';
+import ComparePage from './pages/ComparePage';
+import SettingsPage from './pages/SettingsPage';
 import PlaceholderPage from './pages/PlaceholderPage';
 
 const theme = createTheme({
@@ -44,24 +48,10 @@ export default function App() {
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/players/search" element={<PlayerSearchPage />} />
                   <Route path="/players/:id" element={<PlayerProfilePage />} />
-                  <Route path="/pipeline" element={
-                    <PlaceholderPage
-                      title="Recruiting Pipeline"
-                      description="Players your program has shortlisted — coming next session."
-                    />
-                  } />
-                  <Route path="/compare" element={
-                    <PlaceholderPage
-                      title="Compare Players"
-                      description="Side-by-side fit score and stat comparison for 2-4 players."
-                    />
-                  } />
-                  <Route path="/settings" element={
-                    <PlaceholderPage
-                      title="Program Settings"
-                      description="Adjust fit weight sliders and recruiting filters."
-                    />
-                  } />
+                  <Route path="/pipeline" element={<PipelinePage />} />
+                  <Route path="/fit/:player_id" element={<FitScorePage />} />
+                  <Route path="/compare" element={<ComparePage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
                 </Route>
               </Route>
 

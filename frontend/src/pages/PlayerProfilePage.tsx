@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import CheckIcon from '@mui/icons-material/Check';
+import BarChartIcon from '@mui/icons-material/BarChart';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
@@ -189,22 +190,30 @@ export default function PlayerProfilePage() {
           </Box>
         </Box>
 
-        <Button
-          variant={added ? 'contained' : 'outlined'}
-          color={added ? 'success' : 'primary'}
-          startIcon={
-            adding
-              ? <CircularProgress size={16} color="inherit" />
-              : added
-                ? <CheckIcon />
-                : <AddIcon />
-          }
-          onClick={handleAdd}
-          disabled={adding || added}
-          sx={{ flexShrink: 0, ml: 2 }}
-        >
-          {added ? 'In Pipeline' : 'Add to Pipeline'}
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1, flexShrink: 0, ml: 2 }}>
+          <Button
+            variant="outlined"
+            startIcon={<BarChartIcon />}
+            onClick={() => navigate(`/fit/${playerId}`)}
+          >
+            View Fit
+          </Button>
+          <Button
+            variant={added ? 'contained' : 'outlined'}
+            color={added ? 'success' : 'primary'}
+            startIcon={
+              adding
+                ? <CircularProgress size={16} color="inherit" />
+                : added
+                  ? <CheckIcon />
+                  : <AddIcon />
+            }
+            onClick={handleAdd}
+            disabled={adding || added}
+          >
+            {added ? 'In Pipeline' : 'Add to Pipeline'}
+          </Button>
+        </Box>
       </Box>
 
       {/* Meta */}

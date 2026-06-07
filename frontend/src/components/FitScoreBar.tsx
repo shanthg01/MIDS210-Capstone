@@ -7,7 +7,7 @@ const LABEL_MAP: Record<string, string> = {
   program_fit: 'Program Fit',
 };
 
-function scoreColor(v: number): 'success' | 'warning' | 'error' {
+export function scoreColor(v: number): 'success' | 'warning' | 'error' {
   if (v >= 75) return 'success';
   if (v >= 50) return 'warning';
   return 'error';
