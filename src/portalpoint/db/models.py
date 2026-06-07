@@ -190,7 +190,7 @@ class PlayerSeasonStats(Base):
     assist_rate: Mapped[Optional[float]] = mapped_column(Float)
     bpm: Mapped[Optional[float]] = mapped_column(Float)
     win_shares: Mapped[Optional[float]] = mapped_column(Float)
-    # Shot distribution (from PBP via cbbpy)
+    # Shot distribution (from barttorvik/hoopR)
     three_point_rate: Mapped[Optional[float]] = mapped_column(Float)
     rim_rate: Mapped[Optional[float]] = mapped_column(Float)
     mid_range_rate: Mapped[Optional[float]] = mapped_column(Float)
@@ -414,13 +414,13 @@ class PlayerTeamFitScore(Base):
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     gap_match: Mapped[float] = mapped_column(Float, nullable=False)
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)
-    opportunity: Mapped[float] = mapped_column(Float, nullable=False)
-    personal_fit: Mapped[float] = mapped_column(Float, nullable=False)
+    role_fit: Mapped[float] = mapped_column(Float, nullable=False)
+    program_fit: Mapped[float] = mapped_column(Float, nullable=False)
     # Weights used for this computation (may differ from defaults if user customized)
     weight_gap: Mapped[float] = mapped_column(Float, nullable=False, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
-    weight_opportunity: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
-    weight_personal: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
+    weight_role: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
+    weight_program: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
     # Full component breakdown stored as JSONB for API response
     breakdown: Mapped[Optional[dict]] = mapped_column(JSONB)
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -456,7 +456,6 @@ class Recommendation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
-    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     reasoning: Mapped[Optional[str]] = mapped_column(Text)
@@ -499,7 +498,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"), unique=True)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -516,16 +515,16 @@ class UserPreference(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
-    # Importance weights (1-10 scale) for Personal Fit sub-components
-    importance_playing_time: Mapped[int] = mapped_column(SmallInteger, default=7)
-    importance_nil: Mapped[int] = mapped_column(SmallInteger, default=5)
-    importance_academics: Mapped[int] = mapped_column(SmallInteger, default=5)
-    importance_location: Mapped[int] = mapped_column(SmallInteger, default=5)
+    # Importance weights (1-10 scale) for Program Fit sub-components
+    importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7)
+    importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
+    importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5)
+    importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
     # Fit component weights (must sum to 1.0)
     weight_gap: Mapped[float] = mapped_column(Float, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, default=0.30)
-    weight_opportunity: Mapped[float] = mapped_column(Float, default=0.25)
-    weight_personal: Mapped[float] = mapped_column(Float, default=0.25)
+    weight_role: Mapped[float] = mapped_column(Float, default=0.25)
+    weight_program: Mapped[float] = mapped_column(Float, default=0.25)
     # Flexible filters stored as JSONB (desired_major, regions, conferences, enrollment range)
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -551,18 +550,18 @@ class UserFeedback(Base):
 class UserShortlist(Base):
     __tablename__ = "user_shortlists"
     __table_args__ = (
-        UniqueConstraint("user_id", "school_id", name="uq_user_shortlist"),
+        UniqueConstraint("user_id", "player_id", name="uq_user_shortlist"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
     overall_fit: Mapped[Optional[float]] = mapped_column(Float)
     notes: Mapped[Optional[str]] = mapped_column(Text)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="shortlist")
-    school: Mapped[School] = relationship()
+    player: Mapped[Player] = relationship()
 
 
 class AuditLog(Base):

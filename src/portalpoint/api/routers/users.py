@@ -14,12 +14,12 @@ from portalpoint.api.schemas.user import (
     UserPreferences,
     UserPreferencesUpdate,
 )
-from portalpoint.db.models import School, UserPreference, UserShortlist
+from portalpoint.db.models import Player, UserPreference, UserShortlist
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 _DEFAULTS = UserPreferences(
-    importance_weights=ImportanceWeights(playing_time=7, nil=5, academics=5, location=5),
+    importance_weights=ImportanceWeights(scheme_fit=7, role_fit=5, gap_match=5, program_fit=5),
     filters=UserFilters(),
     fit_weights=FitWeights(),
 )
@@ -28,17 +28,17 @@ _DEFAULTS = UserPreferences(
 def _prefs_to_schema(p: UserPreference) -> UserPreferences:
     return UserPreferences(
         importance_weights=ImportanceWeights(
-            playing_time=p.importance_playing_time,
-            nil=p.importance_nil,
-            academics=p.importance_academics,
-            location=p.importance_location,
+            scheme_fit=p.importance_scheme_fit,
+            role_fit=p.importance_role_fit,
+            gap_match=p.importance_gap_match,
+            program_fit=p.importance_program_fit,
         ),
         filters=UserFilters(**(p.filters or {})),
         fit_weights=FitWeights(
             gap=p.weight_gap,
             scheme=p.weight_scheme,
-            opportunity=p.weight_opportunity,
-            personal=p.weight_personal,
+            role_fit=p.weight_role,
+            program_fit=p.weight_program,
         ),
     )
 
@@ -71,15 +71,15 @@ async def update_preferences(
         db.add(prefs)
 
     if body.importance_weights is not None:
-        prefs.importance_playing_time = body.importance_weights.playing_time
-        prefs.importance_nil         = body.importance_weights.nil
-        prefs.importance_academics   = body.importance_weights.academics
-        prefs.importance_location    = body.importance_weights.location
+        prefs.importance_scheme_fit = body.importance_weights.scheme_fit
+        prefs.importance_role_fit   = body.importance_weights.role_fit
+        prefs.importance_gap_match  = body.importance_weights.gap_match
+        prefs.importance_program_fit = body.importance_weights.program_fit
     if body.fit_weights is not None:
-        prefs.weight_gap         = body.fit_weights.gap
-        prefs.weight_scheme      = body.fit_weights.scheme
-        prefs.weight_opportunity = body.fit_weights.opportunity
-        prefs.weight_personal    = body.fit_weights.personal
+        prefs.weight_gap     = body.fit_weights.gap
+        prefs.weight_scheme  = body.fit_weights.scheme
+        prefs.weight_role    = body.fit_weights.role_fit
+        prefs.weight_program = body.fit_weights.program_fit
     if body.filters is not None:
         prefs.filters = body.filters.model_dump(exclude_none=True)
 
@@ -93,68 +93,68 @@ async def get_shortlist(user_id: int, current_user: CurrentUser, db: DbSession):
     _check_auth(user_id, current_user)
     rows = (
         await db.execute(
-            select(UserShortlist, School.name.label("school_name"), School.conference)
-            .join(School, School.id == UserShortlist.school_id)
+            select(UserShortlist, Player.full_name.label("player_name"), Player.position)
+            .join(Player, Player.id == UserShortlist.player_id)
             .where(UserShortlist.user_id == user_id)
             .order_by(UserShortlist.added_at.desc())
         )
     ).all()
 
-    schools = [
+    players = [
         ShortlistItem(
-            school_id=sl.school_id,
-            school_name=school_name,
-            conference=conference,
+            player_id=sl.player_id,
+            player_name=player_name,
+            position=position,
             overall_fit=sl.overall_fit,
             added_at=sl.added_at,
         )
-        for sl, school_name, conference in rows
+        for sl, player_name, position in rows
     ]
-    return ShortlistResponse(user_id=user_id, schools=schools, total=len(schools))
+    return ShortlistResponse(user_id=user_id, players=players, total=len(players))
 
 
-@router.post("/{user_id}/shortlist/{school_id}", response_model=ShortlistItem, status_code=201)
+@router.post("/{user_id}/shortlist/{player_id}", response_model=ShortlistItem, status_code=201)
 async def add_to_shortlist(
-    user_id: int, school_id: int, current_user: CurrentUser, db: DbSession
+    user_id: int, player_id: int, current_user: CurrentUser, db: DbSession
 ):
     _check_auth(user_id, current_user)
 
-    school = (
-        await db.execute(select(School).where(School.id == school_id))
+    player = (
+        await db.execute(select(Player).where(Player.id == player_id))
     ).scalar_one_or_none()
-    if school is None:
-        raise HTTPException(status_code=404, detail=f"School {school_id} not found")
+    if player is None:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
 
-    entry = UserShortlist(user_id=user_id, school_id=school_id)
+    entry = UserShortlist(user_id=user_id, player_id=player_id)
     db.add(entry)
     try:
         await db.commit()
         await db.refresh(entry)
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="School already on shortlist")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Player already on shortlist")
 
     return ShortlistItem(
-        school_id=school_id,
-        school_name=school.name,
-        conference=school.conference,
+        player_id=player_id,
+        player_name=player.full_name,
+        position=player.position,
         overall_fit=None,
         added_at=entry.added_at,
     )
 
 
-@router.delete("/{user_id}/shortlist/{school_id}", status_code=204)
+@router.delete("/{user_id}/shortlist/{player_id}", status_code=204)
 async def remove_from_shortlist(
-    user_id: int, school_id: int, current_user: CurrentUser, db: DbSession
+    user_id: int, player_id: int, current_user: CurrentUser, db: DbSession
 ):
     _check_auth(user_id, current_user)
     result = await db.execute(
         delete(UserShortlist).where(
             UserShortlist.user_id == user_id,
-            UserShortlist.school_id == school_id,
+            UserShortlist.player_id == player_id,
         )
     )
     await db.commit()
     if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="School not on shortlist")
+        raise HTTPException(status_code=404, detail="Player not on shortlist")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

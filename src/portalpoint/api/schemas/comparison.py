@@ -5,40 +5,40 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from portalpoint.api.schemas.fit_score import FitScoreResponse
+from portalpoint.api.schemas.player import PlayerBase
 from portalpoint.api.schemas.prediction import PredictionResponse
-from portalpoint.api.schemas.school import SchoolBase
 
 
 class CompareRequest(BaseModel):
-    player_id: int
-    school_ids: list[int] = Field(..., min_length=2, max_length=4)
+    program_id: int
+    player_ids: list[int] = Field(..., min_length=2, max_length=4)
 
 
 class ComparisonMatrix(BaseModel):
-    """Per-component scores keyed by school name. Structured for table/radar rendering."""
+    """Per-component scores keyed by player name. Structured for table/radar rendering."""
     overall_fit: dict[str, float]
     gap_match: dict[str, float]
     scheme_fit: dict[str, float]
-    opportunity: dict[str, float]
-    personal_fit: dict[str, float]
+    role_fit: dict[str, float]
+    program_fit: dict[str, float]
 
 
 class TradeOff(BaseModel):
-    factor: str  # e.g. "Playing Time", "NIL Value", "Scheme Fit"
-    description: str  # e.g. "School A offers more minutes but weaker NIL"
-    best_school_name: str
-    best_school_id: int
+    factor: str
+    description: str
+    best_player_name: str
+    best_player_id: int
 
 
-class ComparisonSchoolEntry(BaseModel):
-    school: SchoolBase
+class ComparisonPlayerEntry(BaseModel):
+    player: PlayerBase
     fit_score: FitScoreResponse
     prediction: PredictionResponse
 
 
 class CompareResponse(BaseModel):
-    player_id: int
-    schools: list[ComparisonSchoolEntry]
+    program_id: int
+    players: list[ComparisonPlayerEntry]
     comparison_matrix: ComparisonMatrix
     trade_offs: list[TradeOff]
     generated_at: datetime

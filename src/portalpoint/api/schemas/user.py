@@ -9,19 +9,21 @@ from portalpoint.api.schemas.school import Region
 
 
 class ImportanceWeights(BaseModel):
-    """Player-stated priorities on 1-10 scale. Used to weight Personal Fit sub-components."""
-    playing_time: int = Field(default=7, ge=1, le=10)
-    nil: int = Field(default=5, ge=1, le=10)
-    academics: int = Field(default=5, ge=1, le=10)
-    location: int = Field(default=5, ge=1, le=10)
+    """Program-stated priorities on 1-10 scale. Used to weight Program Fit sub-components."""
+    scheme_fit: int = Field(default=7, ge=1, le=10)
+    role_fit: int = Field(default=5, ge=1, le=10)
+    gap_match: int = Field(default=5, ge=1, le=10)
+    program_fit: int = Field(default=5, ge=1, le=10)
 
 
 class UserFilters(BaseModel):
-    desired_major: str | None = None
-    regions: list[Region] = []
+    recruiting_regions: list[Region] = []
     conferences: list[str] = []
-    min_enrollment: int | None = None
-    max_enrollment: int | None = None
+    positions: list[str] = []
+    target_archetypes: list[str] = []
+    nil_budget_min: float | None = None
+    nil_budget_max: float | None = None
+    min_stats: dict | None = None
 
 
 class UserPreferences(BaseModel):
@@ -40,20 +42,20 @@ class UserProfile(BaseModel):
     user_id: int
     email: EmailStr
     full_name: str
-    player_id: int | None = None
+    school_id: int | None = None
     created_at: datetime
     preferences: UserPreferences
 
 
 class ShortlistItem(BaseModel):
-    school_id: int
-    school_name: str
-    conference: str
+    player_id: int
+    player_name: str
+    position: str
     overall_fit: float | None = None
     added_at: datetime
 
 
 class ShortlistResponse(BaseModel):
     user_id: int
-    schools: list[ShortlistItem]
+    players: list[ShortlistItem]
     total: int
