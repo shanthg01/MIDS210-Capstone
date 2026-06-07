@@ -1,10 +1,15 @@
-import pytest
+import uuid
+
+
+def _unique_email() -> str:
+    """Each test run gets a fresh email — avoids 409 from prior runs against real DB."""
+    return f"test-{uuid.uuid4().hex[:8]}@example.com"
 
 
 def test_signup_returns_201(client):
     r = client.post(
         "/api/auth/signup",
-        json={"email": "newuser@example.com", "password": "password123", "full_name": "New User"},
+        json={"email": _unique_email(), "password": "password123", "full_name": "New User"},
     )
     assert r.status_code == 201
 
@@ -12,7 +17,7 @@ def test_signup_returns_201(client):
 def test_signup_response_shape(client):
     r = client.post(
         "/api/auth/signup",
-        json={"email": "shape@example.com", "password": "password123", "full_name": "Shape User"},
+        json={"email": _unique_email(), "password": "password123", "full_name": "Shape User"},
     )
     data = r.json()
     assert "access_token" in data
@@ -24,16 +29,23 @@ def test_signup_response_shape(client):
 def test_signup_token_is_valid_jwt(client):
     r = client.post(
         "/api/auth/signup",
-        json={"email": "jwt@example.com", "password": "password123", "full_name": "JWT User"},
+        json={"email": _unique_email(), "password": "password123", "full_name": "JWT User"},
     )
     token = r.json()["access_token"]
     assert len(token.split(".")) == 3, "JWT must have 3 dot-separated segments"
 
 
+def test_signup_duplicate_email_returns_409(client):
+    email = _unique_email()
+    client.post("/api/auth/signup", json={"email": email, "password": "password123", "full_name": "X"})
+    r = client.post("/api/auth/signup", json={"email": email, "password": "password123", "full_name": "X"})
+    assert r.status_code == 409
+
+
 def test_signup_rejects_short_password(client):
     r = client.post(
         "/api/auth/signup",
-        json={"email": "short@example.com", "password": "abc", "full_name": "X"},
+        json={"email": _unique_email(), "password": "abc", "full_name": "X"},
     )
     assert r.status_code == 422
 
@@ -52,6 +64,22 @@ def test_login_returns_200(client):
         json={"email": "player@example.com", "password": "testpass123"},
     )
     assert r.status_code == 200
+
+
+def test_login_wrong_password_returns_401(client):
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "player@example.com", "password": "wrongpassword"},
+    )
+    assert r.status_code == 401
+
+
+def test_login_unknown_email_returns_401(client):
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "nobody@nowhere.com", "password": "testpass123"},
+    )
+    assert r.status_code == 401
 
 
 def test_login_token_grants_access(client):

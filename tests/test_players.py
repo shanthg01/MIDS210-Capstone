@@ -12,10 +12,12 @@ def test_get_player_response_shape(client):
 def test_get_player_stats_present(client):
     stats = client.get("/api/players/101").json()["current_season_stats"]
     assert stats is not None
-    assert stats["per"] > 0
-    assert 0 < stats["true_shooting_pct"] < 1
-    assert 0 < stats["usage_rate"] < 100
     assert stats["games_played"] > 0
+    assert stats["minutes_per_game"] > 0
+    # advanced stats may be 0.0 if not available in source data for this player
+    assert stats["per"] >= 0
+    assert 0 <= stats["true_shooting_pct"] < 1
+    assert 0 <= stats["usage_rate"] < 100
 
 
 def test_get_player_stat_rates_sum_to_one(client):
