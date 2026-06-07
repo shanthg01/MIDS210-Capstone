@@ -4,25 +4,25 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           LAYER 1: USER INTERACTIONS                         │
-│                          (What Players Want to Do)                           │
+│                     (What Programs/Coaches Want to Do)                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-│ "Show me programs    │  │ "Which teams play    │  │ "What would my stats │
-│  where I'd actually  │  │  my style?"          │  │  look like at        │
-│  play"               │  │                      │  │  School X?"          │
+│ "Show me portal      │  │ "Which players fit   │  │ "How does player X   │
+│  players that fit    │  │  our system?"        │  │  affect our team     │
+│  our system"         │  │                      │  │  efficiency?"        │
 └──────────────────────┘  └──────────────────────┘  └──────────────────────┘
 
 ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
-│ "Compare my top 3    │  │ "What's my market    │  │ "Rate my current     │
-│  choices side-by-    │  │  value?"             │  │  shortlist"          │
-│  side"               │  │                      │  │                      │
+│ "Compare our top     │  │ "What's this player  │  │ "Rate our current    │
+│  portal targets      │  │  worth to our NIL    │  │  recruiting          │
+│  side-by-side"       │  │  budget?"            │  │  pipeline"           │
 └──────────────────────┘  └──────────────────────┘  └──────────────────────┘
 
 ┌──────────────────────┐  ┌──────────────────────┐
-│ "How much will my    │  │ "How good will this  │
-│  addition improve    │  │  team be next        │
-│  this team?"         │  │  season?"            │
+│ "How much will       │  │ "How good will our   │
+│  player X improve    │  │  team be next        │
+│  our team?"          │  │  season?"            │
 └──────────────────────┘  └──────────────────────┘
 
                                     ↓ ↓ ↓
@@ -36,12 +36,12 @@
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
 │   COMPONENT 1   │  │   COMPONENT 2   │  │   COMPONENT 3   │  │   COMPONENT 4   │
 │                 │  │                 │  │                 │  │                 │
-│  Player/Team    │  │   Scheme Fit    │  │     Playing     │  │    Personal     │
-│  Gap Matching   │  │                 │  │   Opportunity   │  │   Opportunity   │
+│  Player/Team    │  │   Scheme Fit    │  │   Role Fit      │  │  Program Fit    │
+│  Gap Matching   │  │                 │  │                 │  │                 │
 │                 │  │                 │  │                 │  │                 │
-│  Does player    │  │  Does player's  │  │  How much will  │  │  NIL, Academic, │
-│  fill a team    │  │  style match    │  │  player         │  │  Geographic,    │
-│  need?          │  │  team system?   │  │  actually play? │  │  Cultural Fit   │
+│  Does player    │  │  Does player's  │  │  Will player    │  │  NIL budget,    │
+│  fill a team    │  │  style match    │  │  thrive in role │  │  geographic     │
+│  need?          │  │  team system?   │  │  we need them?  │  │  reach, eligib. │
 │                 │  │                 │  │                 │  │                 │
 │  Score: 0-100   │  │  Score: 0-100   │  │  Score: 0-100   │  │  Score: 0-100   │
 └─────────────────┘  └─────────────────┘  └─────────────────┘  └─────────────────┘
@@ -71,9 +71,9 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ DATA SOURCES                                                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ • CBBpy: Play-by-play, box scores                                      │
-│ • hoopR: Comprehensive NCAA stats                                       │
-│ • toRvik/cbbData: Advanced metrics                                      │
+│ • barttorvik: AdjEM, Four Factors, player ratings, tempo (primary)     │
+│ • hoopR: Box scores, rosters, schedules (secondary)                    │
+│ • Hoop-Explorer: Supplemental player/team data (secondary)             │
 │ • Roster data: Team composition                                         │
 └─────────────────────────────────────────────────────────────────────────┘
                                 ↓
@@ -119,7 +119,7 @@
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ DATA SOURCES (Same as Component 1 + Team-Level Data)                   │
+│ DATA SOURCES (barttorvik + hoopR + Hoop-Explorer + Team-Level Data)    │
 └─────────────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -224,35 +224,34 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ DATA SOURCES                                                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ • On3 NIL valuation data (historical)                                   │
-│ • Player social media metrics (followers)                               │
-│ • School academic data (majors, graduation rates)                       │
-│ • Geographic data (coordinates, distances)                              │
-│ • School profiles (size, setting, culture)                              │
-│ • NBA draft history by program                                          │
-│ • USER INPUT: All personal preferences (CRITICAL)                       │
-│   - Importance sliders (NIL, location, academics, culture: 1-10)       │
-│   - Desired major, hometown, regional preference                        │
+│ • Program NIL budget and historical deal data                           │
+│ • Player social media metrics (followers, market profile)               │
+│ • Player academic eligibility and major/credit requirements             │
+│ • Geographic data (player hometown, program recruiting range)           │
+│ • Program profile (conference, setting, academic reputation)            │
+│ • Program NBA draft pipeline and player development track record        │
+│ • PROGRAM INPUT: All program preferences (CRITICAL)                     │
+│   - Importance sliders (NIL budget, geography, academics: 1-10)        │
+│   - Target archetypes, position needs, system constraints               │
 └─────────────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ SUPERVISED ML: NIL Valuation Model (Gradient Boosting)                 │
+│ SUPERVISED ML: NIL Budget Fit Model (Gradient Boosting)                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ MODEL: XGBoost Regressor                                                │
-│ Features: [player_PER, position, social_followers, school_market_size, │
-│           conference_tv_deal_value]                                     │
-│ Target: NIL valuation ($)                                               │
-│ Training: Historical On3 valuations                                     │
-│ Output: Predicted NIL value → convert to 0-100 score                   │
-│         (normalize by max ~$2M)                                         │
+│ Features: [player_PER, position, social_followers, program_nil_pool,   │
+│           conference_tv_deal_value, program_market_size]               │
+│ Target: NIL ask vs. program budget alignment score                      │
+│ Training: Historical deal data + program NIL budget estimates           │
+│ Output: NIL fit score → 0-100 (100 = program can fully meet ask)       │
 └─────────────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ CLASSICAL CALCULATIONS: Other Personal Factors                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ GEOGRAPHIC:                                                              │
-│ • Haversine distance: hometown → school                                │
-│ • Score: 100 if <50mi, 0 if >1500mi, linear between                   │
+│ • Haversine distance: player hometown → program location               │
+│ • Score: 100 if in program's recruiting range, 0 if outside region     │
 │                                                                          │
 │ ACADEMIC:                                                                │
 │ • Major availability check (binary: 100 or 0)                          │
@@ -272,7 +271,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ MULTI-ATTRIBUTE UTILITY THEORY: Aggregate Personal Fit                 │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ USER WEIGHTS (from importance sliders):                                 │
+│ PROGRAM WEIGHTS (from preference sliders):                              │
 │ • w_nil, w_geo, w_academic, w_cultural (sum to 1.0)                   │
 │                                                                          │
 │ WEIGHTED AVERAGE:                                                        │
@@ -294,9 +293,9 @@
 │ • Component 3: Opportunity Score (0-100)                                │
 │ • Component 4: Personal Fit Score (0-100)                               │
 │                                                                          │
-│ USER INPUT: Priority Weights (CRITICAL)                                │
-│ Default: [30% Scheme, 25% Opportunity, 20% Gap, 25% Personal]         │
-│ Customizable: "Playing time is everything" → 60% Opportunity           │
+│ PROGRAM INPUT: Priority Weights (CRITICAL)                             │
+│ Default: [30% Scheme, 25% Role Fit, 20% Gap, 25% Program Fit]         │
+│ Customizable: "System fit is everything" → 60% Scheme                  │
 │                                                                          │
 │ CALCULATION:                                                             │
 │ overall_fit = (scheme × w_scheme) + (opportunity × w_opp) +           │
@@ -314,8 +313,8 @@
 │ DATA SOURCES                                                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ • On/off split data: player's net rating differential on vs. off court │
-│   (extracted from CBBpy/hoopR play-by-play — already scraped)          │
-│ • Team season AdjEM: from toRvik — already scraped                     │
+│   (extracted from hoopR play-by-play + barttorvik — already scraped)  │
+│ • Team season AdjEM: from barttorvik — already scraped                 │
 │ • Player archetype: output of Player Clustering model                  │
 │ • Expected minutes: output of Playing Time Predictor (Component 3)    │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -366,10 +365,10 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ COLLABORATIVE FILTERING: Matrix Factorization (SVD)                    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ • Build interaction matrix: Player × School (historical transfers)      │
+│ • Build interaction matrix: Program × Player (historical recruitments) │
 │ • SVD decomposition: 50 latent factors                                  │
-│ • For new player: find similar historical players                       │
-│ • Recommend schools where similar players succeeded                     │
+│ • For program: find similar historical programs                         │
+│ • Recommend players similar to those programs recruited successfully    │
 │ • Output: Collaborative recommendations with confidence                 │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -377,9 +376,9 @@
 │ CONTENT-BASED FILTERING: Feature Similarity                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ • Player-school feature vectors (combine player stats + school stats)  │
-│ • Cosine similarity to user's "ideal profile"                          │
-│ • Apply hard filters (major availability, region, min NIL)             │
-│ • USER INPUT: Filters and ideal profile preferences                     │
+│ • Cosine similarity to program's "target player profile"               │
+│ • Apply hard filters (position, archetype, min stats threshold)        │
+│ • PROGRAM INPUT: Filters and target player profile preferences          │
 │ • Output: Content-based recommendations                                 │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -389,7 +388,7 @@
 │ • Combine: 30% Collaborative + 30% Content + 40% Fit Scores            │
 │ • Normalize scores to 0-1 range                                         │
 │ • Aggregate by school, rank by combined score                           │
-│ • USER FEEDBACK: Implicit learning from clicks/dismissals              │
+│ • PROGRAM FEEDBACK: Implicit learning from clicks/dismissals           │
 │ • Output: Top-N recommendations (typically N=10)                        │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -509,11 +508,11 @@ Layer 3 Techniques Used:
 ├─ LLM Agentic Workflows: Multi-step reasoning, tool use, strategic planning
 └─ Reinforcement Learning (Implicit): Learning from user feedback over time
 
-Key User Inputs:
-├─ Player Preferences: Style preferences, priority weights, personal factors
-├─ Coach Overrides: System description, depth chart, roster strategy
-├─ Filters: Geographic, academic, financial constraints
-├─ Feedback: Clicks, dismissals, shortlists (implicit learning)
+Key Program Inputs:
+├─ Program Preferences: Target archetypes, position needs, system constraints, NIL budget
+├─ Staff Overrides: System description, depth chart, roster strategy
+├─ Filters: Position, archetype, geographic reach, academic eligibility
+├─ Feedback: Clicks, dismissals, pipeline additions (implicit learning)
 └─ Queries: Natural language questions to agentic assistants
 ```
 

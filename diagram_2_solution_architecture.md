@@ -10,9 +10,10 @@
 │  Web Browser    │  │  Mobile App     │  │  Mobile Web     │  │  Desktop    │
 │  (React SPA)    │  │  (iOS/Android)  │  │  (Responsive)   │  │  App        │
 │                 │  │                 │  │                 │  │  (Electron) │
-│  - Players      │  │  - Players      │  │  - Quick Access │  │  - Coaches  │
-│  - Coaches      │  │  - Coaches      │  │  - Alerts       │  │  - Analysts │
-│  - Analysts     │  │  - Push Notif   │  │                 │  │             │
+│  - Coaches      │  │  - Coaches      │  │  - Quick Access │  │  - Coaches  │
+│  - Analysts     │  │  - Analysts     │  │  - Alerts       │  │  - Analysts │
+│  - Athletic     │  │  - Push Notif   │  │                 │  │  - Athletic │
+│    Staff        │  │                 │  │                 │  │    Staff    │
 └─────────────────┘  └─────────────────┘  └─────────────────┘  └─────────────┘
          │                    │                    │                    │
          └────────────────────┴────────────────────┴────────────────────┘
@@ -53,7 +54,7 @@
 │  │  ────────────────────────────────────────────────────────────── │    │
 │  │  Endpoints:                                                      │    │
 │  │  • POST /api/fit-scores                                         │    │
-│  │  • GET  /api/recommendations/{player_id}                        │    │
+│  │  • GET  /api/recommendations/{program_id}                       │    │
 │  │  • POST /api/predictions/transfer-success                       │    │
 │  │  • GET  /api/projections/team-rating                            │    │
 │  │  • GET  /api/players/{player_id}                                │    │
@@ -117,7 +118,9 @@
 │  │  ETL Worker Pool                                    [5+ workers] │    │
 │  │  ────────────────────────────────────────────────────────────── │    │
 │  │  Tasks:                                                          │    │
-│  │  • Scrape CBBpy/hoopR daily                                     │    │
+│  │  • Scrape barttorvik daily (primary)                            │    │
+│  │  • Scrape hoopR daily (secondary)                               │    │
+│  │  • Scrape Hoop-Explorer (secondary)                             │    │
 │  │  • Scrape VerbalCommits portal updates (hourly)                 │    │
 │  │  • Validate and clean new data                                  │    │
 │  │  • Load to PostgreSQL (upsert)                                  │    │
@@ -187,9 +190,9 @@
 │  │  Schedule: Daily @ 2 AM EST                                  │        │
 │  │                                                               │        │
 │  │  Tasks:                                                       │        │
-│  │  1. scrape_cbbpy                                             │        │
+│  │  1. scrape_barttorvik                                        │        │
 │  │  2. scrape_hoopr                                             │        │
-│  │  3. scrape_torvik                                            │        │
+│  │  3. scrape_hoop_explorer                                     │        │
 │  │  4. validate_data                                            │        │
 │  │  5. load_to_staging                                          │        │
 │  │  6. transform_features                                       │        │
@@ -220,7 +223,7 @@
 │  │  1. extract_training_data                                    │        │
 │  │  2. train_fit_scorer                                         │        │
 │  │  3. train_collaborative_filter                               │        │
-│  │  4. train_nil_model                                          │        │
+│  │  4. train_nil_budget_fit_model                               │        │
 │  │  5. train_team_rating_model                                  │        │
 │  │  6. evaluate_models                                          │        │
 │  │  7. compare_vs_baseline                                      │        │
@@ -342,7 +345,7 @@
 │  Models Tracked:                                                          │
 │  • fit_scorer_xgboost (v1.0, v1.1, v2.0...)                              │
 │  • collaborative_filter_svd                                              │
-│  • nil_valuation_gbm                                                     │
+│  • nil_budget_fit_gbm                                                    │
 │  • player_clusterer_kmeans                                               │
 │  • bayesian_minutes_predictor                                            │
 │  • team_rating_projector_xgboost                                         │
@@ -397,7 +400,7 @@
 │  • System Overview (all services health)                                  │
 │  • API Performance (latency, throughput)                                  │
 │  • ML Model Performance (prediction accuracy, drift)                      │
-│  • Business Metrics (user signups, fit score requests, recommendations)  │
+│  • Business Metrics (program signups, player evaluations, recommendations)│
 └───────────────────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────────────┐

@@ -7,14 +7,14 @@
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐
-│   CBBpy API     │  │   hoopR API     │  │  toRvik/cbbData │  │ VerbalCommits│
-│   (Python pkg)  │  │   (R package)   │  │   (Scraping)    │  │  (Web Scrape)│
+│  barttorvik     │  │   hoopR API     │  │  Hoop-Explorer  │  │ VerbalCommits│
+│  (Primary)      │  │   (Secondary)   │  │  (Secondary)    │  │  (Web Scrape)│
 ├─────────────────┤  ├─────────────────┤  ├─────────────────┤  ├──────────────┤
-│ • Play-by-play  │  │ • Play-by-play  │  │ • Team ratings  │  │ • Transfer   │
-│ • Box scores    │  │ • Box scores    │  │ • Player metrics│  │   commitments│
-│ • Game logs     │  │ • Rosters       │  │ • Efficiency    │  │ • Portal     │
-│ • Shot charts   │  │ • Schedule      │  │ • Four factors  │  │   entries    │
-│                 │  │ • Recruiting    │  │ • Adjusted stats│  │ • Timelines  │
+│ • AdjEM/AdjO/   │  │ • Play-by-play  │  │ • Supplemental  │  │ • Transfer   │
+│   AdjD ratings  │  │ • Box scores    │  │   player data   │  │   commitments│
+│ • Four Factors  │  │ • Rosters       │  │ • Team data     │  │ • Portal     │
+│ • Player stats  │  │ • Schedules     │  │ • Advanced      │  │   entries    │
+│ • Tempo/pace    │  │ • Conference    │  │   metrics       │  │ • Timelines  │
 └─────────────────┘  └─────────────────┘  └─────────────────┘  └──────────────┘
          │                    │                    │                    │
          └────────────────────┴────────────────────┴────────────────────┘
@@ -31,26 +31,27 @@
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  scrape_cbbpy_worker.py                                      │        │
+│  │  scrape_barttorvik_worker.py                                 │        │
 │  │  ──────────────────────────────────────────────────────────  │        │
-│  │  from cbbpy import mens_scraper                              │        │
+│  │  import requests                                              │        │
+│  │  import pandas as pd                                         │        │
 │  │                                                               │        │
-│  │  # Get all D1 games for yesterday                            │        │
-│  │  games = mens_scraper.get_games_range(                       │        │
-│  │      start_date=yesterday,                                   │        │
-│  │      end_date=yesterday                                      │        │
-│  │  )                                                            │        │
+│  │  # Pull team ratings (AdjEM, AdjO, AdjD)                    │        │
+│  │  team_ratings = requests.get(                                │        │
+│  │      'https://barttorvik.com/trank.json'                    │        │
+│  │  ).json()                                                    │        │
 │  │                                                               │        │
-│  │  # For each game, get play-by-play                           │        │
-│  │  for game in games:                                          │        │
-│  │      pbp = mens_scraper.get_game_pbp(game['id'])            │        │
-│  │      boxscore = mens_scraper.get_game_boxscore(game['id'])  │        │
+│  │  # Pull player stats                                         │        │
+│  │  player_stats = requests.get(                                │        │
+│  │      'https://barttorvik.com/playerstat.php',                │        │
+│  │      params={'year': season, 'type': 'totals'}              │        │
+│  │  ).json()                                                    │        │
 │  │                                                               │        │
 │  │      # Save raw data to S3                                   │        │
 │  │      s3.put_object(                                          │        │
 │  │          Bucket='portalpoint-raw-data',                       │        │
-│  │          Key=f'cbbpy/{date}/game_{game_id}.json',           │        │
-│  │          Body=json.dumps(pbp)                                │        │
+│  │          Key=f'barttorvik/{date}/team_ratings.json',        │        │
+│  │          Body=json.dumps(team_ratings)                       │        │
 │  │      )                                                        │        │
 │  └─────────────────────────────────────────────────────────────┘        │
 │                                                                           │
@@ -754,7 +755,7 @@
 └───────────────────────────────────────────────────────────────────────────┘
                                       ↓
 ┌───────────────────────────────────────────────────────────────────────────┐
-│  MODEL 3: NIL Valuation Model (Gradient Boosting)                        │
+│  MODEL 3: NIL Budget Fit Model (Gradient Boosting)                       │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐        │
@@ -763,24 +764,25 @@
 │  │  from sklearn.ensemble import GradientBoostingRegressor      │        │
 │  │  import mlflow                                               │        │
 │  │                                                               │        │
-│  │  with mlflow.start_run(run_name="nil_valuation_gbm"):        │        │
+│  │  with mlflow.start_run(run_name="nil_budget_fit_gbm"):        │        │
 │  │                                                               │        │
-│  │      # Load NIL data (from On3 scrapes)                      │        │
+│  │      # Load NIL budget fit data                              │        │
 │  │      query = """                                             │        │
 │  │          SELECT                                              │        │
 │  │              n.player_id,                                    │        │
-│  │              n.nil_valuation,                                │        │
+│  │              n.program_id,                                   │        │
+│  │              n.nil_fit_score,                                │        │
 │  │              pf.per,                                         │        │
 │  │              pf.usage_rate,                                  │        │
 │  │              pf.position,                                    │        │
 │  │              p.social_media_followers,                       │        │
-│  │              t.conference,                                   │        │
+│  │              t.nil_pool_size,                                │        │
 │  │              t.market_size,                                  │        │
 │  │              c.tv_deal_value                                 │        │
-│  │          FROM nil_valuations n                               │        │
+│  │          FROM nil_budget_data n                              │        │
 │  │          JOIN player_features pf ON n.player_id = pf.player_id        │        │
 │  │          JOIN players p ON n.player_id = p.player_id         │        │
-│  │          JOIN teams t ON p.team_id = t.team_id               │        │
+│  │          JOIN teams t ON n.program_id = t.team_id            │        │
 │  │          JOIN conferences c ON t.conference = c.name         │        │
 │  │      """                                                      │        │
 │  │      df = pd.read_sql(query, engine)                         │        │
@@ -788,7 +790,7 @@
 │  │      # Feature engineering                                   │        │
 │  │      feature_cols = [                                        │        │
 │  │          'per', 'usage_rate', 'social_media_followers',      │        │
-│  │          'market_size', 'tv_deal_value'                      │        │
+│  │          'nil_pool_size', 'market_size', 'tv_deal_value'     │        │
 │  │      ]                                                        │        │
 │  │      # One-hot encode position                               │        │
 │  │      position_dummies = pd.get_dummies(                      │        │
@@ -825,7 +827,7 @@
 │  │      mlflow.sklearn.log_model(                               │        │
 │  │          model,                                              │        │
 │  │          "model",                                            │        │
-│  │          registered_model_name="nil_valuation_model"         │        │
+│  │          registered_model_name="nil_budget_fit_model"        │        │
 │  │      )                                                        │        │
 │  └─────────────────────────────────────────────────────────────┘        │
 │                                                                           │
@@ -844,28 +846,28 @@
 │  │                                                               │        │
 │  │  with mlflow.start_run(run_name="collaborative_filter_svd"): │        │
 │  │                                                               │        │
-│  │      # Load historical transfers                             │        │
+│  │      # Load historical recruitments (program × player)       │        │
 │  │      transfers = pd.read_sql(                                │        │
-│  │          "SELECT player_id, to_school_id, success FROM transfer_outcomes",   │        │
+│  │          "SELECT to_school_id, player_id, success FROM transfer_outcomes",   │        │
 │  │          engine                                              │        │
 │  │      )                                                        │        │
 │  │                                                               │        │
-│  │      # Create sparse interaction matrix                      │        │
+│  │      # Create sparse interaction matrix (Program × Player)   │        │
+│  │      program_ids = transfers['to_school_id'].unique()         │        │
 │  │      player_ids = transfers['player_id'].unique()            │        │
-│  │      school_ids = transfers['to_school_id'].unique()         │        │
 │  │                                                               │        │
+│  │      program_to_idx = {pid: i for i, pid in enumerate(program_ids)}  │        │
 │  │      player_to_idx = {pid: i for i, pid in enumerate(player_ids)}    │        │
-│  │      school_to_idx = {sid: i for i, sid in enumerate(school_ids)}    │        │
 │  │                                                               │        │
-│  │      rows = [player_to_idx[pid]                              │        │
+│  │      rows = [program_to_idx[pid]                             │        │
+│  │               for pid in transfers['to_school_id']]          │        │
+│  │      cols = [player_to_idx[pid]                              │        │
 │  │               for pid in transfers['player_id']]             │        │
-│  │      cols = [school_to_idx[sid]                              │        │
-│  │               for sid in transfers['to_school_id']]          │        │
 │  │      data = transfers['success'].values * 5  # Scale 0-5     │        │
 │  │                                                               │        │
 │  │      interaction_matrix = csr_matrix(                        │        │
 │  │          (data, (rows, cols)),                               │        │
-│  │          shape=(len(player_ids), len(school_ids))            │        │
+│  │          shape=(len(program_ids), len(player_ids))           │        │
 │  │      )                                                        │        │
 │  │                                                               │        │
 │  │      # SVD                                                    │        │
@@ -874,8 +876,8 @@
 │  │          n_components=n_factors,                             │        │
 │  │          random_state=42                                     │        │
 │  │      )                                                        │        │
-│  │      player_factors = svd.fit_transform(interaction_matrix)  │        │
-│  │      school_factors = svd.components_.T                      │        │
+│  │      program_factors = svd.fit_transform(interaction_matrix)  │        │
+│  │      player_factors = svd.components_.T                      │        │
 │  │                                                               │        │
 │  │      # Log explained variance                                │        │
 │  │      mlflow.log_metric(                                      │        │
@@ -884,15 +886,15 @@
 │  │      )                                                        │        │
 │  │                                                               │        │
 │  │      # Save artifacts                                        │        │
+│  │      np.save('program_factors.npy', program_factors)          │        │
 │  │      np.save('player_factors.npy', player_factors)           │        │
-│  │      np.save('school_factors.npy', school_factors)           │        │
+│  │      joblib.dump(program_to_idx, 'program_to_idx.pkl')       │        │
 │  │      joblib.dump(player_to_idx, 'player_to_idx.pkl')         │        │
-│  │      joblib.dump(school_to_idx, 'school_to_idx.pkl')         │        │
 │  │                                                               │        │
+│  │      mlflow.log_artifact('program_factors.npy')              │        │
 │  │      mlflow.log_artifact('player_factors.npy')               │        │
-│  │      mlflow.log_artifact('school_factors.npy')               │        │
+│  │      mlflow.log_artifact('program_to_idx.pkl')               │        │
 │  │      mlflow.log_artifact('player_to_idx.pkl')                │        │
-│  │      mlflow.log_artifact('school_to_idx.pkl')                │        │
 │  │                                                               │        │
 │  │      # Register model                                        │        │
 │  │      mlflow.sklearn.log_model(                               │        │
@@ -1205,7 +1207,7 @@
 ═══════════════════════════════════════════════════════════════════════════
 
 STAGE 1: INGESTION (Daily)
-├─ Scrape APIs (CBBpy, hoopR, toRvik, VerbalCommits)
+├─ Scrape APIs (barttorvik, hoopR, Hoop-Explorer, VerbalCommits)
 ├─ Validate schemas (Pydantic)
 ├─ Clean & normalize (pandas)
 └─ Load to PostgreSQL (upsert)
@@ -1219,7 +1221,7 @@ STAGE 2: FEATURE ENGINEERING (Daily after ingestion)
 STAGE 3: MODEL TRAINING (Weekly on Sundays)
 ├─ Player Clustering (K-Means + PCA)
 ├─ Transfer Success Prediction (XGBoost)
-├─ NIL Valuation (Gradient Boosting)
+├─ NIL Budget Fit (Gradient Boosting)
 ├─ Collaborative Filtering (SVD)
 ├─ Team Rating Projection (XGBoost) — depends on Bayesian minutes output
 └─ Log to MLflow, promote if improvement > 5%

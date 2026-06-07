@@ -8,17 +8,17 @@
 
 ## Executive Summary
 
-PortalPoint is a data-driven recommendation platform helping college basketball players make optimal transfer portal decisions. The MVP tests our core hypothesis: **multi-dimensional fit analysis provides measurably better transfer decisions than subjective evaluation or generic rankings**. We address a $5-10M market opportunity serving 2,500+ annual portal entrants who currently lack analytical tools to evaluate 350+ potential destinations.
+PortalPoint is a data-driven scouting platform helping college basketball programs identify and recruit optimal transfer portal players. The MVP tests our core hypothesis: **multi-dimensional fit analysis enables programs to find better-matched transfer targets faster than manual scouting or generic rankings**. We address a $5-10M market opportunity serving 350+ D1 programs whose coaching staffs currently lack analytical tools to efficiently evaluate 2,500+ annual portal entrants.
 
-**The Problem:** Players face career-defining transfer decisions with fragmented information, limited time, and high uncertainty about playing time, system fit, and future outcomes. Poor decisions cost players opportunities, development, and NIL earnings.
+**The Problem:** Programs face high-stakes roster decisions with fragmented information, compressed timelines (portal windows last weeks), and uncertainty about which players will actually fit their system, fill roster gaps, and accept their NIL budget. Poor decisions waste recruiting resources and stall program development.
 
-**Our Solution:** Automated fit scoring and personalized recommendations analyzing four dimensions—Gap Matching, Scheme Fit, Playing Opportunity, and Personal Fit—delivered through an intuitive web dashboard.
+**Our Solution:** Automated fit scoring and personalized player recommendations analyzing four dimensions—Gap Matching, Scheme Fit, Role Fit, and Program Fit—delivered through a coach-facing dashboard with real-time portal alerts.
 
 **Success Metrics:** 
-- 40%+ hit rate (actual destination in top-5 recommendations)
-- 70%+ of users report platform influenced decision
+- 40%+ hit rate (recommended player committed to program in top-5)
+- 70%+ of programs report platform influenced recruiting decisions
 - NPS > 40
-- <3.5 PER points prediction error
+- <3.5 PER points prediction error for post-transfer player performance
 
 ---
 
@@ -26,18 +26,18 @@ PortalPoint is a data-driven recommendation platform helping college basketball 
 
 ### Goals (MVP)
 
-**Primary Goal:** Validate that quantitative fit analysis changes player transfer decisions for the better, measured by user adoption, decision alignment, and predictive accuracy.
+**Primary Goal:** Validate that quantitative player evaluation changes which portal players programs recruit, measured by program adoption, recruiting decision alignment, and predictive accuracy.
 
 **Secondary Goals:**
-- Demonstrate technical feasibility of real-time fit scoring at scale (2,500 players × 350 schools = 875,000 pairings)
-- Establish data pipeline collecting and processing NCAA basketball statistics daily
-- Build brand credibility through transparent, accurate predictions validated against actual outcomes
-- Create foundation for future expansion (coaches, other sports, premium features)
+- Demonstrate technical feasibility of real-time fit scoring at scale (2,500 portal players × 350 programs = 875,000 pairings)
+- Establish data pipeline collecting and processing NCAA basketball statistics daily from barttorvik, hoopR, and Hoop-Explorer
+- Build brand credibility through transparent, accurate predictions validated against actual post-transfer outcomes
+- Create foundation for future expansion (other sports, player-facing portal, premium tiers)
 
 ### Stretch-Goals
 
-- Coach-facing tools (focus: players only)
-- NIL valuation estimation (secondary feature, limited data availability)
+- Player-facing portal (reverse marketplace: players discover programs that need them)
+- NIL market valuation estimation (from player's perspective, limited data availability)
 - Video integration or analysis
 - Native mobile apps (responsive web sufficient)
 - In-platform messaging between players and coaches
@@ -49,47 +49,48 @@ PortalPoint is a data-driven recommendation platform helping college basketball 
 
 ## 2. User Experience Overview
 
-### Target User: Transfer Portal Players
+### Target User: Coaching Staffs / Programs
 
-**Primary Persona:** Junior guard at mid-major program averaging 14 PPG, considering transfer for more playing time and better NIL opportunities. Has limited time to research (2-3 weeks), needs to narrow 350 schools to realistic shortlist of 8-10, wants data-backed confidence in final decision.
+**Primary Persona:** Assistant coach at mid-major program tasked with filling a shooting guard vacancy in the portal window. Has 3-4 weeks to identify, evaluate, and offer portal players before the roster closes. Needs to prioritize 2,500+ portal entrants down to a realistic target list of 15-20, wants data-backed confidence when allocating limited NIL budget.
 
 **User Journey:**
 
 ```
-Entry → Profile Creation → Exploration → Comparison → Decision
-  ↓          ↓               ↓            ↓            ↓
-Login    Set prefs      Browse fits   Side-by-side   Commit
-         (location,     Get top-10    Compare 3-4    (off-platform)
-         playing time,  recommendations schools
-         NIL importance)
+Entry → Program Setup → Scouting → Evaluation → Offer
+  ↓          ↓               ↓           ↓          ↓
+Login    Set roster     Browse portal  Compare     Extend offer
+         needs          player fits   top targets  (off-platform)
+         (position,     Get top-20    Side-by-side
+         system style,  recommendations
+         NIL budget)
 ```
 
 ### Core User Flows
 
-**Flow 1: New User Onboarding (5 minutes)**
-1. Create account with email/social login
-2. Link to player profile (search by name, verify identity)
-3. Set priorities via sliders: Playing Time (10), NIL (8), Location (6), Academics (5)
-4. Optional: Add hometown, desired major, regional preferences
-5. Dashboard loads with personalized recommendations
+**Flow 1: New Program Onboarding (5 minutes)**
+1. Create staff account with email/SSO login
+2. Link to program profile (select school, verify staff role)
+3. Set roster needs: position gaps, target archetypes, system style preferences
+4. Set NIL budget range and geographic recruiting focus
+5. Dashboard loads with ranked portal player recommendations
 
-**Flow 2: Exploring Recommendations (15-30 minutes)**
-1. View top-10 ranked schools with overall fit scores (0-100)
-2. Click school to see detailed breakdown:
-   - Scheme Fit: 87/100 (your shooting style matches their offense)
-   - Opportunity: 72/100 (projected 22-28 mpg, 70% chance to start)
-   - Gap Match: 90/100 (they need a shooting guard)
-   - Personal Fit: 65/100 (NIL moderate, academics strong, location far)
-3. See predicted outcomes: "Expected +3.5 PER improvement, 24 mpg"
-4. Review "Similar Transfers": Players like you who went to similar programs
-5. Add to shortlist or dismiss
+**Flow 2: Scouting the Portal (15-30 minutes)**
+1. View top-20 portal players ranked by fit for your program (0-100)
+2. Click player to see detailed breakdown:
+   - Scheme Fit: 87/100 (player's shooting style matches your offense)
+   - Role Fit: 72/100 (projected 22-28 mpg given your current roster)
+   - Gap Match: 90/100 (player fills your shooting guard vacancy)
+   - Program Fit: 65/100 (NIL ask within budget, academics strong, far from campus)
+3. See projected impact: "Expected +2.3 AdjEM improvement with this player"
+4. Review "Similar Recruits": Players like this one that programs like yours landed
+5. Add to recruiting pipeline or dismiss
 
-**Flow 3: Comparing Finalists (10-20 minutes)**
-1. Select 2-4 schools from shortlist
+**Flow 3: Comparing Targets (10-20 minutes)**
+1. Select 2-4 players from pipeline shortlist
 2. View side-by-side comparison with radar charts, fit breakdowns, projections
-3. Adjust priority weights to see how rankings change ("What if I care more about NIL?")
-4. Export comparison report as PDF
-5. Make decision (off-platform)
+3. Adjust priority weights to see how rankings change ("What if NIL budget is the constraint?")
+4. Export comparison report as PDF for staff meetings
+5. Extend offers (off-platform)
 
 ---
 
@@ -167,7 +168,7 @@ Login    Set prefs      Browse fits   Side-by-side   Commit
 
 **Players**
 - Identity: name, position, height, class year, hometown
-- External IDs: CBBpy, VerbalCommits (for linking)
+- External IDs: barttorvik player ID, VerbalCommits (for linking)
 - Social: Twitter handle, Instagram, follower count
 
 **Player Season Stats** (partitioned by season)
@@ -201,23 +202,25 @@ Login    Set prefs      Browse fits   Side-by-side   Commit
 - Outputs: current_adjEM, projected_adjEM, delta_adjEM, confidence_interval, national_percentile
 - Metadata: computed_at, model_version
 
-**User Preferences**
-- Priorities: importance weights (playing_time, NIL, academics, location)
-- Filters: desired major, regional preferences, min/max school size
-- Customization: preferred pace, role (high-usage vs. spot-up)
+**Program Preferences**
+- Priorities: importance weights (scheme_fit, role_fit, gap_match, program_fit)
+- Roster needs: position gaps, target archetypes, min statistical thresholds
+- NIL: budget range per player, total portal NIL pool
+- Recruiting: geographic focus regions, academic eligibility requirements
+- System: preferred pace, offensive/defensive style overrides
 
 ### Data Flow
 
 ```
 External APIs → Raw Storage (S3) → Validation → PostgreSQL → Feature Engineering
-                                                      ↓
-                                            Player/Team Features
-                                                      ↓
-                                            ML Models (Training)
-                                                      ↓
-                                            Fit Scores (Cache)
-                                                      ↓
-                                            Recommendations → User
+(barttorvik,                                                        ↓
+ hoopR,                                                  Player/Team Features
+ Hoop-Explorer,                                                     ↓
+ VerbalCommits)                                          ML Models (Training)
+                                                                    ↓
+                                                        Fit Scores (Cache)
+                                                                    ↓
+                                                    Recommendations → Program Users
 ```
 
 ### Partitioning & Indexing Strategy
@@ -270,13 +273,13 @@ External APIs → Raw Storage (S3) → Validation → PostgreSQL → Feature Eng
 - Alternative: Monte Carlo simulation if Bayesian too slow
 
 **Model 5: Transfer Success Predictor (XGBoost)**
-- Purpose: Predict post-transfer performance change
-- Input: 50+ features (player stats, team characteristics, differentials)
+- Purpose: Predict post-transfer performance change (from program's scouting perspective)
+- Input: 50+ features (player stats, destination team characteristics, differentials)
 - Targets: Change in PER, change in minutes, starter/bench classification
 - Process: Ensemble XGBoost + LightGBM, temporal cross-validation
-- Output: Predicted outcomes + SHAP explanations
+- Output: Predicted outcomes + SHAP explanations (shown to coaching staff)
 - Training: Weekly retraining
-- Serving: Pre-computed for top prospects, on-demand otherwise
+- Serving: Pre-computed for top portal prospects, on-demand otherwise
 
 **Model 6: Team Rating Projection (XGBoost)**
 - Purpose: Estimate how a player's addition changes a team's season-level adjusted efficiency margin (AdjEM)
@@ -289,13 +292,13 @@ External APIs → Raw Storage (S3) → Validation → PostgreSQL → Feature Eng
 - Dependency: Requires Model 4 (Playing Time) output as input; pipeline must run after minutes prediction is complete
 
 **Model 7: Recommendation Engine (Hybrid)**
-- Purpose: Generate personalized top-N school recommendations
+- Purpose: Generate personalized top-N portal player recommendations for each program
 - Components:
-  - Collaborative filtering (30%): SVD on historical transfer success matrix
-  - Content-based filtering (30%): Feature similarity to user preferences
+  - Collaborative filtering (30%): SVD on historical program × player recruitment matrix
+  - Content-based filtering (30%): Feature similarity to program's target player profile
   - Fit scores (40%): Composite from Models 3-6
-- Process: Weighted aggregation → rank → filter by hard constraints → top-10
-- Serving: Generated on login + on preference update
+- Process: Weighted aggregation → rank → filter by hard constraints (position, eligibility) → top-20
+- Serving: Generated on login + on roster need update
 
 ### Model Lifecycle
 
@@ -345,21 +348,22 @@ POST /api/players/{player_id}/claim  # Link user account to player profile
 
 **Recommendations**
 ```
-GET  /api/recommendations?user_id={id}
+GET  /api/recommendations?program_id={id}
   Response: {
     "recommendations": [
       {
         "rank": 1,
-        "school_id": 42,
-        "school_name": "Gonzaga",
+        "player_id": 789,
+        "player_name": "John Smith",
+        "position": "SG",
         "overall_fit": 87.5,
         "components": {
           "gap_match": 90,
           "scheme_fit": 92,
-          "opportunity": 78,
-          "personal_fit": 65
+          "role_fit": 78,
+          "program_fit": 65
         },
-        "reasoning": "Strong scheme fit - your shooting matches their offense..."
+        "reasoning": "Strong scheme fit - player's shooting style matches your offense..."
       },
       ...
     ],
@@ -369,20 +373,20 @@ GET  /api/recommendations?user_id={id}
 
 **Fit Scores**
 ```
-GET  /api/fit-scores?player_id={pid}&school_id={sid}
+GET  /api/fit-scores?player_id={pid}&program_id={pid}
   Response: {
     "overall_fit": 87.5,
     "gap_match": 90,
     "scheme_fit": 92,
-    "opportunity": 78,
-    "personal_fit": 65,
+    "role_fit": 78,
+    "program_fit": 65,
     "breakdown": {
       "scheme": {
         "three_point_match": 95,
         "pace_match": 88,
         "usage_match": 92
       },
-      "opportunity": {
+      "role_fit": {
         "projected_minutes": 24.3,
         "confidence_interval": [18.5, 29.1],
         "starter_probability": 0.72
@@ -417,40 +421,43 @@ GET  /api/projections/team-rating?player_id={pid}&school_id={sid}
   }
 ```
 
-**User Preferences**
+**Program Preferences**
 ```
-GET  /api/users/{user_id}/preferences
-PUT  /api/users/{user_id}/preferences
+GET  /api/programs/{program_id}/preferences
+PUT  /api/programs/{program_id}/preferences
   Body: {
     "importance_weights": {
-      "playing_time": 10,
-      "nil": 8,
-      "academics": 6,
-      "location": 7
+      "scheme_fit": 10,
+      "role_fit": 8,
+      "gap_match": 7,
+      "program_fit": 6
     },
-    "filters": {
-      "desired_major": "Business",
-      "regions": ["Midwest", "East Coast"]
-    }
+    "roster_needs": {
+      "positions": ["SG", "PF"],
+      "target_archetypes": ["3&D Wing", "Stretch 4"]
+    },
+    "nil_budget_range": {"min": 50000, "max": 300000},
+    "recruiting_regions": ["Southeast", "Midwest"],
+    "system_style": {"pace": "fast", "three_pt_heavy": true}
   }
 ```
 
-**Shortlist**
+**Recruiting Pipeline**
 ```
-GET    /api/users/{user_id}/shortlist
-POST   /api/users/{user_id}/shortlist/{school_id}
-DELETE /api/users/{user_id}/shortlist/{school_id}
+GET    /api/programs/{program_id}/pipeline
+POST   /api/programs/{program_id}/pipeline/{player_id}
+DELETE /api/programs/{program_id}/pipeline/{player_id}
 ```
 
 **Comparison**
 ```
 POST /api/compare
   Body: {
-    "player_id": 123,
-    "school_ids": [42, 87, 103]
+    "program_id": 42,
+    "player_ids": [123, 456, 789]
   }
   Response: {
-    "schools": [...],
+    "players": [...],
     "comparison_matrix": {...},
     "trade_offs": [...]
   }
@@ -508,25 +515,25 @@ POST /api/compare
 - Weighted by user preferences (e.g., if "pace matters most", weight pace dimension 2x)
 - Component breakdown for transparency
 
-**Opportunity (0-100):**
-- Bayesian prediction: Expected minutes → scale to 0-100 (0 min = 0, 30+ min = 100)
+**Role Fit (0-100):**
+- Bayesian prediction: Expected minutes in program's rotation → scale to 0-100 (0 min = 0, 30+ min = 100)
 - Adjustments: Starter bonus (+10 if P(starter) > 0.7), uncertainty penalty (-10 if wide CI)
-- User input: Self-assessment ("I'm better than their starter") shifts prediction
+- Staff input: Depth chart override ("we'd start them immediately") shifts prediction
 
-**Personal Fit (0-100):**
-- NIL: Regression model (player stats + school market → predicted value) → scale to 0-100
-- Geographic: Distance from hometown → linear scale (0 mi = 100, 1500+ mi = 0)
-- Academic: Binary (major offered?) + school ranking → weighted average
-- Cultural: Match on school size, setting preferences
-- Aggregate via user-weighted average (user specifies importance of each factor)
+**Program Fit (0-100):**
+- NIL: Model (player star power + program NIL pool → budget alignment score) → 0-100
+- Geographic: Player hometown vs. program's recruiting region → in-range = high score
+- Academic: Player eligibility vs. program's academic requirements → weighted match
+- Cultural: Match on program conference tier, style of play, development track record
+- Aggregate via program-weighted average (staff specifies importance of each factor)
 
 **Composite Score:**
 ```
 overall_fit = (gap × w_gap) + (scheme × w_scheme) + 
-              (opportunity × w_opp) + (personal × w_personal)
+              (role_fit × w_role) + (program_fit × w_program)
 
-Default weights: w_scheme=0.30, w_opp=0.25, w_gap=0.20, w_personal=0.25
-User-adjustable via preference sliders
+Default weights: w_scheme=0.30, w_role=0.25, w_gap=0.20, w_program=0.25
+Program-adjustable via preference sliders
 ```
 
 ### Model Training & Evaluation
@@ -634,7 +641,7 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 
 ### Testing Timeline
 
-**Week 12-14:** Beta testing with 20-30 mock? players
+**Week 12-14:** Beta testing with 20-30 coaching staffs/programs
 
 ### Validation Methods
 
@@ -707,9 +714,9 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 - **Impact:** High (inaccurate predictions reduce value proposition)
 - **Mitigation:** Extensive backtesting, conservative confidence intervals, transparent accuracy reporting, continuous improvement
 
-**Risk 3: Low User Adoption**
-- **Impact:** High (no users = failed MVP)
-- **Mitigation:** User research validates pain points, early beta with influencers (analysts, media), freemium model lowers barrier, compelling demos
+**Risk 3: Low Program Adoption**
+- **Impact:** High (no programs = failed MVP)
+- **Mitigation:** User research validates coaching staff pain points, early beta with analytics-forward programs and analysts, freemium trial lowers barrier, compelling live demos during portal season
 
 **Risk 4: Legal/Compliance Issues (NCAA, FERPA)**
 - **Impact:** Medium (could block launch)
@@ -736,7 +743,7 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 - User authentication and preferences work end-to-end
 
 **Data Quality:**
-- Database contains 2,500+ current portal players
+- Database contains 2,500+ current portal players with barttorvik stats
 - 95%+ of players have complete statistical profiles
 - Historical transfer data covers 2020-2024 (validation set)
 
@@ -745,32 +752,32 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 - 99% uptime during beta testing period
 - Cache hit rate >70%
 
-**User Validation:**
-- 10+ beta users complete full workflow (signup → recommendations → comparison → decision)
-- Positive feedback from majority (>60% would recommend to others)
+**Program Validation:**
+- 10+ beta programs complete full workflow (signup → portal recommendations → player comparison → pipeline)
+- Positive feedback from majority (>60% of staff would recommend to others)
 - No critical bugs blocking core functionality
 
 ### 6-Month Success Metrics
 
-**User Adoption:**
-- 50+ active users (players in portal season)
+**Program Adoption:**
+- 50+ active programs (coaching staffs during portal season)
 - 40% monthly retention
-- 70%+ of users access recommendation feature
+- 70%+ of programs access player recommendation feature
 
 **Predictive Accuracy:**
 - Recommendation hit rate >40%
 - Transfer success prediction RMSE <3.5 PER
 - Beat baseline approaches by 25%+
 
-**User Satisfaction:**
+**Program Satisfaction:**
 - NPS >40
-- 70%+ report platform influenced decision
-- Average session duration >5 minutes
+- 70%+ of programs report platform influenced recruiting decisions
+- Average session duration >5 minutes during portal window
 
 **Business:**
-- Validated value proposition (users willing to pay in future)
-- Foundation for coach-facing tier established
-- Path to revenue identified ($5K-15K annual subscriptions)
+- Validated value proposition (programs willing to pay for subscription)
+- Foundation for advanced tiers (agentic scouting, multi-sport) established
+- Path to revenue identified ($5K-15K annual subscriptions per program)
 
 ---
 
@@ -830,8 +837,8 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 
 | Week | A — Data Engineering | B — ML (Player) | C — ML + Backend | D — Frontend + Product |
 |------|---------------------|-----------------|-----------------|------------------------|
-| **11** | Production monitoring; on-call rotation; backup verification | Beta accuracy spot-checks; model retraining if drift detected | Bug fixes from beta; API hardening; rate limiting validation | Beta: 20–30 players onboarded; expert validation (5–7 coaches); UX iteration |
-| **12** | Post-launch pipeline monitoring; alert tuning | Model drift detection live; post-season accuracy eval scheduled | Rolling production deployment; health checks; rollback procedure verified | **Public launch** (portal season); user comms; feedback collection |
+| **11** | Production monitoring; on-call rotation; backup verification | Beta accuracy spot-checks; model retraining if drift detected | Bug fixes from beta; API hardening; rate limiting validation | Beta: 20–30 programs onboarded; expert validation (5–7 coaching staffs); UX iteration |
+| **12** | Post-launch pipeline monitoring; alert tuning | Model drift detection live; post-season accuracy eval scheduled | Rolling production deployment; health checks; rollback procedure verified | **Public launch** (portal season); program comms; feedback collection |
 
 **Milestone (end of Week 12):** Public launch with 99%+ uptime target; monitoring live; post-season accuracy evaluation scheduled for September.
 
@@ -875,19 +882,19 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 
 ## 13. Future Roadmap (Post-MVP)
 
-### Phase 2: Coach-Facing Tools (Months 4-6)
-- Roster gap analysis dashboard
-- Bulk player recommendations (top 50 fits for your program)
-- Recruitment pipeline tracking
-- Competitive intelligence (what are rivals doing?)
-- Pricing: $5K-15K annual subscriptions
+### Phase 2: Advanced Program Tools (Months 4-6)
+- Agentic scouting: automated portal monitoring with LLM-powered alerts
+- Competitive intelligence: what are rival programs recruiting?
+- Bulk roster scenario planning ("what-if we add player X and Y?")
+- API access for programs with internal analytics teams
+- Pricing: tiered $5K-15K annual subscriptions
 
-### Phase 3: Advanced Features (Months 7-12)
-- NIL valuation estimation (regression model + market data)
-- Agent/advisor tools (manage multiple player clients)
+### Phase 3: Expanded Market (Months 7-12)
+- Player-facing portal: reverse marketplace where players see which programs need them
+- Agent/advisor tools (manage multiple player clients across programs)
 - Video integration (link to Synergy, YouTube highlights)
 - Historical transfer database API (for media, researchers)
-- Mobile native apps (iOS, Android)
+- Mobile native apps (iOS, Android) for on-the-go recruiting
 
 ---
 
@@ -918,9 +925,9 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 ## Appendix B: Key Assumptions
 
 **Data Assumptions:**
-1. Public data (CBBpy, hoopR, toRvik) is sufficient for MVP—no proprietary data needed
+1. Public data (barttorvik, hoopR, Hoop-Explorer) is sufficient for MVP—no proprietary data needed
 2. Historical transfer outcomes contain signal for predicting future outcomes
-3. Play-by-play data accurately represents player style and system fit
+3. barttorvik adjusted stats and four factors accurately represent player style and system fit
 4. Missing data <20% for players with >10 games played
 
 **Model Assumptions:**
@@ -930,15 +937,15 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 4. Users trust algorithmic recommendations if explainability is high
 
 **User Assumptions:**
-1. Players value data-driven insights and will change behavior based on recommendations
-2. Users understand 0-100 scoring and can interpret fit breakdowns
-3. Players have 2-3 weeks to research, can dedicate 30-60 minutes to platform
-4. Decision-makers (players, families) have smartphone/computer access
+1. Coaching staffs value data-driven scouting and will incorporate recommendations into recruiting decisions
+2. Users (coaches/analysts) understand 0-100 scoring and can interpret fit breakdowns
+3. Programs have 3-4 week portal windows; assistant coaches can dedicate 30-60 minutes to platform per target
+4. Decision-makers (head coaches, assistants) have computer/tablet access during recruiting
 
 **Market Assumptions:**
-1. Players will use free tools even if coaches don't (initially)
-2. Demonstrated player-side value creates bottom-up demand for coach-facing tools
-3. Mid-major programs willing to pay $5K-15K annually for analytics tools
+1. Programs will pay for tools that demonstrably improve recruiting efficiency and roster decisions
+2. Analytics-forward mid-major programs are the beachhead; Power 5 adoption follows
+3. Mid-major programs willing to pay $5K-15K annually for portal analytics tools
 4. Transfer portal continues growing (not regulatory rollback)
 
 ---

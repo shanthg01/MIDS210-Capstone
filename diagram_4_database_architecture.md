@@ -17,9 +17,9 @@ The database is organized into 5 logical layers:
 - transfers, nil_valuations
 
 ### 4. ML Layer (Model Outputs)
-- player_team_fit_scores, predictions, recommendations, team_rating_projections
+- player_team_fit_scores, predictions, recommendations (program_id, player_id, fit_score, rank), team_rating_projections
 
 ### 5. User Layer
-- users, user_preferences, user_feedback, user_shortlists, audit_log
+- users (program/staff accounts: program_id, school_id, role), user_preferences (position needs, target archetypes, system style, NIL budget, geographic focus), user_feedback, user_shortlists (recruiting pipeline: program's portal player targets with status), audit_log
 
 **Total:** ~25 main tables, partitioned by season where appropriate, with comprehensive indexing for fast queries.
