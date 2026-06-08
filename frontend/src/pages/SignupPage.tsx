@@ -55,15 +55,22 @@ export default function SignupPage() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        bgcolor: 'grey.100',
+        bgcolor: 'background.default',
+        flexDirection: 'column',
+        gap: 3,
       }}
     >
-      <Card sx={{ width: 400, p: 2 }} elevation={3}>
+      <img
+        src="/portalpoint_textonly_logo_transparent.png"
+        alt="PortalPoint"
+        style={{ height: 72, objectFit: 'contain' }}
+      />
+      <Card
+        variant="outlined"
+        sx={{ width: 400, p: 2, bgcolor: 'rgba(255,255,255,0.05)' }}
+      >
         <CardContent>
-          <Typography variant="h5" fontWeight={700} gutterBottom>
-            PortalPoint
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mb={3}>
+          <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>
             Create a program account
           </Typography>
 
@@ -116,7 +123,7 @@ export default function SignupPage() {
             </Button>
           </Box>
 
-          <Typography variant="body2" mt={2} textAlign="center">
+          <Typography variant="body2" sx={{ mt: 2, textAlign: 'center' }}>
             Already have an account?{' '}
             <Link component={RouterLink} to="/login">
               Sign in

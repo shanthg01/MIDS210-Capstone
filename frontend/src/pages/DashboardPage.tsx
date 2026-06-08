@@ -10,7 +10,7 @@ export default function DashboardPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['recommendations', userId],
     queryFn: () => getRecommendations(userId!),
-    enabled: userId !== null,
+    enabled: !!userId,
   });
 
   return (

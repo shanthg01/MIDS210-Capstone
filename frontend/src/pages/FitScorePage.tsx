@@ -93,6 +93,12 @@ function SectionPaper({ children }: { children: React.ReactNode }) {
 
 // ── Component sections ────────────────────────────────────────────────────────
 
+const SCORE_TINT: Record<'success' | 'warning' | 'error', string> = {
+  success: 'rgba(76, 175, 80, 0.10)',
+  warning: 'rgba(255, 152, 0, 0.10)',
+  error:   'rgba(244, 67, 54, 0.10)',
+};
+
 function OverallPanel({
   overall,
   gap,
@@ -110,7 +116,7 @@ function OverallPanel({
   return (
     <Paper
       variant="outlined"
-      sx={{ p: 3, mb: 3, bgcolor: `${color}.light`, borderColor: `${color}.main` }}
+      sx={{ p: 3, mb: 3, bgcolor: SCORE_TINT[color], borderColor: `${color}.main` }}
     >
       <Typography variant="overline" color="text.secondary" gutterBottom>
         Overall Fit Score
