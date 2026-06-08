@@ -26,6 +26,7 @@ dependencies = [
     "ipykernel>=6.29.0",
     "scikit-learn>=1.5.0",
     "pyarrow>=16.0.0",
+    "notebook (>=7.5.7,<8.0.0)",
 ]
 
 [project.optional-dependencies]

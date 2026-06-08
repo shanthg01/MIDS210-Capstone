@@ -1,6 +1,9 @@
 CLAUDE.md
 .torvik_cache/
 
+# Jupyter
+.ipynb_checkpoints/
+
 # Python
 __pycache__/
 *.py[cod]
