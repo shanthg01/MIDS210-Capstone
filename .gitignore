@@ -1,2 +1,10 @@
 CLAUDE.md
 .env
+
+# Data files (large, downloaded locally)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
