@@ -114,8 +114,66 @@ Copy `.env.example` to `.env`. All variables have sane defaults for local Docker
 | `JWT_ALGORITHM` | `HS256` | |
 | `JWT_EXPIRY_SECONDS` | `3600` | Set to `86400` in local dev to avoid hourly re-login |
 | `ENVIRONMENT` | `development` | |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlruns.db` | SQLite at repo root for local dev; set to S3 URI for prod |
 
 **Token expiry note:** The default 1-hour expiry means you'll be logged out after 60 minutes. For active development, set `JWT_EXPIRY_SECONDS=86400` in `.env`.
+
+---
+
+## ML Model Tracking (MLflow)
+
+MLflow tracks all model runs, parameters, metrics, and artifacts for Models 1–3. It is a **notebook-only dependency** — not in `pyproject.toml` because mlflow's metadata pins `pandas<3`, which conflicts with `uv sync` resolution against pandas 3. Install it separately:
+
+```bash
+# Install once from repo root (uv pip is lenient; does NOT downgrade pandas)
+uv pip install mlflow
+```
+
+### Tracking backend
+
+All runs write to `mlruns.db` (SQLite) at the repo root. The path is resolved automatically by `notebooks/utils/mlflow_helpers.py` — no CWD dependency. If `MLFLOW_TRACKING_URI` is set in `.env`, that URI is used instead (must be a `sqlite:///` or remote URI — `file:` paths are rejected by mlflow 3.x).
+
+### Launch the MLflow UI
+
+```bash
+# From repo root
+mlflow ui --backend-store-uri sqlite:///mlruns.db
+```
+
+Open http://127.0.0.1:5000. Three experiments are visible:
+
+| Experiment | Model | Key metric | Registry name |
+|---|---|---|---|
+| `player-clustering` | K-Means player archetypes (k=10) | `silhouette_score` | `player-clustering` |
+| `team-clustering` | K-Means team system profiles (k=9) | `silhouette_score` | `team-clustering` |
+| `scheme-fit-scorer` | Cosine similarity scheme fit | `n_records_written` | `scheme-fit-scorer` |
+
+### Auto-promotion logic
+
+Each notebook run registers a new model version. `maybe_promote()` in `mlflow_helpers.py` compares the new run's key metric against the current Production version:
+
+- **First run ever** → automatically promoted to `Production`
+- **Improvement > 5%** → promoted to `Production`
+- **Improvement ≤ 5%** → sent to `Staging`
+
+### Shared helper
+
+`notebooks/utils/mlflow_helpers.py` provides three functions used by all model notebooks:
+
+| Function | Purpose |
+|---|---|
+| `setup_mlflow(experiment_name)` | Sets tracking URI + experiment, returns `MlflowClient` |
+| `maybe_promote(client, model_name, run_id, ...)` | Registers version, promotes or stages based on metric delta |
+| `get_tracking_uri()` | Reads `.env`; falls back to `sqlite:///mlruns.db` at repo root |
+
+### Legacy file-store artifacts
+
+Earlier runs created `notebooks/models/mlruns/` and `notebooks/mlruns/` directories (file-store format, incompatible with mlflow 3.x). These can be deleted — all current runs are in `mlruns.db`.
+
+```bash
+# Optional cleanup
+Remove-Item -Recurse -Force notebooks/models/mlruns, notebooks/mlruns
+```
 
 ---
 
@@ -219,10 +277,14 @@ MIDS210-Capstone/
 ├── scripts/
 │   └── ingest_barttorvik.py     # Barttorvik ETL — loads players/schools/stats
 ├── notebooks/
-│   └── models/
-│       ├── player_clustering.ipynb    # Model 1 — K-Means player archetypes
-│       ├── team_clustering.ipynb      # Model 2 — K-Means team system profiles
-│       └── scheme_fit_scorer.ipynb    # Model 3 — cosine similarity scheme fit
+│   ├── models/
+│   │   ├── player_clustering.ipynb    # Model 1 — K-Means player archetypes
+│   │   ├── team_clustering.ipynb      # Model 2 — K-Means team system profiles
+│   │   └── scheme_fit_scorer.ipynb    # Model 3 — cosine similarity scheme fit
+│   ├── utils/
+│   │   └── mlflow_helpers.py          # Shared MLflow helpers (setup, auto-promote)
+│   └── requirements-notebooks.txt     # Notebook-only deps — install via uv pip
+├── mlruns.db                          # MLflow SQLite tracking store (created on first run)
 ├── alembic/                     # Database migrations
 ├── tests/                       # 111 pytest tests across 9 modules
 ├── .env.example                 # Environment variable template
