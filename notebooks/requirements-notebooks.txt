@@ -1,0 +1,7 @@
+# Notebook-only dependencies — install via uv pip (not uv sync).
+# mlflow metadata pins pandas<3 which conflicts with uv sync resolution,
+# but uv pip installs it alongside pandas 3 without downgrading.
+#
+# Install once from repo root:
+#   uv pip install mlflow
+mlflow>=2.14.0
