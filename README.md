@@ -305,6 +305,7 @@ MIDS210-Capstone/
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
 | `docs/STATUS.md` | Current implementation state, critical path, open design questions |
 | `docs/player_projection_state_space_plan.md` | State-space player projection system plan |
+| `docs/playing_time_rotation_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
 | `docs/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
 | `docs/diagram_1_three_layer_architecture.md` | Fit scoring methodology detail |
 | `docs/diagram_2_solution_architecture.md` | Full AWS infrastructure design |

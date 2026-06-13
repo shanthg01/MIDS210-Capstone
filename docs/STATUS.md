@@ -166,7 +166,7 @@ The original design positioned players as the primary user (players discovering 
 | 2 | Team System Clustering (K-Means, K=9) | ✅ Complete — **owner: Shanth** (dataset eval in progress) | `team_kmeans.pkl`, `team_scaler.pkl`, `team_system_labels.pkl` | `team_system_profiles` |
 | 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete — **owners: Justin + Shanth** (joint dataset eval in progress) | — (no training, deterministic; `scheme-cos-v1`) | `player_team_fit_scores` (scheme_fit col) |
 | — | Gap Matching (cosine similarity) | ❌ Not started | — | `player_team_fit_scores` (gap_match col) |
-| 4 | Playing Time / Role Fit Predictor (PyMC3) | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
+| 4 | Playing Time / Rotation Model → Role Fit Score | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
 | — | Program Fit Calculator (MAUT) | ❌ Not started | — | `player_team_fit_scores` (program_fit col) |
 | 5 | Transfer Success Predictor (XGBoost) | ❌ Not started | — | `predictions` |
 | 6 | Team Rating Projection (XGBoost) | ❌ Not started | Depends on Model 4 | `team_rating_projections` |
@@ -206,7 +206,7 @@ Gap Matching notebook          ← next immediate step
         ↓
 wire fit_scores.py (partial)   ← scheme_fit + gap_match real, role/program stubbed
         ↓
-Model 4: Role Fit (PyMC3)      ← playing time → role_fit score
+Model 4: Playing Time / Rotation model      ← opportunity outputs → role_fit score
         ↓
 Program Fit calculator         ← MAUT on user_preferences.importance_weights
         ↓

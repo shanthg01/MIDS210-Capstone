@@ -4,7 +4,8 @@
 **Planned notebook:** `notebooks/models/player_projection_state_space.ipynb`  
 **Model family:** Game-level state-space model + hybrid basketball rate model  
 **Primary output table:** `predictions` initially, with a future dedicated `player_projections` table  
-**Downstream consumers:** Role Fit / Playing Time, Team Rating Projection, Recommendations, player profile UI
+**Downstream consumers:** Playing Time / Rotation model, Role Fit score, Team Rating Projection, Recommendations, player profile UI  
+**Related plan:** `docs/playing_time_rotation_model_plan.md`
 
 ---
 
@@ -45,7 +46,7 @@ Raw player-game data
     -> projected box-score rates and skill percentiles
     -> value translation layer
     -> neutral player projection
-    -> destination context adapter + playing-time model
+    -> destination context adapter + Playing Time / Rotation model
     -> player-school projection
 ```
 
@@ -104,7 +105,7 @@ What does this player project to do at this specific school?
 
 It should additionally include:
 
-- Expected minutes from the separate Playing Time / Role Fit model.
+- Expected minutes from the separate Playing Time / Rotation model.
 - Expected usage in the destination roster.
 - Pace-adjusted per-game stat line.
 - Conference and strength-of-schedule adjustment.
@@ -461,32 +462,42 @@ Long-term, PortalPoint should own this target by fitting a RAPM-style possession
 
 ---
 
-## 9. Playing Time and Role Fit Dependency
+## 9. Playing Time, Rotation, and Role Fit Dependency
 
 Playing time should remain a separate model, but it is not optional for destination-adjusted projections.
 
-### Separate Playing Time / Role Fit model owns
+The architecture should distinguish the underlying model from the product score:
+
+```text
+Playing Time / Rotation model
+    -> expected minutes, usage role, displaced minutes, minutes uncertainty
+
+Role Fit score
+    -> user-facing 0-100 opportunity/role match derived from the model outputs
+```
+
+### Separate Playing Time / Rotation model owns
 
 - Expected minutes.
-- Starter probability.
-- Rotation slot.
 - Usage role in destination context.
 - Displaced teammate minutes.
-- Role uncertainty.
+- Minutes uncertainty.
+- Optional derived starter probability or rotation label if useful for the UI.
 
 ### Player Projection model owns
 
 - Neutral latent skill and value projection.
 - Per-possession skill rates.
 - Skill uncertainty.
-- Destination-adjusted stat/value projection after receiving minutes and usage from Role Fit.
+- Destination-adjusted stat/value projection after receiving minutes and usage context from the Playing Time / Rotation model.
 
 Data flow:
 
 ```text
 Neutral player projection
-    -> Role Fit / Playing Time model
-    -> expected minutes + usage + rotation slot
+    -> Playing Time / Rotation model
+    -> expected minutes + usage role + displaced minutes + uncertainty
+    -> Role Fit score for user-facing fit explanation
     -> destination-adjusted player projection
     -> team rating projection
 ```
@@ -536,7 +547,7 @@ The current `predictions` table can hold an MVP projection:
 | Existing column | New interpretation |
 |---|---|
 | `predicted_per_change` | Compatibility field; derive from value/PER bridge until API evolves |
-| `predicted_minutes` | From Playing Time / Role Fit model |
+| `predicted_minutes` | From Playing Time / Rotation model |
 | `predicted_role` | starter/rotation/bench/reserve |
 | `confidence` | Projection confidence from data quality and interval width |
 | `shap_explanations` | Projection decomposition JSON, not necessarily SHAP |
@@ -697,13 +708,15 @@ Translate projected rates into offensive, defensive, and total points-per-100 pl
 
 ### Cell 9 - Destination Context Adapter
 
-Join Role Fit outputs when available:
+Join Playing Time / Rotation outputs when available:
 
 ```text
 expected_minutes
 expected_usage
-rotation_slot
-starter_probability
+usage_role
+minutes_ci_lower
+minutes_ci_upper
+displaced_minutes
 ```
 
 Produce destination-adjusted projections for player-school pairs.
@@ -736,7 +749,7 @@ These questions are settled for the first version of the player projection plan.
 | Competition adjustment | Start with four broad conference/competition tiers, plus within-tier opponent strength and schedule-strength adjustments. |
 | Value target | Use Hoop Explorer adjusted RAPM as the primary MVP target: `off_adj_rapm`, `def_adj_rapm`, and `adj_rapm_margin`. Use adjusted rating/production as secondary labels, and BartTorvik/hoopR box-value proxy only as fallback. |
 | No-history players | Use priors from position, class, height, recruiting/JUCO/international profile where available; otherwise use replacement-level priors. |
-| Playing time | Keep playing time as a separate Role Fit model, but require its minutes/usage outputs for destination-adjusted player projections. |
+| Playing time | Keep playing time as a separate Playing Time / Rotation model. Role Fit is the user-facing score derived from that model; destination-adjusted player projections require the underlying minutes, usage-role, displacement, and uncertainty outputs. |
 
 ---
 
@@ -748,7 +761,7 @@ These questions are settled for the first version of the player projection plan.
 - Use season-level data only for priors and temporary fallback checks if player-game ingest is not ready.
 - Use shared priors and simple block-level correlations.
 - Fit interpretable RAPM-style value model against Hoop Explorer adjusted RAPM labels where coverage exists.
-- Consume heuristic or future Role Fit minutes for destination-adjusted outputs.
+- Consume heuristic or future Playing Time / Rotation minutes for destination-adjusted outputs.
 - Write to existing `predictions` table.
 
 ### Full version
@@ -757,7 +770,7 @@ These questions are settled for the first version of the player projection plan.
 - Kalman filtering/smoothing with MLE.
 - Block-correlated latent skill states.
 - Hybrid possession outcome and conditional rate model.
-- Dedicated Playing Time / Role Fit model integration.
+- Dedicated Playing Time / Rotation model integration.
 - PortalPoint-owned RAPM-style possession-impact target from hoopR play-by-play and play personnel.
 - Dedicated `player_projections` table.
 - Team projection consumes projection distributions, not just means.

@@ -4,8 +4,9 @@
 **Planned notebook:** `notebooks/models/team_rating_projection_roster_tool.ipynb`  
 **Model family:** Roster simulation + interpretable team efficiency translation  
 **Primary output table:** `team_rating_projections`  
-**Upstream dependency:** Player Projection system, Role Fit/minutes model  
-**Downstream consumers:** `/api/projections/team-rating`, Fit Score page, Compare page, Recommendation Engine
+**Upstream dependency:** Player Projection system, Playing Time / Rotation model  
+**Downstream consumers:** `/api/projections/team-rating`, Fit Score page, Compare page, Recommendation Engine  
+**Related plan:** `docs/playing_time_rotation_model_plan.md`
 
 ---
 
@@ -33,6 +34,8 @@ expected_minutes_input
 ```
 
 But the internal model should explain the delta as a counterfactual roster change, not a generic player bump.
+
+The preferred team rating target should stay consistent with the player projection plan: if we can ingest enough historical Hoop Explorer data, train and validate against Hoop Explorer team adjusted efficiency fields first. BartTorvik adjusted efficiency should remain the fallback and compatibility target because it is already part of PortalPoint's existing data model and product language.
 
 ---
 
@@ -71,22 +74,42 @@ delta_adjEM = projected_adjEM_with_candidate - baseline_projected_adjEM
 The team projection model consumes player-level posterior outputs:
 
 ```text
-projected_obpv
-projected_dbpv
-projected_ppv
-projected_minutes
+projected_offensive_impact_per_100
+projected_defensive_impact_per_100
+projected_total_impact_per_100
 projected_usage
 projected_box_score
 skill_percentiles
 uncertainty
 ```
 
+These values come from the Player Projection system. For MVP, they should be calibrated to Hoop Explorer adjusted RAPM-style labels where available:
+
+```text
+off_adj_rapm
+def_adj_rapm
+adj_rapm_margin
+```
+
+The team projection also consumes opportunity outputs from the Playing Time / Rotation model:
+
+```text
+expected_minutes
+usage_role
+displaced_minutes
+minutes_uncertainty
+```
+
+This is not the same thing as the user-facing Role Fit score. Role Fit should be treated as a product score derived from the Playing Time / Rotation model. The team projection needs the underlying minutes, slot, usage, and displacement estimates, not just the 0-100 score.
+
+Starter probability and rotation slot may be derived for the UI if useful, but they are not required model inputs for MVP. Expected minutes plus usage role usually communicate the same basketball idea with less fragile labeling.
+
 The team model should use posterior samples when available:
 
 ```text
 for sample in player_projection_draws:
     build rotation
-    translate roster to team AdjO/AdjD/AdjEM
+    translate roster to team offensive rating / defensive rating / net rating
     store projected team result
 ```
 
@@ -124,8 +147,9 @@ player_id
 position
 minutes
 usage
-projected_obpv
-projected_dbpv
+projected_offensive_impact_per_100
+projected_defensive_impact_per_100
+projected_total_impact_per_100
 skill_vector
 uncertainty
 ```
@@ -156,7 +180,7 @@ Example:
 
 ```text
 baseline_slot_value["Mid-major", "Top-100", "G3"]
-= average projected PPV, usage, shooting, defense, uncertainty
+= average projected impact, usage, shooting, defense, uncertainty
 ```
 
 This prevents every transfer from being compared against a zero-minute vacuum. The right counterfactual is usually "candidate vs likely replacement slot", not "candidate vs nobody".
@@ -181,7 +205,7 @@ Estimate candidate slot and minutes using:
 
 - Position fit
 - Gap match
-- Projected PPV
+- Projected offensive/defensive impact
 - Returning roster depth
 - School quality tier
 - Candidate prior minutes
@@ -211,18 +235,27 @@ Usage is not fixed. Adding a high-usage guard reduces usage for teammates. Addin
 Convert roster state into team ratings:
 
 ```text
-Roster State -> projected AdjO, AdjD, AdjTempo, AdjEM
+Roster State -> projected offensive rating, defensive rating, tempo, net rating
 ```
+
+Preferred target names depend on the rating source:
+
+| Rating source | Offense | Defense | Net | Tempo |
+|---|---|---|---|---|
+| Hoop Explorer | `off_adj_ppp` | `def_adj_ppp` | `adj_net` | `tempo` |
+| BartTorvik fallback | `AdjO` / `adj_o` | `AdjD` / `adj_d` | `AdjEM` / `adj_em` | `AdjTempo` / `adj_tempo` |
+
+Use Hoop Explorer as the primary target when enough multi-season coverage is ingested. Use BartTorvik as the fallback target and as a compatibility bridge for the existing API, database columns, and coach-facing adjusted efficiency language.
 
 ### Team features
 
 | Feature group | Examples |
 |---|---|
-| Weighted player value | minute-weighted OBPV, DBPV, PPV |
-| Slot strength | PG1 PPV, C1 DBPV, bench PPV, weakest starter PPV |
+| Weighted player value | minute-weighted offensive, defensive, and total impact per 100 |
+| Slot strength | PG1 offensive creation, C1 defensive impact, bench impact, weakest starter impact |
 | Skill coverage | 3PT shooting, playmaking, rim pressure, rebounding, rim protection |
 | Balance | spacing without turnovers, defense without fouling, usage concentration |
-| Continuity | returning minutes, returning PPV, same-coach/system if available |
+| Continuity | returning minutes, returning impact, same-coach/system if available |
 | Style | projected tempo, 3PT rate, rim rate, assist rate |
 | Uncertainty | weighted player uncertainty, unknown slot share |
 
@@ -233,7 +266,7 @@ Use an interpretable two-stage model:
 ```text
 Stage A: Roster strength model
 minute-weighted player values + slot baselines
-    -> baseline team AdjO, AdjD
+    -> baseline team offense and defense
 
 Stage B: Interaction adjustment
 spacing + usage concentration + rim protection + rebounding + continuity
@@ -242,9 +275,9 @@ spacing + usage concentration + rim protection + rebounding + continuity
 
 Recommended MVP estimator:
 
-- Ridge/elastic-net regression or Bayesian additive regression for `AdjO` and `AdjD`.
+- Ridge/elastic-net regression or Bayesian additive regression for offense and defense separately.
 - Separate offense and defense models.
-- Monotonic constraints where possible: better weighted PPV should not lower projected AdjEM unless explained by role/fit interactions.
+- Monotonic constraints where possible: better weighted impact should not lower projected net rating unless explained by role/fit interactions.
 - Gradient boosting only as a challenger model, not the default, unless the interpretability gap is solved.
 
 ---
@@ -255,11 +288,12 @@ Every `delta_adjEM` should decompose into coach-readable pieces:
 
 ```text
 delta_adjEM
-= direct_player_value_delta
+= candidate_offensive_impact_delta
+  + candidate_defensive_impact_delta
   + replacement_slot_delta
   + usage_reallocation_delta
   + spacing_style_delta
-  + defense_rebounding_delta
+  + rim_protection_rebounding_delta
   + continuity_uncertainty_penalty
 ```
 
@@ -267,11 +301,12 @@ delta_adjEM
 
 ```json
 {
-  "direct_player_value_delta": 1.4,
+  "candidate_offensive_impact_delta": 0.8,
+  "candidate_defensive_impact_delta": 0.6,
   "replacement_slot_delta": 0.7,
   "usage_reallocation_delta": -0.2,
   "spacing_style_delta": 0.3,
-  "defense_rebounding_delta": 0.5,
+  "rim_protection_rebounding_delta": 0.5,
   "uncertainty_penalty": -0.1,
   "minutes_displaced": [
     {"slot": "G3", "minutes": -10.0},
@@ -288,7 +323,16 @@ This is more useful than saying "XGBoost says +2.6".
 
 ## 9. Training Labels
 
-Primary labels:
+Preferred primary labels after historical Hoop Explorer team ingest:
+
+```text
+hoop_explorer.off_adj_ppp
+hoop_explorer.def_adj_ppp
+hoop_explorer.adj_net
+hoop_explorer.tempo
+```
+
+Fallback / compatibility labels:
 
 ```text
 team_season_stats.adj_o
@@ -296,6 +340,16 @@ team_season_stats.adj_d
 team_season_stats.adj_em
 team_season_stats.adj_tempo
 ```
+
+Hoop Explorer should be preferred because the player projection value layer is also calibrated to Hoop Explorer RAPM-style player impact. That creates a cleaner bridge:
+
+```text
+player adjusted RAPM-style impact
+    -> minute-weighted roster impact
+    -> Hoop Explorer adjusted team offense/defense/net
+```
+
+BartTorvik remains valuable because it provides a broad adjusted efficiency ecosystem, existing PortalPoint schema compatibility, and a public comparison point coaches already recognize.
 
 Training rows:
 
@@ -338,7 +392,16 @@ ROTATION_SLOTS = [...]
 
 ### Cell 1 - Load Player Projections
 
-Load projected PPV, OBPV, DBPV, box stats, minutes, usage, and uncertainty.
+Load projected offensive impact per 100, defensive impact per 100, total impact per 100, box rates, usage, and uncertainty.
+
+Load Playing Time / Rotation outputs:
+
+```text
+expected_minutes
+usage_role
+displaced_minutes
+minutes_uncertainty
+```
 
 ### Cell 2 - Build Historical Roster States
 
@@ -357,9 +420,9 @@ Assign players to slots and minutes. Validate that team minutes sum to 200 and p
 Train offense and defense models separately:
 
 ```text
-roster_features -> adj_o
-roster_features -> adj_d
-adj_em = adj_o - adj_d
+roster_features -> off_adj_ppp or adj_o
+roster_features -> def_adj_ppp or adj_d
+net = offense - defense
 ```
 
 ### Cell 6 - Validate
@@ -440,12 +503,19 @@ roster_state_hash
 
 | Metric | Use |
 |---|---|
-| AdjEM RMSE | Main accuracy metric |
-| AdjO/AdjD RMSE | Diagnose offense vs defense |
+| Net rating RMSE | Main accuracy metric |
+| Offense/defense RMSE | Diagnose source of error |
 | Rank correlation | Whether ordering teams is useful |
 | Calibration | Whether 80% intervals contain outcomes |
 | Top-50/top-100 classification | Product relevance for coaches |
 | Transfer-heavy team error | Validate portal-era roster churn |
+
+Evaluate against the primary target source and the compatibility source when both are available:
+
+```text
+Hoop Explorer adj_net / off_adj_ppp / def_adj_ppp
+BartTorvik AdjEM / AdjO / AdjD
+```
 
 ### Counterfactual validation
 
@@ -494,9 +564,10 @@ Coaches should be able to tell whether a player helps because he is simply bette
 ### MVP
 
 - Baseline roster from returning players plus average slot replacements.
-- Expected minutes from deterministic role fit heuristic.
+- Expected minutes from deterministic Playing Time / Rotation heuristic.
 - Roster features from existing player season stats and player projections.
-- Interpretable ridge/elastic-net model for AdjO and AdjD.
+- Interpretable ridge/elastic-net model for offense and defense.
+- Hoop Explorer adjusted team ratings as preferred labels when historical coverage is available; BartTorvik adjusted ratings as fallback.
 - One Add scenario per player-school pair.
 - Upsert to existing `team_rating_projections` table.
 
@@ -513,12 +584,13 @@ Coaches should be able to tell whether a player helps because he is simply bette
 
 ## 16. Open Questions
 
-1. How detailed should the rotation slot taxonomy be for MVP: 8 slots, 10 slots, or position-only?
+1. How detailed should the internal roster representation be for MVP: position bands only, coarse role groups, or named rotation slots?
 2. Should baseline replacements be conference-tier averages, team-quality averages, or team-system-specific averages?
-3. Should candidate minutes be chosen by a rule-based optimizer first, or should Role Fit produce the minutes distribution?
+3. Should candidate minutes be chosen by a rule-based optimizer first, or should the Playing Time / Rotation model produce the full minutes distribution?
 4. How should we handle teams with massive roster churn where returning-player data is sparse?
-5. Should the first team target be `AdjEM` only, or should we model `AdjO` and `AdjD` separately from day one?
+5. After broader ingest, is Hoop Explorer historical coverage strong enough to be the only primary team target, or should BartTorvik remain a co-primary target?
 6. Do we want the team projection UI to expose a "typical replacement" player concept explicitly?
+7. How much interaction modeling should MVP include beyond minute-weighted impact and simple spacing/defense/rebounding adjustments?
 
 ---
 
@@ -530,5 +602,7 @@ Coaches should be able to tell whether a player helps because he is simply bette
   https://blog.evanmiya.com/p/bayesian-performance-rating
 - EvanMiya Player Skill Projections motivate using projected player skills and roster strengths/weaknesses for transfer portal search and roster evaluation.  
   https://blog.evanmiya.com/p/new-tool-player-skill-projections
+- Hoop Explorer team exports provide adjusted team offense, defense, net rating, tempo, style, and four-factor fields. These should be the preferred team projection labels if broader historical coverage can be ingested.  
+  `data/hoop_explorer/all_team_explorer_stats_power_6.csv`
 - BartTorvik provides the adjusted efficiency ecosystem already used by PortalPoint ingest: team adjusted efficiency margin, offensive/defensive ratings, tempo, four factors, and player box-score inputs.  
   https://barttorvik.com/
