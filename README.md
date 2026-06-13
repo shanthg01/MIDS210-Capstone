@@ -19,7 +19,7 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Recommendation Engine (Model 7) | Blocked on remaining fit components |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
-See [`STATUS.md`](STATUS.md) for the full critical path and model tracker.
+See [`docs/STATUS.md`](docs/STATUS.md) for the full critical path and model tracker.
 
 ---
 
@@ -289,8 +289,10 @@ MIDS210-Capstone/
 ├── tests/                       # 111 pytest tests across 9 modules
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
-├── STATUS.md                    # Implementation tracker and critical path
-└── PORTALPOINT_DESIGN_PALETTE.md  # Design token reference (colors, typography, spacing)
+├── docs/                        # Project documentation, diagrams, and model plans
+│   ├── STATUS.md                # Implementation tracker and critical path
+│   └── PORTALPOINT_DESIGN_PALETTE.md  # Design token reference
+└── README.md                    # Repo overview and setup guide
 ```
 
 ---
@@ -299,10 +301,12 @@ MIDS210-Capstone/
 
 | File | Contents |
 |---|---|
-| `PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
-| `PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
-| `STATUS.md` | Current implementation state, critical path, open design questions |
-| `diagram_1_three_layer_architecture.md` | Fit scoring methodology detail |
-| `diagram_2_solution_architecture.md` | Full AWS infrastructure design |
-| `diagram_3_data_science_workflow.md` | End-to-end ML pipeline with code examples |
-| `diagram_4_database_architecture.md` | Database schema overview |
+| `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
+| `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
+| `docs/STATUS.md` | Current implementation state, critical path, open design questions |
+| `docs/player_projection_state_space_plan.md` | State-space player projection system plan |
+| `docs/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
+| `docs/diagram_1_three_layer_architecture.md` | Fit scoring methodology detail |
+| `docs/diagram_2_solution_architecture.md` | Full AWS infrastructure design |
+| `docs/diagram_3_data_science_workflow.md` | End-to-end ML pipeline with code examples |
+| `docs/diagram_4_database_architecture.md` | Database schema overview |
