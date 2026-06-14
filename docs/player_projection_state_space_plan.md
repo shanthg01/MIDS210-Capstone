@@ -425,7 +425,79 @@ Model overlapping box-score events separately:
 | Block rate | block rim protection, position, opponent rim rate |
 | Foul rate | foul discipline, defensive role, opponent rim pressure |
 
-### Stage 2C - RAPM-Style Value Translation
+### Stage 2C - Role / Usage Sensitivity Adapter
+
+The player projection should support role-conditional outputs, not just one fixed stat line.
+
+This is especially important for transfer evaluation. A high-usage mid-major guard may be more valuable at a high-major in a scaled-down role if his shooting, decision-making, and defensive traits translate better than his on-ball volume.
+
+Important MVP constraint: this should be treated as a conservative scenario adjustment layer, not a fully causal estimate of what usage does to player value.
+
+Usage is not randomly assigned. Players change usage because of talent, teammates, coaching, scheme, injuries, and roster quality. The first version should therefore estimate role-conditioned scenarios from historical role-change patterns and archetype-level priors, with wide uncertainty where evidence is thin.
+
+Recommended MVP framing:
+
+```text
+role / usage sensitivity = structured scenario adjustment
+not a standalone causal truth engine
+```
+
+The model should estimate:
+
+```text
+projected_rate_or_value
+= base_talent_projection
+  + usage_role_adjustment
+  + minutes_context_adjustment
+  + teammate_context_adjustment
+  + scenario_uncertainty
+```
+
+For MVP, prefer coarse usage roles over a precise continuous usage curve:
+
+Example scenario outputs:
+
+| Scenario | Question |
+|---|---|
+| `primary_creator` | What if this player carries first-option usage? |
+| `secondary_creator` | What if usage scales down but creation remains meaningful? |
+| `connector` | What if the player plays lower usage with more spacing/decision value? |
+| `specialist` | What if the player is mainly a shooter, defender, rebounder, or rim protector? |
+
+The adjustment should be constrained by the player's projected skill state. For example:
+
+- Good shooting, low turnovers, and useful defense may translate well into a scaled-down role.
+- A high-turnover creator may become more efficient with less on-ball burden, but with less creation value.
+- A player whose value depends mostly on high-volume self-created scoring may not scale down as cleanly.
+- Low-usage specialists should carry high uncertainty when forced into primary usage scenarios.
+
+This enables an interactive dashboard to keep the player's underlying talent fixed while changing role assumptions:
+
+```text
+same latent skill projection
+    + adjusted usage role
+    + adjusted minutes
+    -> updated box rates, efficiency, and impact
+```
+
+The UI should present these as scenarios:
+
+```text
+Base projection
+vs.
+If used as secondary creator
+vs.
+If used as connector / specialist
+```
+
+Avoid overclaiming precision. The right interpretation is:
+
+```text
+Players with this profile have historically translated better/worse in this role,
+so this scenario moves projected efficiency and value with added uncertainty.
+```
+
+### Stage 2D - RAPM-Style Value Translation
 
 Translate projected rates into generic player value trained against RAPM-style impact labels:
 
@@ -702,11 +774,15 @@ Generate next-season neutral skill forecasts and uncertainty intervals.
 
 Map latent skill states to possession outcomes and conditional contribution rates.
 
-### Cell 8 - Fit RAPM-Style Value Translation Layer
+### Cell 8 - Fit Role / Usage Sensitivity Layer
+
+Estimate how projected rates and value change across usage roles, especially for players scaling up or down after transferring.
+
+### Cell 9 - Fit RAPM-Style Value Translation Layer
 
 Translate projected rates into offensive, defensive, and total points-per-100 player value using Hoop Explorer adjusted RAPM labels where available.
 
-### Cell 9 - Destination Context Adapter
+### Cell 10 - Destination Context Adapter
 
 Join Playing Time / Rotation outputs when available:
 
@@ -721,15 +797,27 @@ displaced_minutes
 
 Produce destination-adjusted projections for player-school pairs.
 
-### Cell 10 - Validation
+### Cell 11 - Scenario Outputs
+
+Generate player-level scenario outputs for dashboard sliders:
+
+```text
+usage_role_override
+minutes_override
+projected_box_rates
+projected_value_per_100
+projected_per_game_stats
+```
+
+### Cell 12 - Validation
 
 Run temporal CV and cohort diagnostics.
 
-### Cell 11 - Explanation Payloads
+### Cell 13 - Explanation Payloads
 
 Build projection decomposition JSON and comparable-player outputs.
 
-### Cell 12 - DB Write
+### Cell 14 - DB Write
 
 Write MVP-compatible rows to `predictions`; future migration writes to `player_projections`.
 

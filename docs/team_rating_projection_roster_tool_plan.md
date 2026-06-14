@@ -117,6 +117,15 @@ This produces a real confidence interval around team impact.
 
 MVP fallback: consume only player projection means and approximate uncertainty from player confidence scores.
 
+The same architecture should power interactive roster scenarios. A coach can keep a player's talent projection fixed, then adjust minutes, usage role, or displaced minutes to see the domino effect on team ratings:
+
+```text
+player talent projection
+    + scenario minutes / usage role / displacement
+    -> updated roster state
+    -> updated offense, defense, and net rating
+```
+
 ---
 
 ## 4. Roster State Representation
@@ -312,7 +321,7 @@ delta_adjEM
     {"slot": "G3", "minutes": -10.0},
     {"slot": "FLEX", "minutes": -6.0}
   ],
-  "candidate_role": "G2",
+  "candidate_usage_role": "secondary_creator",
   "candidate_minutes": 24.0
 }
 ```
@@ -374,8 +383,20 @@ The model should support multiple use cases:
 | Remove | What if this current player leaves? | Roster loss estimate |
 | Build roster | How strong is this complete custom roster? | Projected AdjEM/rank |
 | Compare candidates | Which player improves us most? | Delta table with explanation |
+| Role tuning | What if this player is a 1st, 2nd, 3rd option, connector, or specialist? | Team rating under each usage-role assumption |
+| Slider scenario | What if a coach manually changes minutes, usage, or displaced players? | Live dashboard counterfactual |
 
 MVP API can start with Add mode only.
+
+The interactive dashboard should distinguish the model recommendation from coach-adjusted assumptions:
+
+```text
+base projection
+vs.
+scenario projection
+```
+
+This is useful for cases like a high-usage mid-major guard transferring up. The model can show whether the player is more valuable as a scaled-down secondary creator than as a high-usage primary option, and how that choice affects teammates' usage and the overall team rating.
 
 ---
 
@@ -445,15 +466,28 @@ candidate roster
 delta = candidate - baseline
 ```
 
-### Cell 8 - Uncertainty Simulation
+### Cell 8 - Interactive Scenario Adapter
+
+Apply optional dashboard overrides:
+
+```text
+minutes_override
+usage_role_override
+usage_rate_override
+displaced_player_or_group_override
+```
+
+Recompute roster features and team ratings for each scenario.
+
+### Cell 9 - Uncertainty Simulation
 
 Use posterior samples from player projections where available. Otherwise bootstrap player projection intervals and team model residuals.
 
-### Cell 9 - Explanation Payloads
+### Cell 10 - Explanation Payloads
 
 Build decomposition and coach-facing context.
 
-### Cell 10 - DB Write
+### Cell 11 - DB Write
 
 Upsert to `team_rating_projections`.
 
@@ -489,7 +523,8 @@ baseline_adj_o
 baseline_adj_d
 projected_adj_o
 projected_adj_d
-candidate_role
+candidate_usage_role
+scenario_overrides jsonb
 explanation jsonb
 minutes_distribution jsonb
 roster_state_hash
@@ -547,8 +582,9 @@ The API should eventually expose:
 |---|---|
 | `baseline_roster_rating` | Team projection before the candidate |
 | `candidate_roster_rating` | Team projection after the candidate |
-| `candidate_role` | Projected slot and minutes |
+| `candidate_usage_role` | Projected or coach-adjusted usage role |
 | `displaced_minutes` | Which slots lose minutes |
+| `scenario_overrides` | Manual changes to minutes, usage, or displacement assumptions |
 | `offensive_delta` | AdjO change |
 | `defensive_delta` | AdjD change |
 | `style_delta` | Pace/shot profile change |
@@ -569,6 +605,7 @@ Coaches should be able to tell whether a player helps because he is simply bette
 - Interpretable ridge/elastic-net model for offense and defense.
 - Hoop Explorer adjusted team ratings as preferred labels when historical coverage is available; BartTorvik adjusted ratings as fallback.
 - One Add scenario per player-school pair.
+- Simple role-tuning scenario for minutes and usage role overrides.
 - Upsert to existing `team_rating_projections` table.
 
 ### Full version
@@ -579,6 +616,7 @@ Coaches should be able to tell whether a player helps because he is simply bette
 - Models lineup/interaction effects with stronger play-by-play data.
 - Stores explanation JSON and roster state hashes.
 - Powers a UI roster builder, not just a single projection card.
+- Supports live sliders for usage role, minutes, and displaced-player assumptions.
 
 ---
 
@@ -591,6 +629,7 @@ Coaches should be able to tell whether a player helps because he is simply bette
 5. After broader ingest, is Hoop Explorer historical coverage strong enough to be the only primary team target, or should BartTorvik remain a co-primary target?
 6. Do we want the team projection UI to expose a "typical replacement" player concept explicitly?
 7. How much interaction modeling should MVP include beyond minute-weighted impact and simple spacing/defense/rebounding adjustments?
+8. Which dashboard controls should be available first: minutes, usage role, usage rate, displaced player/group, or replacement baseline?
 
 ---
 

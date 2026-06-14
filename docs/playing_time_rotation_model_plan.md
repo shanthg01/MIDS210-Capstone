@@ -68,6 +68,15 @@ Team Rating Projection
 
 The Player Projection model owns talent. The Playing Time / Rotation model owns opportunity. The Team Rating Projection model combines talent and opportunity into roster impact.
 
+The same stack should support interactive scenario analysis. A dashboard can let a coach adjust minutes, usage role, or displaced minutes without refitting the talent model:
+
+```text
+Precomputed player talent projection
+    -> coach adjusts minutes / usage role / displacement assumptions
+    -> scenario-specific opportunity output
+    -> updated player projection and team projection
+```
+
 ---
 
 ## 3. Core Outputs
@@ -321,6 +330,16 @@ usage_role = g(
 )
 ```
 
+Usage role should also be coach-adjustable in scenario mode. This directly supports questions like:
+
+```text
+How effective is this player as a first option?
+How effective is he if scaled down to a second or third option?
+Does the rest of the roster improve if his usage drops and teammates keep more creation?
+```
+
+For MVP, the model can provide a recommended usage role while the UI allows an override. The override should be stored as scenario metadata rather than replacing the model's base projection.
+
 ### Stage E - Uncertainty
 
 Return a minutes distribution, not just a point estimate.
@@ -336,7 +355,51 @@ Key uncertainty sources:
 
 ---
 
-## 8. Model Family
+## 8. Interactive Scenario Mode
+
+The model should support a dashboard where coaches can test role assumptions with sliders or controls.
+
+### Adjustable inputs
+
+```text
+minutes_override
+usage_role_override
+usage_rate_override
+displaced_player_or_group_override
+replacement_baseline_override
+```
+
+### Scenario output
+
+```text
+base_expected_minutes
+scenario_expected_minutes
+base_usage_role
+scenario_usage_role
+base_displaced_minutes
+scenario_displaced_minutes
+scenario_confidence
+```
+
+This turns the model from a single answer into a roster planning tool. The base model gives the recommended projection, and the scenario layer answers "what if we use him differently?"
+
+Important implementation rule:
+
+```text
+Base projection != scenario override
+```
+
+The base projection should remain model-driven. Scenario overrides should be stored separately so the dashboard can compare:
+
+```text
+model recommendation
+vs.
+coach-adjusted assumption
+```
+
+---
+
+## 9. Model Family
 
 Recommended first implementation:
 
@@ -370,7 +433,7 @@ candidate: 24 mpg
 
 ---
 
-## 9. Role Fit Score
+## 10. Role Fit Score
 
 Role Fit should be a derived product score.
 
@@ -399,7 +462,7 @@ The API can continue storing this in `player_team_fit_scores.role_fit`, while ri
 
 ---
 
-## 10. Data Contracts
+## 11. Data Contracts
 
 ### Current compatibility
 
@@ -442,6 +505,7 @@ usage_role_confidence
 displaced_minutes jsonb
 opportunity_drivers jsonb
 data_quality_flags jsonb
+scenario_overrides jsonb nullable
 role_fit
 model_version
 computed_at
@@ -450,7 +514,7 @@ expires_at
 
 ---
 
-## 11. Notebook Structure
+## 12. Notebook Structure
 
 ### Cell 0 - Setup
 
@@ -499,17 +563,21 @@ Apply roster constraints and produce displaced-minute estimates.
 
 Convert opportunity outputs into the 0-100 `role_fit` component.
 
-### Cell 9 - Validation
+### Cell 9 - Build Scenario Adapter
+
+Apply optional coach/dashboard overrides for minutes, usage role, usage rate, and displaced-minute assumptions.
+
+### Cell 10 - Validation
 
 Temporal validation and cohort diagnostics.
 
-### Cell 10 - DB Write
+### Cell 11 - DB Write
 
 Write `role_fit` to `player_team_fit_scores`; future migration writes full opportunity projections.
 
 ---
 
-## 12. Validation Strategy
+## 13. Validation Strategy
 
 ### Metrics
 
@@ -534,7 +602,7 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 
 ---
 
-## 13. Open Questions
+## 14. Open Questions
 
 1. What is the best live roster source and refresh cadence during portal season?
 2. Can we reliably distinguish returning, departing, transfer-in, transfer-out, and unknown roster statuses?
@@ -542,10 +610,11 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 4. Do we need starter probability in the product, or is expected minutes plus usage role enough?
 5. How should coach-entered roster overrides affect projections and cache invalidation?
 6. How much should a player's stated preference for role/minutes influence the score versus the basketball projection?
+7. Which scenario controls should be MVP: minutes, usage role, usage rate, displaced player/group, or all of them?
 
 ---
 
-## 14. MVP vs Full Version
+## 15. MVP vs Full Version
 
 ### MVP
 
@@ -554,6 +623,7 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 - Calibrated uncertainty interval.
 - Coarse usage role.
 - Simple displaced-minute allocation.
+- Scenario override layer for minutes and usage role.
 - Derived `role_fit` score written to `player_team_fit_scores`.
 - Consumed by Player Projection destination adapter and Team Rating Projection.
 
