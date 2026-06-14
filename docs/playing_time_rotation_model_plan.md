@@ -165,6 +165,36 @@ roster_snapshot_id
 computed_at
 ```
 
+### Portal transfer source
+
+BartTorvik's transfer portal pages should be treated as useful current and historical transfer sources. The page exposes transfer rows equivalent to:
+
+```text
+player_name
+transfer_source_school
+transfer_destination_school nullable
+status_flag
+```
+
+Use this feed to identify:
+
+- Current portal candidates.
+- Source schools losing players.
+- Committed destinations where available.
+- Uncommitted players where destination is null.
+- Historical transfer source/destination pairs for past seasons.
+
+Because this source is name/school based, the ingest should resolve rows to PortalPoint IDs with a confidence score:
+
+```text
+player_name + transfer_source_school + transfer_season
+    -> player_id / barttorvik_id
+```
+
+High-confidence matches can update roster snapshots automatically. Ambiguous matches should be flagged for review or excluded from model training.
+
+For historical modeling, BartTorvik transfer rows should be the primary transfer-event source. Inferred player-team-season changes should still be built as a backfill and validation layer, especially for rows with missing destinations, non-D1 moves, or ambiguous player names.
+
 ### Roster state features
 
 For each school-season snapshot, build:

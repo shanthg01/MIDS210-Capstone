@@ -370,6 +370,15 @@ actual end-of-season adjusted team ratings
 
 Important: avoid leakage. For each historical season, build the roster projection using only prior seasons, known transfers, and preseason roster assumptions.
 
+Historical transfer events should use BartTorvik historical transfer portal pages as the primary source where available. For training and validation, also infer transfer events from player-team-season histories where stable IDs are available:
+
+```text
+player primary team in season Y
+!= player primary team in season Y+1
+```
+
+Use BartTorvik transfer portal rows for current portal candidates, committed destinations, and historical source/destination pairs. Use inferred player-team histories as a backfill and validation layer. Where Hoop Explorer `transfer_src` / `transfer_dest` exists, use it as an enrichment and cross-check.
+
 ---
 
 ## 10. Scenario Modes

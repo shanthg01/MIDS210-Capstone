@@ -104,4 +104,4 @@ src/
 
 ## Stub Data Note
 
-Most API endpoints currently return deterministic stub data (seeded by `player_id` and `school_id`). The fit score and recommendation values displayed in the UI are realistic-looking but not based on real ML inference. See [`STATUS.md`](../docs/STATUS.md) for which endpoints are wired to real DB data.
+Most API endpoints currently return deterministic stub data (seeded by `player_id` and `school_id`). The fit score and recommendation values displayed in the UI are realistic-looking but not based on real ML inference.

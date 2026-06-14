@@ -150,7 +150,8 @@ The implementation should have a dedicated data-preparation layer, similar in sp
 | Team strength | Exists in `team_season_stats` | Opponent and destination context |
 | Team system labels | Exists in `team_system_profiles` | Scheme/style context |
 | Player archetypes | Exists in `player_archetypes` | Prior grouping and explanations |
-| Transfers | Exists in `transfers` | Transfer-specific effects and validation |
+| Current portal / committed transfers | BartTorvik transfer portal page; not yet ingested | Live portal candidates, source school, committed destination |
+| Historical transfer events | BartTorvik historical transfer portal pages; infer from player-team-season changes as backfill/cross-check | Transfer-specific effects and validation |
 | Hoop Explorer player impact | Current repo has sample CSV; expand coverage | Primary RAPM-style value labels |
 
 Current repo reality: PortalPoint has mostly season-level barttorvik data today. The full game-level state-space model requires new player-game ingest before implementation. Season-level data should not be the target modeling grain; it should only support priors, bootstrapping, and temporary fallback checks.
@@ -192,6 +193,75 @@ Recommended value-label hierarchy:
 | 4 | BartTorvik/hoopR box-value proxy | Fallback when impact labels are unavailable |
 
 BartTorvik remains essential for features and priors: usage, efficiency, shot profile, BPM-like statistics, team strength, schedule context, and transfer history. It should not be treated as the primary RAPM label source unless a separate verified feed exposes that metric.
+
+### Transfer data strategy
+
+Transfer data should come from three complementary paths:
+
+```text
+Current portal / commitment status
+    -> BartTorvik transfer portal page
+    -> player name, source school, destination school nullable
+
+Historical transfer training data, primary path
+    -> BartTorvik transfer portal pages by season
+    -> player name, source school, destination school, status flag
+
+Historical transfer training data, backfill/cross-check
+    -> infer from player-team-season histories
+    -> player appears for School A in season Y and School B in season Y+1
+```
+
+The BartTorvik transfer portal page embeds a transfer array with fields equivalent to:
+
+```text
+player_name
+transfer_source_school
+transfer_destination_school nullable
+status_flag
+```
+
+This is useful for live portal candidates and current roster updates. It should not be the only historical source because name-only rows still need ID resolution.
+
+Historical year pages appear available and should be ingested across seasons where coverage is strong. In a local probe, the transfer array changed by year and returned season-specific rows for 2020-2026. Example coverage checks:
+
+| Season | Rows | Destination populated |
+|---|---:|---:|
+| 2026 | 3,820 | 1,878 |
+| 2025 | 2,419 | 1,769 |
+| 2024 | 2,924 | 1,970 |
+| 2023 | 1,815 | 1,388 |
+| 2022 | 1,718 | 1,718 |
+| 2021 | 1,563 | 1,563 |
+| 2020 | 906 | 906 |
+
+For model training, create an inferred `player_team_seasons` view:
+
+```text
+player_id
+season
+school_id
+games_played
+minutes
+primary_team_flag
+first_game_date
+last_game_date
+```
+
+Then infer transfer events when a stable player ID changes primary team across seasons:
+
+```text
+source_school_id
+destination_school_id
+source_season
+destination_season
+pre_transfer_minutes
+post_transfer_minutes
+confidence
+evidence_type
+```
+
+Confidence should be based on ID quality, source-school match, name ambiguity, roster presence, and pre/post playing time. BartTorvik transfer rows, Hoop Explorer `transfer_src` / `transfer_dest`, and inferred player-team histories should cross-check each other where possible.
 
 ### Explicit tensor and table shapes
 

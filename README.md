@@ -19,8 +19,6 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Recommendation Engine (Model 7) | Blocked on remaining fit components |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
-See [`docs/STATUS.md`](docs/STATUS.md) for the full critical path and model tracker.
-
 ---
 
 ## Prerequisites
@@ -290,7 +288,6 @@ MIDS210-Capstone/
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
 ├── docs/                        # Project documentation, diagrams, and model plans
-│   ├── STATUS.md                # Implementation tracker and critical path
 │   └── PORTALPOINT_DESIGN_PALETTE.md  # Design token reference
 └── README.md                    # Repo overview and setup guide
 ```
@@ -303,7 +300,6 @@ MIDS210-Capstone/
 |---|---|
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
-| `docs/STATUS.md` | Current implementation state, critical path, open design questions |
 | `docs/player_projection_state_space_plan.md` | State-space player projection system plan |
 | `docs/playing_time_rotation_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
 | `docs/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
