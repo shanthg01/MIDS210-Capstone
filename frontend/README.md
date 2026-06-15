@@ -42,7 +42,7 @@ npx tsc --noEmit   # TypeScript type check (no emit)
 
 ## Design System
 
-Colors, typography, and spacing follow [`PORTALPOINT_DESIGN_PALETTE.md`](../PORTALPOINT_DESIGN_PALETTE.md) at the repo root.
+Colors, typography, and spacing follow [`PORTALPOINT_DESIGN_PALETTE.md`](../docs/PORTALPOINT_DESIGN_PALETTE.md).
 
 Key tokens:
 - Background: `#0D1B2A` (deep navy)
@@ -104,4 +104,4 @@ src/
 
 ## Stub Data Note
 
-Most API endpoints currently return deterministic stub data (seeded by `player_id` and `school_id`). The fit score and recommendation values displayed in the UI are realistic-looking but not based on real ML inference. See `STATUS.md` for which endpoints are wired to real DB data.
+Most API endpoints currently return deterministic stub data (seeded by `player_id` and `school_id`). The fit score and recommendation values displayed in the UI are realistic-looking but not based on real ML inference.

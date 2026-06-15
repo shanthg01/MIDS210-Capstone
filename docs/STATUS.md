@@ -10,6 +10,8 @@
 
 **Deployment stance:** Local-first — Docker Compose for Postgres + Redis; **no EC2/ECS images until beta.** AWS used for S3 (and credits) only for now.
 
+**S3 onboarding:** [`docs/aws_s3_setup.md`](aws_s3_setup.md) — classmates copy `.env.example` → `.env`, get IAM keys from Justin, run `aws s3 ls s3://portalpoint-data/`.
+
 | Owner | Scope |
 |---|---|
 | **Justin** | **M1** (player clustering — dataset feature review, archetype labels, MLflow re-log); **M3** (scheme fit — joint dataset review with Shanth); **AWS S3** bucket layout (bronze raw + model artifacts); **Supabase** project (team-shared Postgres and/or storage — see below) |
@@ -21,21 +23,26 @@
 |---|---|---|
 | App DB (dev) | Docker Postgres `:5433` | Supabase Postgres — optional shared dev/staging URL for team |
 | Cache | Docker Redis | Defer |
-| Raw data + models | `data/`, `.torvik_cache/` | S3 `s3://<bucket>/raw/`, `s3://<bucket>/models/` |
-| MLflow artifacts | `mlruns/` (gitignored) | S3 via Shanth's tracking config |
+| Raw data + models | `data/`, `.torvik_cache/` | S3 `s3://portalpoint-data/raw/`, `s3://portalpoint-data/models/` |
+| MLflow artifacts | `mlruns/` (gitignored) | S3 `s3://portalpoint-data/mlflow/` (when wired) |
 | API | `uvicorn` locally | Defer (no EC2) |
 
 **Supabase note:** PortalPoint already uses FastAPI + SQLAlchemy + Alembic. Use Supabase as **hosted Postgres** (paste connection string into `.env`) unless the team explicitly wants Supabase Auth/Storage later. S3 remains primary for parquet/model blobs; Supabase Storage is optional duplicate.
 
-### S3 bucket layout (proposed)
+### S3 bucket (`portalpoint-data`)
+
+**Status:** Live in `us-east-1`. Block public access; default SSE-S3 encryption.
+
+**Access:** IAM group `PortalPoint-Dev` in bucket owner account — one programmatic user per teammate. AWS Organization links member accounts for credit sharing; S3 keys are issued by Justin (not cross-account). See [`aws_s3_setup.md`](aws_s3_setup.md).
 
 ```
-s3://portalpoint-data/          # or team-chosen bucket name
+s3://portalpoint-data/
   raw/barttorvik/YYYY-MM-DD/
   raw/hoop_explorer/YYYY-MM-DD/
   models/player_clustering/
+  models/team_clustering/
   models/transfer_success/
-  mlflow/                       # if Shanth points tracking URI here
+  mlflow/                       # MLflow artifacts (tracking stays sqlite:///mlruns.db)
 ```
 
 ### Handoff: MLflow + M1–M3 re-log
@@ -143,7 +150,7 @@ The original design positioned players as the primary user (players discovering 
 | Redis 7 (Docker) | ✅ Running | Port 6379 |
 | Alembic migrations (3) | ✅ Applied | `064d7a23e792` initial schema → `b683e0eae93e` barttorvik_id → `4f15ed03ddbf` program pivot |
 | MLflow | 🔄 In progress | **Shanth** — S3-backed tracking; no dedicated server (local UI optional) |
-| AWS S3 | 🔄 In progress | **Justin** — bronze + model artifacts |
+| AWS S3 | ✅ Live | **Justin** — `portalpoint-data`; team onboarding in `aws_s3_setup.md` |
 | Supabase | 🔄 In progress | **Justin** — shared Postgres (optional replace local Docker for team) |
 | EC2 / ECS | ⏸️ Deferred | Local API + Docker only until beta |
 | Airflow DAGs | ❌ Not started | GitHub Actions cron first; Airflow Week 9–10 if needed |
@@ -166,7 +173,7 @@ The original design positioned players as the primary user (players discovering 
 | 2 | Team System Clustering (K-Means, K=9) | ✅ Complete — **owner: Shanth** (dataset eval in progress) | `team_kmeans.pkl`, `team_scaler.pkl`, `team_system_labels.pkl` | `team_system_profiles` |
 | 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete — **owners: Justin + Shanth** (joint dataset eval in progress) | — (no training, deterministic; `scheme-cos-v1`) | `player_team_fit_scores` (scheme_fit col) |
 | — | Gap Matching (cosine similarity) | ❌ Not started | — | `player_team_fit_scores` (gap_match col) |
-| 4 | Playing Time / Role Fit Predictor (PyMC3) | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
+| 4 | Playing Time / Rotation Model → Role Fit Score | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
 | — | Program Fit Calculator (MAUT) | ❌ Not started | — | `player_team_fit_scores` (program_fit col) |
 | 5 | Transfer Success Predictor (XGBoost) | ❌ Not started | — | `predictions` |
 | 6 | Team Rating Projection (XGBoost) | ❌ Not started | Depends on Model 4 | `team_rating_projections` |
@@ -206,7 +213,7 @@ Gap Matching notebook          ← next immediate step
         ↓
 wire fit_scores.py (partial)   ← scheme_fit + gap_match real, role/program stubbed
         ↓
-Model 4: Role Fit (PyMC3)      ← playing time → role_fit score
+Model 4: Playing Time / Rotation model      ← opportunity outputs → role_fit score
         ↓
 Program Fit calculator         ← MAUT on user_preferences.importance_weights
         ↓
