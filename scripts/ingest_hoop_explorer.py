@@ -498,6 +498,22 @@ async def ingest_player_stats(
     return await _upsert(session, HoopExplorerPlayerStats, ["he_player_code", "season"], records)
 
 
+def _try_s3_upload(local_path: Path, s3_key: str) -> None:
+    """Upload a single file to S3; log warning and continue on any failure."""
+    try:
+        _script_dir = Path(__file__).resolve().parent
+        _repo_root = next(
+            p for p in [_script_dir, *_script_dir.parents]
+            if (p / "pyproject.toml").exists()
+        )
+        import sys as _sys
+        _sys.path.insert(0, str(_repo_root / "notebooks" / "utils"))
+        from s3_helpers import upload
+        upload(local_path, s3_key)
+    except Exception as _exc:
+        log.warning("S3 upload skipped for %s: %s", Path(local_path).name, _exc)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -577,6 +593,14 @@ async def run(args: argparse.Namespace) -> None:
 
         n_players = await ingest_player_stats(session, player_rows, school_map, player_map, season)
         log.info("hoop_explorer_player_stats upserted: %d", n_players)
+
+    # Upload CSV exports to S3
+    _date = datetime.now().strftime("%Y-%m-%d")
+    for _path, _name in [
+        (player_csv_path, "player_stats"),
+        (team_csv_path,   "team_stats"),
+    ]:
+        _try_s3_upload(_path, f"raw/hoop_explorer/{_date}/{season}_{_name}.csv")
 
     log.info("done — season=%d", season)
 

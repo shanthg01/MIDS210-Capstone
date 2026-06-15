@@ -1,0 +1,92 @@
+flowchart TD
+    subgraph SRC["Data Sources"]
+        BART[barttorvik.com]
+        HE[Hoop Explorer CSVs]
+    end
+
+    subgraph INGEST["Ingest Scripts"]
+        IB[ingest_barttorvik.py]
+        IH[ingest_hoop_explorer.py]
+    end
+
+    subgraph PG["PostgreSQL"]
+        subgraph RAW["Raw / Staging Tables"]
+            SCH[(schools)]
+            PLY[(players)]
+            PSS[(player_season_stats)]
+            TSS[(team_season_stats)]
+            HETS[(hoop_explorer_team_stats)]
+            HEPS[(hoop_explorer_player_stats)]
+        end
+        subgraph ML_OUT["ML Output Tables"]
+            PA[(player_archetypes)]
+            TSP[(team_system_profiles)]
+            PTFS[(player_team_fit_scores)]
+        end
+    end
+
+    subgraph FE["Feature Engineering"]
+        FEN[feature_eng_m1_m2_m3.ipynb]
+        PFP[player_features.parquet]
+        TSV[team_style_vectors.parquet]
+    end
+
+    subgraph MODELS["Models — Phase 2"]
+        M1["Model 1: Player Clustering\nK-Means k=9, 7-dim"]
+        M2["Model 2: Team Clustering\nK-Means k=9, 10-dim BART+HE"]
+        M3["Model 3: Scheme Fit Scorer\nCosine similarity, 5-dim"]
+        M4["Model 4: Playing Time Predictor\n⏳ not yet built"]
+        M5["Model 5: Transfer Success\n⏳ not yet built"]
+        M6["Model 6: Team Rating Projection\n⏳ not yet built"]
+        M7["Model 7: Recommendation Engine\n⏳ not yet built"]
+    end
+
+    subgraph S3["S3: s3://portalpoint-data"]
+        S3B[raw/barttorvik/YYYY-MM-DD/]
+        S3H[raw/hoop_explorer/YYYY-MM-DD/]
+        S3F[raw/features/]
+        S3M1[models/player_clustering/]
+        S3M2[models/team_clustering/]
+        S3MLF[mlflow/  ← artifacts]
+    end
+
+    MLDB[(mlruns.db\nSQLite — run metadata)]
+
+    BART --> IB
+    HE --> IH
+
+    IB -->|upsert| SCH & PLY & PSS & TSS
+    IB -->|cache files| S3B
+    IH -->|upsert| HETS & HEPS
+    IH -->|CSVs| S3H
+
+    PSS & TSS & HETS --> FEN
+    FEN --> PFP & TSV
+    FEN -->|parquet| S3F
+
+    PFP --> M1
+    TSV --> M2
+    PSS & HETS & PA & TSP --> M3
+
+    M1 -->|upsert| PA
+    M1 -->|pkl files| S3M1
+    M1 -->|metrics/params| MLDB
+    M1 -->|model artifact| S3MLF
+
+    M2 -->|upsert| TSP
+    M2 -->|pkl files| S3M2
+    M2 -->|metrics/params| MLDB
+    M2 -->|model artifact| S3MLF
+
+    M3 -->|upsert| PTFS
+    M3 -->|metrics/params| MLDB
+    M3 -->|pyfunc artifact| S3MLF
+
+    PA & TSP --> M4 & M7
+    PSS & PTFS --> M5
+    M4 -->|MPG posterior| M6
+
+    style M4 fill:#f5f5f5,stroke:#ccc,color:#999
+    style M5 fill:#f5f5f5,stroke:#ccc,color:#999
+    style M6 fill:#f5f5f5,stroke:#ccc,color:#999
+    style M7 fill:#f5f5f5,stroke:#ccc,color:#999

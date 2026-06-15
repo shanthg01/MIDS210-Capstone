@@ -27,6 +27,7 @@ import sys
 import time
 from io import StringIO
 from pathlib import Path
+from datetime import datetime
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -213,6 +214,22 @@ def read_json_endpoint(
 ) -> list[dict]:
     text = fetch_text(path, params=params, use_cache=use_cache)
     return json.loads(text)
+
+
+def _try_s3_upload(local_path: Path, s3_key: str) -> None:
+    """Upload a single file to S3; log warning and continue on any failure."""
+    try:
+        _script_dir = Path(__file__).resolve().parent
+        _repo_root = next(
+            p for p in [_script_dir, *_script_dir.parents]
+            if (p / "pyproject.toml").exists()
+        )
+        import sys as _sys
+        _sys.path.insert(0, str(_repo_root / "notebooks" / "utils"))
+        from s3_helpers import upload
+        upload(local_path, s3_key)
+    except Exception as _exc:
+        log.warning("S3 upload skipped for %s: %s", local_path.name, _exc)
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +633,26 @@ async def run(seasons: list[int], use_cache: bool = True) -> None:
             await ingest_team_season_stats(session, team_rows, ff_rows, season, school_map)
             player_map = await ingest_players(session, player_rows)
             await ingest_player_season_stats(session, player_rows, season, school_map, player_map)
+
+            # Upload raw data files to S3
+            _date = datetime.now().strftime("%Y-%m-%d")
+            _s3_uploads = [
+                (
+                    _cache_path(BASE_URL + f"{season}_team_results.csv", None),
+                    f"raw/barttorvik/{_date}/{season}_team_results.csv",
+                ),
+                (
+                    _cache_path(BASE_URL + f"{season}_fffinal.csv", None),
+                    f"raw/barttorvik/{_date}/{season}_fffinal.csv",
+                ),
+                (
+                    _cache_path(BASE_URL + "getadvstats.php", {"year": season, "csv": 1}),
+                    f"raw/barttorvik/{_date}/{season}_player_stats.csv",
+                ),
+            ]
+            for _local, _key in _s3_uploads:
+                if _local.exists():
+                    _try_s3_upload(_local, _key)
 
     log.info("ingest complete")
 
