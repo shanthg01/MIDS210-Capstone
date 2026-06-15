@@ -1,4 +1,4 @@
-# DIAGRAM 2: Complete Solution Architecture
+﻿# DIAGRAM 2: Complete Solution Architecture
 ## Full System Architecture with Infrastructure
 
 ```
@@ -296,51 +296,28 @@
 │  Buckets:                                                                 │
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  portalpoint-raw-data/                                        │        │
-│  │  • Raw scraped data (JSON, CSV)                             │        │
-│  │  • Lifecycle: Transition to Glacier after 90 days           │        │
-│  │  • Versioning enabled                                        │        │
-│  └─────────────────────────────────────────────────────────────┘        │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  portalpoint-processed-data/                                  │        │
-│  │  • Cleaned, validated data                                   │        │
-│  │  • Parquet format (columnar, compressed)                     │        │
-│  │  • Partitioned by season and data type                       │        │
-│  └─────────────────────────────────────────────────────────────┘        │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  portalpoint-ml-artifacts/                                    │        │
-│  │  • Trained model files (.pkl, .joblib, .h5)                 │        │
-│  │  • Training datasets                                         │        │
-│  │  • Model evaluation reports                                  │        │
-│  │  • Versioned by training run ID                             │        │
-│  └─────────────────────────────────────────────────────────────┘        │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  portalpoint-static-assets/                                   │        │
-│  │  • Frontend build artifacts (React bundles)                  │        │
-│  │  • Images, logos, fonts                                      │        │
-│  │  • Served via CloudFront CDN                                │        │
-│  └─────────────────────────────────────────────────────────────┘        │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────┐        │
-│  │  portalpoint-backups/                                         │        │
-│  │  • Database snapshots                                        │        │
-│  │  • Configuration backups                                     │        │
-│  │  • Lifecycle: Glacier Deep Archive after 30 days            │        │
-│  └─────────────────────────────────────────────────────────────┘        │
-│                                                                           │
+  │  portalpoint-data/  (single bucket, us-east-1)              │        │
+  │  raw/barttorvik/YYYY-MM-DD/   → raw JSON/CSV                │        │
+  │  raw/hoop_explorer/YYYY-MM-DD/ → CSV exports                │        │
+  │  raw/hoopr/YYYY-MM-DD/         → PBP parquets (~120MB/season)        │
+  │  raw/features/                 → player_features.parquet,   │        │
+  │                                  team_style_vectors.parquet  │        │
+  │  models/player_clustering/     → pkl artifacts (M1)         │        │
+  │  models/team_clustering/       → pkl artifacts (M2)         │        │
+  │  models/transfer_success/      → (future M5)                │        │
+  │  mlflow/                       → MLflow artifact store       │        │
+  │  • Block public access; SSE-S3 encryption; versioning on    │        │
+  └─────────────────────────────────────────────────────────────┘        │
 └───────────────────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────────────┐
-│  ML Model Registry: MLflow (Self-Hosted on EC2)                          │
+│  ML Model Registry: MLflow (local SQLite + S3 artifact backend)                          │
 │  ────────────────────────────────────────────────────────────────────    │
 │  Components:                                                              │
-│  • Tracking Server: Logs experiments, parameters, metrics                │
+│  • Tracking Server: mlruns.db (local) → future: hosted MLflow server                │
 │  • Model Registry: Versions, stages (staging/production)                 │
 │  • Artifact Store: Model files stored in S3                              │
-│  • Backend Store: PostgreSQL (metadata)                                   │
+│  • Backend Store: mlruns.db (SQLite at repo root; local dev)                                   │
 │                                                                           │
 │  Models Tracked:                                                          │
 │  • fit_scorer_xgboost (v1.0, v1.1, v2.0...)                              │

@@ -1,4 +1,4 @@
-# DIAGRAM 3: Data Science & Engineering Workflow
+﻿# DIAGRAM 3: Data Science & Engineering Workflow
 ## End-to-End Data Flow: Sources → Processing → Models → Predictions
 
 ```
@@ -10,11 +10,11 @@
 │  barttorvik     │  │   hoopR API     │  │  Hoop-Explorer  │  │ VerbalCommits│
 │  (Primary)      │  │   (Secondary)   │  │  (Secondary)    │  │  (Web Scrape)│
 ├─────────────────┤  ├─────────────────┤  ├─────────────────┤  ├──────────────┤
-│ • AdjEM/AdjO/   │  │ • Play-by-play  │  │ • Supplemental  │  │ • Transfer   │
-│   AdjD ratings  │  │ • Box scores    │  │   player data   │  │   commitments│
-│ • Four Factors  │  │ • Rosters       │  │ • Team data     │  │ • Portal     │
-│ • Player stats  │  │ • Schedules     │  │ • Advanced      │  │   entries    │
-│ • Tempo/pace    │  │ • Conference    │  │   metrics       │  │ • Timelines  │
+│ • AdjEM/AdjO/   │  │ • PBP events    │  │ • Supplemental  │  │ • Transfer   │
+│   AdjD ratings  │  │ • 2.9M rows/ssn │  │   player data   │  │   commitments│
+│ • Four Factors  │  │ • 5 spatial     │  │ • Team data     │  │ • Portal     │
+│ • Player stats  │  │ • shot zones    │  │ • Advanced      │  │   entries    │
+│ • Tempo/pace    │  │ • Parquet → S3  │  │   metrics       │  │ • Timelines  │
 └─────────────────┘  └─────────────────┘  └─────────────────┘  └──────────────┘
          │                    │                    │                    │
          └────────────────────┴────────────────────┴────────────────────┘
@@ -512,6 +512,8 @@
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                  STAGE 3: MODEL TRAINING & EVALUATION                     ║
 ║             (Airflow DAG: weekly_model_training - Sundays)                ║
+║  Note: project model numbering = M1 clustering, M2 team, M3 scheme,      ║
+║  M5 transfer success, M6 team rating, M7 recommendations (M4=playing time)║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌───────────────────────────────────────────────────────────────────────────┐
@@ -1207,7 +1209,7 @@
 ═══════════════════════════════════════════════════════════════════════════
 
 STAGE 1: INGESTION (Daily)
-├─ Scrape APIs (barttorvik, hoopR, Hoop-Explorer, VerbalCommits)
+├─ Scrape/download APIs: barttorvik, Hoop-Explorer, VerbalCommits; hoopR parquet download (~120MB/season)
 ├─ Validate schemas (Pydantic)
 ├─ Clean & normalize (pandas)
 └─ Load to PostgreSQL (upsert)

@@ -195,6 +195,27 @@ class PlayerSeasonStats(Base):
     rim_rate: Mapped[Optional[float]] = mapped_column(Float)
     mid_range_rate: Mapped[Optional[float]] = mapped_column(Float)
     assisted_fg_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Barttorvik advanced — labeled in getadvstats.php but previously not stored
+    offensive_rating: Mapped[Optional[float]] = mapped_column(Float)    # ortg
+    defensive_rating: Mapped[Optional[float]] = mapped_column(Float)    # drtg
+    efg_pct: Mapped[Optional[float]] = mapped_column(Float)             # effective FG%
+    off_reb_pct: Mapped[Optional[float]] = mapped_column(Float)         # or_pct
+    def_reb_pct: Mapped[Optional[float]] = mapped_column(Float)         # dr_pct
+    tov_pct: Mapped[Optional[float]] = mapped_column(Float)             # turnover %
+    free_throw_rate: Mapped[Optional[float]] = mapped_column(Float)     # ftr (FTA/FGA)
+    ft_pct: Mapped[Optional[float]] = mapped_column(Float)
+    fg2_pct: Mapped[Optional[float]] = mapped_column(Float)
+    fg3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    block_pct: Mapped[Optional[float]] = mapped_column(Float)
+    steal_pct: Mapped[Optional[float]] = mapped_column(Float)
+    rim_pct: Mapped[Optional[float]] = mapped_column(Float)             # shooting% at rim
+    mid_pct: Mapped[Optional[float]] = mapped_column(Float)             # shooting% mid-range
+    dunk_made: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    dunk_att: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    barttorvik_role: Mapped[Optional[str]] = mapped_column(String(50))  # "Combo G", "Scoring PG"
+    barttorvik_role_metric: Mapped[Optional[float]] = mapped_column(Float)
+    rsci: Mapped[Optional[float]] = mapped_column(Float)                # recruiting rank
+    birth_date: Mapped[Optional[date]] = mapped_column(Date)
     # Quality flags
     data_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     minutes_threshold_met: Mapped[bool] = mapped_column(Boolean, default=False)  # >= 10 games
@@ -227,18 +248,35 @@ class TeamSeasonStats(Base):
     adj_d: Mapped[Optional[float]] = mapped_column(Float)
     adj_tempo: Mapped[Optional[float]] = mapped_column(Float)
     barthag: Mapped[Optional[float]] = mapped_column(Float)
-    # Four Factors
+    # Offensive four factors
     efg_pct: Mapped[Optional[float]] = mapped_column(Float)
     tov_rate: Mapped[Optional[float]] = mapped_column(Float)
     orb_rate: Mapped[Optional[float]] = mapped_column(Float)
     ft_rate: Mapped[Optional[float]] = mapped_column(Float)
+    # Defensive four factors (from barttorvik four_factors endpoint — previously never written due to bug)
+    efg_pct_def: Mapped[Optional[float]] = mapped_column(Float)
+    tov_rate_def: Mapped[Optional[float]] = mapped_column(Float)
+    drb_rate: Mapped[Optional[float]] = mapped_column(Float)
+    ft_rate_def: Mapped[Optional[float]] = mapped_column(Float)
+    # Shooting splits
+    three_pct_off: Mapped[Optional[float]] = mapped_column(Float)
+    three_pct_def: Mapped[Optional[float]] = mapped_column(Float)
+    two_pct_off: Mapped[Optional[float]] = mapped_column(Float)
+    assist_rate: Mapped[Optional[float]] = mapped_column(Float)
+    assist_rate_opp: Mapped[Optional[float]] = mapped_column(Float)
     # Style
     three_point_rate: Mapped[Optional[float]] = mapped_column(Float)
-    assist_rate: Mapped[Optional[float]] = mapped_column(Float)
+    # Team metadata
+    national_rank: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    wab: Mapped[Optional[float]] = mapped_column(Float)                 # wins above bubble
+    sos: Mapped[Optional[float]] = mapped_column(Float)                 # strength of schedule
+    ncsos: Mapped[Optional[float]] = mapped_column(Float)               # non-conference SOS
     # Record
     games_played: Mapped[Optional[int]] = mapped_column(SmallInteger)
     wins: Mapped[Optional[int]] = mapped_column(SmallInteger)
     losses: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    conf_wins: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    conf_losses: Mapped[Optional[int]] = mapped_column(SmallInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -283,6 +321,219 @@ class TeamSystemProfile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     school: Mapped[School] = relationship(back_populates="team_system_profiles")
+
+
+class HoopExplorerTeamStats(Base):
+    """
+    Team-level data from Hoop Explorer CSV exports.
+    Covers Power 6 + strong mid-majors only (~365 teams per season).
+    Primary use: team play-style vectors for clustering (Model 2) and scheme fit (Model 3).
+    Join key to team_season_stats: school_id + season.
+    """
+
+    __tablename__ = "hoop_explorer_team_stats"
+    __table_args__ = (
+        UniqueConstraint("he_team_name", "season", name="uq_he_team_stats"),
+        Index("ix_he_team_stats_school_season", "school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    he_team_id: Mapped[Optional[str]] = mapped_column(String(20))  # _id from CSV
+    he_team_name: Mapped[str] = mapped_column(String(200), nullable=False)  # raw HE team_name
+    conf: Mapped[Optional[str]] = mapped_column(String(100))
+    # Season record
+    wins: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    losses: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    wab: Mapped[Optional[float]] = mapped_column(Float)
+    power: Mapped[Optional[float]] = mapped_column(Float)
+    # Efficiency
+    off_adj_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    adj_net: Mapped[Optional[float]] = mapped_column(Float)
+    tempo: Mapped[Optional[float]] = mapped_column(Float)
+    # Offensive four factors
+    off_efg: Mapped[Optional[float]] = mapped_column(Float)
+    off_to: Mapped[Optional[float]] = mapped_column(Float)
+    off_ftr: Mapped[Optional[float]] = mapped_column(Float)
+    off_orb: Mapped[Optional[float]] = mapped_column(Float)
+    # Defensive four factors
+    def_efg: Mapped[Optional[float]] = mapped_column(Float)
+    def_to: Mapped[Optional[float]] = mapped_column(Float)
+    def_ftr: Mapped[Optional[float]] = mapped_column(Float)
+    def_orb: Mapped[Optional[float]] = mapped_column(Float)
+    # Shot profile
+    off_threepr: Mapped[Optional[float]] = mapped_column(Float)   # 3PT attempt rate
+    off_twoprimr: Mapped[Optional[float]] = mapped_column(Float)  # rim attempt rate
+    off_twopmidr: Mapped[Optional[float]] = mapped_column(Float)  # mid attempt rate
+    def_threepr: Mapped[Optional[float]] = mapped_column(Float)
+    def_twoprimr: Mapped[Optional[float]] = mapped_column(Float)
+    def_twopmidr: Mapped[Optional[float]] = mapped_column(Float)
+    # Assist rates
+    off_assist: Mapped[Optional[float]] = mapped_column(Float)
+    def_assist: Mapped[Optional[float]] = mapped_column(Float)
+    # Offensive play-style frequencies (12 types; _pct = plays per 100 team possessions)
+    off_style_rim_attack_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_attack_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_dribble_jumper_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_mid_range_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_perimeter_cut_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_big_cut_roll_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_post_up_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_post_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_pick_pop_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Defensive play-style frequencies (same 12 types)
+    def_style_rim_attack_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_attack_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_dribble_jumper_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_mid_range_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_perimeter_cut_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_big_cut_roll_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_post_up_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_post_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_pick_pop_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    school: Mapped[Optional[School]] = relationship()
+
+
+class HoopExplorerPlayerStats(Base):
+    """
+    Player-level data from Hoop Explorer CSV exports.
+    Covers Power 6 + strong mid-majors only (high tier, ~672 players per season).
+    Primary use: RAPM for transfer outcome model (Model 5), play-style vectors for scheme fit (Model 3).
+    Cross-source join: he_player_code stable across seasons; he_ncaa_id → barttorvik roster.
+    player_id FK nullable until reconciled via (name, team, season) match.
+    """
+
+    __tablename__ = "hoop_explorer_player_stats"
+    __table_args__ = (
+        UniqueConstraint("he_player_code", "season", name="uq_he_player_stats"),
+        Index("ix_he_player_stats_player_season", "player_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    # HE identifiers
+    he_player_code: Mapped[str] = mapped_column(String(50), nullable=False)  # "CmBoozer" — stable cross-season
+    he_ncaa_id: Mapped[Optional[str]] = mapped_column(String(20))  # roster.ncaa_id for cross-source join
+    he_team_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Player metadata
+    player_name: Mapped[Optional[str]] = mapped_column(String(200))  # HE format: "Surname, First Name"
+    pos_class: Mapped[Optional[str]] = mapped_column(String(10))  # posClass: "PG", "s-PG", "CG", "WG", "WF", "S-PF", "PF/C", "C"
+    year_class: Mapped[Optional[str]] = mapped_column(String(10))  # "Fr", "So", "Jr", "Sr"
+    height: Mapped[Optional[str]] = mapped_column(String(10))  # "6-09"
+    conf: Mapped[Optional[str]] = mapped_column(String(100))
+    transfer_src: Mapped[Optional[str]] = mapped_column(String(200))
+    transfer_dest: Mapped[Optional[str]] = mapped_column(String(200))
+    # Playing time proxy
+    off_team_poss_pct: Mapped[Optional[float]] = mapped_column(Float)  # fraction of team possessions on floor
+    # Impact ratings — core RAPM metrics
+    adj_rtg_margin: Mapped[Optional[float]] = mapped_column(Float)   # on-court net efficiency
+    adj_rapm_margin: Mapped[Optional[float]] = mapped_column(Float)  # RAPM: isolates individual impact
+    off_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
+    adj_rapm_margin_pred: Mapped[Optional[float]] = mapped_column(Float)  # projection to NCAAT-bound high-major
+    # Usage and shot creation
+    off_usage: Mapped[Optional[float]] = mapped_column(Float)
+    off_assist: Mapped[Optional[float]] = mapped_column(Float)
+    off_efg: Mapped[Optional[float]] = mapped_column(Float)
+    off_to: Mapped[Optional[float]] = mapped_column(Float)
+    off_ftr: Mapped[Optional[float]] = mapped_column(Float)
+    # Shot profile
+    off_threepr: Mapped[Optional[float]] = mapped_column(Float)
+    off_twoprimr: Mapped[Optional[float]] = mapped_column(Float)
+    off_twopmidr: Mapped[Optional[float]] = mapped_column(Float)
+    # Shooting efficiency
+    off_threep: Mapped[Optional[float]] = mapped_column(Float)   # 3P%
+    off_twoprim: Mapped[Optional[float]] = mapped_column(Float)  # rim%
+    off_twopmid: Mapped[Optional[float]] = mapped_column(Float)  # mid%
+    off_ft: Mapped[Optional[float]] = mapped_column(Float)       # FT%
+    # Rebounding
+    off_orb: Mapped[Optional[float]] = mapped_column(Float)
+    def_orb: Mapped[Optional[float]] = mapped_column(Float)
+    # Defense
+    def_stl: Mapped[Optional[float]] = mapped_column(Float)
+    def_blk: Mapped[Optional[float]] = mapped_column(Float)
+    # Play-style frequencies (15 types; _pct = plays per 100 player possessions)
+    off_style_rim_attack_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_attack_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_perimeter_sniper_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_dribble_jumper_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_mid_range_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_hits_cutter_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_perimeter_cut_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_pnr_passer_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_big_cut_roll_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_post_up_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_post_kick_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_pick_pop_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    player: Mapped[Optional[Player]] = relationship()
+    school: Mapped[Optional[School]] = relationship()
+
+
+class HoopRTeamSeasonStats(Base):
+    """
+    Team-level features aggregated from hoopR ESPN play-by-play data.
+    Raw PBP (2.9M rows/season) is not stored here — aggregated features only.
+    Raw parquet lives at s3://portalpoint-data/raw/hoopr/YYYY-MM-DD/
+
+    Primary use: spatial shot zones + tempo for team clustering (Model 2)
+    and scheme fit scoring (Model 3).
+    Join key to team_season_stats: school_id + season.
+    """
+
+    __tablename__ = "hoopr_team_season_stats"
+    __table_args__ = (
+        UniqueConstraint("school_id", "season", name="uq_hoopr_team_stats"),
+        Index("ix_hoopr_team_stats_school_season", "school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    espn_team_id: Mapped[Optional[str]] = mapped_column(String(20))
+    espn_team_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Tempo
+    pbp_possession_sec: Mapped[Optional[float]] = mapped_column(Float)           # avg offensive possession duration (s)
+    # Shot type profile
+    pbp_rim_pct: Mapped[Optional[float]] = mapped_column(Float)                  # rim attempts / total shots
+    pbp_three_pct: Mapped[Optional[float]] = mapped_column(Float)                # 3PT attempts / total shots
+    pbp_mid_pct: Mapped[Optional[float]] = mapped_column(Float)                  # mid-range attempts / total shots
+    # Spatial shot zones (5-zone half-court; sums to ~1.0)
+    pbp_zone1_restricted_pct: Mapped[Optional[float]] = mapped_column(Float)     # restricted area (< 4ft from rim)
+    pbp_zone2_mid_pct: Mapped[Optional[float]] = mapped_column(Float)            # mid-range 2PT
+    pbp_zone3_corner3_pct: Mapped[Optional[float]] = mapped_column(Float)        # corner 3PT (y < 7.5)
+    pbp_zone4_straight3_pct: Mapped[Optional[float]] = mapped_column(Float)      # above-break center 3PT
+    pbp_zone5_wing3_pct: Mapped[Optional[float]] = mapped_column(Float)          # above-break wing 3PT
+    # Possession outcome rates
+    pbp_turnover_rate: Mapped[Optional[float]] = mapped_column(Float)            # TOs per tracked possession
+    pbp_transition_rate: Mapped[Optional[float]] = mapped_column(Float)          # shots within 7s / total shots
+    # Coverage metadata
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    school: Mapped[Optional[School]] = relationship()
 
 
 class CoachingTendency(Base):

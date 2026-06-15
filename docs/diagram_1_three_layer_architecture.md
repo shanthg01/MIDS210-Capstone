@@ -1,4 +1,4 @@
-# DIAGRAM 1: Three-Layer Architecture
+﻿# DIAGRAM 1: Three-Layer Architecture
 ## User Interactions → Fit Components → Data Science Layer
 
 ```
@@ -72,7 +72,7 @@
 │ DATA SOURCES                                                            │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ • barttorvik: AdjEM, Four Factors, player ratings, tempo (primary)     │
-│ • hoopR: Box scores, rosters, schedules (secondary)                    │
+│ • hoopR: Event-level PBP (2.9M rows/season), 5 spatial shot zones                    │
 │ • Hoop-Explorer: Supplemental player/team data (secondary)             │
 │ • Roster data: Team composition                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -90,7 +90,7 @@
 │ UNSUPERVISED ML: Player Clustering (K-Means)                           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 1. PCA: 30 features → 10 principal components                          │
-│ 2. K-Means: Cluster players (k=10)                                      │
+│ 2. K-Means: Cluster players (k=9)                                      │
 │ 3. Manual labeling: "3&D Wing", "Stretch 4", etc.                      │
 │ 4. Output: player_archetypes table                                      │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -150,8 +150,8 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ SIMILARITY SCORING: Cosine Similarity                                   │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ • Player style vector [3PT%, rim%, usage%, assisted%, pace]            │
-│ • Team system vector [3PT rate, rim rate, avg usage, assist%, pace]    │
+│ • Player style vector [3PT rate, rim rate, mid rate] (3-dim base; scheme-cos-v2)            │
+│ • Team system vector [team_three_rate, team_rim_rate, team_mid_rate] (same 3-dim)    │
 │ • Cosine similarity → convert to 0-100 scale                            │
 │ • USER INPUT: Player preferences adjust weighting                       │
 │   ("I prefer fast pace" → weight pace dimension 2x)                     │
@@ -160,7 +160,7 @@
 └─────────────────────────────────────────────────────────────────────────┘
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║                  FOR COMPONENT 3: PLAYING OPPORTUNITY                     ║
+║                  FOR COMPONENT 3: ROLE FIT                     ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -218,7 +218,7 @@
 └─────────────────────────────────────────────────────────────────────────┘
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║              FOR COMPONENT 4: PERSONAL OPPORTUNITY FIT                    ║
+║              FOR COMPONENT 4: PROGRAM FIT                    ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -290,16 +290,16 @@
 │ INPUTS:                                                                 │
 │ • Component 1: Gap Match Score (0-100)                                 │
 │ • Component 2: Scheme Fit Score (0-100)                                │
-│ • Component 3: Opportunity Score (0-100)                                │
-│ • Component 4: Personal Fit Score (0-100)                               │
+│ • Component 3: Role Fit Score (0-100)                                │
+│ • Component 4: Program Fit Score (0-100)                               │
 │                                                                          │
 │ PROGRAM INPUT: Priority Weights (CRITICAL)                             │
-│ Default: [30% Scheme, 25% Role Fit, 20% Gap, 25% Program Fit]         │
+│ Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25         │
 │ Customizable: "System fit is everything" → 60% Scheme                  │
 │                                                                          │
 │ CALCULATION:                                                             │
-│ overall_fit = (scheme × w_scheme) + (opportunity × w_opp) +           │
-│               (gap × w_gap) + (personal × w_personal)                   │
+│ overall_fit = (scheme × w_scheme) + (role_fit × w_role) +           │
+│               (gap × w_gap) + (program_fit × w_program)                   │
 │                                                                          │
 │ OUTPUT: Overall Fit Score (0-100)                                       │
 │         Stored in: player_team_fit_scores table                         │

@@ -11,12 +11,14 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 
 | Layer | Status |
 |---|---|
-| Backend API (FastAPI) | All endpoints live — protected routes require JWT |
-| Database (PostgreSQL + Alembic) | 3 migrations applied; ~4,500 players + 364 schools loaded from barttorvik |
-| ML Models 1–2 (clustering) | Complete — artifacts on disk, results in DB |
-| ML Model 3 (Scheme Fit scorer) | Complete — cosine similarity, pre-computed scores in DB |
-| Gap Matching, Role Fit, Program Fit | In progress — routers return deterministic stubs |
-| Recommendation Engine (Model 7) | Blocked on remaining fit components |
+| Backend API (FastAPI) | All endpoints live — protected routes require JWT; auth/players/users hit real DB |
+| Database (PostgreSQL + Alembic) | 6 migrations applied; ~4,083 players + 365 schools + HE + hoopR data loaded |
+| Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP ✅ (raw parquet → S3) |
+| MLflow + S3 artifacts | Wired — `mlruns.db` + `s3://portalpoint-data/mlflow/`; M1–M3 logged |
+| ML Models 1–3 | ✅ Complete — player clustering, team clustering, scheme fit (`scheme-cos-v2`) |
+| Gap Matching (next) | ❌ Not started — next on critical path; no new data needed |
+| Role Fit, Program Fit | ❌ Not started — routers return deterministic stubs |
+| Recommendation Engine (Model 7) | ❌ Blocked on remaining fit components |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
 See [`docs/STATUS.md`](docs/STATUS.md) for the full critical path and model tracker.
@@ -66,13 +68,24 @@ uv sync
 uv run alembic upgrade head
 ```
 
-### 4. Load barttorvik data (2025 season)
+### 4. Load data (run in order)
 
 ```bash
-uv run python scripts/ingest_barttorvik.py
+uv run python scripts/ingest_barttorvik.py        # ~4,083 players, 365 schools (2–3 min)
+uv run python scripts/ingest_hoop_explorer.py     # 356 HE-covered teams + player play-types
+uv run python scripts/ingest_hoopr.py --season 2026   # ESPN PBP → 365-row team features + S3
 ```
 
-Takes 2–3 minutes. Loads ~4,500 players and 364 schools into the DB.
+`--season` is repeatable: `--season 2024 --season 2025 --season 2026` for backfill.
+Raw PBP parquets (~120MB/season) land in `data/hoopr/` (gitignored) and `s3://portalpoint-data/raw/hoopr/`.
+
+AWS keys required for S3 upload — see [Team S3 access](#team-s3-access-aws). Ingest writes to DB regardless of S3 availability (upload failure is logged, not fatal).
+
+Then run notebooks in order:
+1. `notebooks/features/feature_eng_m1_m2_m3.ipynb`
+2. `notebooks/models/team_clustering.ipynb`
+3. `notebooks/models/player_clustering.ipynb`
+4. `notebooks/models/scheme_fit_scorer.ipynb`
 
 ### 5. Start the backend
 
@@ -176,9 +189,11 @@ Open http://127.0.0.1:5000. Three experiments are visible:
 
 | Experiment | Model | Key metric | Registry name |
 |---|---|---|---|
-| `player-clustering` | K-Means player archetypes (k=10) | `silhouette_score` | `player-clustering` |
-| `team-clustering` | K-Means team system profiles (k=9) | `silhouette_score` | `team-clustering` |
-| `scheme-fit-scorer` | Cosine similarity scheme fit | `n_records_written` | `scheme-fit-scorer` |
+| `player-clustering` | K-Means player archetypes (k=9) | `silhouette_score` | `player-clustering` |
+| `team-clustering` | K-Means team system profiles | `silhouette_score` | `team-clustering` |
+| `scheme-fit-scorer` | Cosine similarity `scheme-cos-v2` | `n_records_written` | `scheme-fit-scorer` |
+
+Artifacts (pkl files) in `s3://portalpoint-data/models/`; MLflow artifact store in `s3://portalpoint-data/mlflow/`.
 
 ### Auto-promotion logic
 
@@ -307,17 +322,23 @@ MIDS210-Capstone/
 │   ├── public/                  # Static assets (logos, favicon)
 │   └── vite.config.ts           # Dev server + /api proxy to localhost:8000
 ├── scripts/
-│   └── ingest_barttorvik.py     # Barttorvik ETL — loads players/schools/stats
+│   ├── ingest_barttorvik.py     # barttorvik ETL — loads players/schools/stats
+│   ├── ingest_hoop_explorer.py  # Hoop Explorer ETL — team + player play-type stats
+│   └── ingest_hoopr.py          # hoopR ESPN PBP — 5 spatial zones → hoopr_team_season_stats
 ├── notebooks/
+│   ├── eda/
+│   │   └── eda_hoopr.ipynb            # ESPN coordinate system validation (source of truth)
+│   ├── features/
+│   │   └── feature_eng_m1_m2_m3.ipynb # BART + HE + hoopR → player_features + team_style_vectors
 │   ├── models/
-│   │   ├── player_clustering.ipynb    # Model 1 — K-Means player archetypes
-│   │   ├── team_clustering.ipynb      # Model 2 — K-Means team system profiles
-│   │   └── scheme_fit_scorer.ipynb    # Model 3 — cosine similarity scheme fit
+│   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=9)
+│   │   ├── team_clustering.ipynb      # Model 2 ✅ — K-Means team system profiles (two-scaler)
+│   │   └── scheme_fit_scorer.ipynb    # Model 3 ✅ — cosine similarity scheme-cos-v2
 │   ├── utils/
-│   │   └── mlflow_helpers.py          # Shared MLflow helpers (setup, auto-promote)
+│   │   └── mlflow_helpers.py          # Shared MLflow helpers (setup, ensure_aws_env, auto-promote)
 │   └── requirements-notebooks.txt     # Notebook-only deps — install via uv pip
 ├── mlruns.db                          # MLflow SQLite tracking store (created on first run)
-├── alembic/                     # Database migrations
+├── alembic/                     # 6 database migrations (latest: c1e8f4a2b5d3 hoopr table)
 ├── tests/                       # 111 pytest tests across 9 modules
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
@@ -334,7 +355,9 @@ MIDS210-Capstone/
 
 | File | Contents |
 |---|---|
-| `docs/STATUS.md` | Implementation tracker, model owners, S3/MLflow handoff |
+| `docs/STATUS.md` | Authoritative implementation tracker — model owners, critical path, open questions |
+| `docs/dataflow_diagram.mmd` | Mermaid: sources → ingest → DB → features → models (all 3 sources) |
+| `docs/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
 | `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |

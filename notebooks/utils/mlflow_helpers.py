@@ -1,6 +1,7 @@
 """Shared MLflow helpers for PortalPoint model notebooks."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import mlflow
@@ -28,6 +29,20 @@ def _load_env() -> dict[str, str]:
         env[k.strip()] = v.strip()
     return env
 
+
+def ensure_aws_env() -> None:
+    """Export AWS credentials from .env into os.environ if not already set.
+
+    boto3 (used by MLflow for S3 artifact writes) reads from os.environ,
+    not from .env. This ensures the right IAM user is used regardless of
+    what's in ~/.aws/credentials.
+    """
+    env = _load_env()
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"):
+        if key not in os.environ and key in env:
+            os.environ[key] = env[key]
+
+
 def get_artifact_root() -> str | None:
     """S3 artifact root when S3_BUCKET is set; else local default."""
     bucket = _load_env().get("S3_BUCKET", "").strip()
@@ -46,6 +61,7 @@ def get_tracking_uri() -> str:
 
 
 def setup_mlflow(experiment_name: str) -> MlflowClient:
+    ensure_aws_env()
     mlflow.set_tracking_uri(get_tracking_uri())
     client = MlflowClient()
     artifact_root = get_artifact_root()
@@ -57,6 +73,10 @@ def setup_mlflow(experiment_name: str) -> MlflowClient:
         else:
             client.create_experiment(experiment_name)
     else:
+        # Patch artifact_location if S3 is configured but experiment still points locally.
+        # Metadata (params/metrics/runs) stays in SQLite — only future artifact writes change.
+        if artifact_root and not (exp.artifact_location or "").startswith("s3://"):
+            client.update_experiment(exp.experiment_id, artifact_location=artifact_root)
         mlflow.set_experiment(experiment_name)
 
     return client
