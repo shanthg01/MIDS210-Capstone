@@ -48,3 +48,8 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Large data files (S3 is source of truth; do not commit raw PBP / feature parquets)
+data/hoopr/
+notebooks/data/
+data/features/

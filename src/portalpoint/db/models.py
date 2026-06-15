@@ -490,6 +490,52 @@ class HoopExplorerPlayerStats(Base):
     school: Mapped[Optional[School]] = relationship()
 
 
+class HoopRTeamSeasonStats(Base):
+    """
+    Team-level features aggregated from hoopR ESPN play-by-play data.
+    Raw PBP (2.9M rows/season) is not stored here — aggregated features only.
+    Raw parquet lives at s3://portalpoint-data/raw/hoopr/YYYY-MM-DD/
+
+    Primary use: spatial shot zones + tempo for team clustering (Model 2)
+    and scheme fit scoring (Model 3).
+    Join key to team_season_stats: school_id + season.
+    """
+
+    __tablename__ = "hoopr_team_season_stats"
+    __table_args__ = (
+        UniqueConstraint("school_id", "season", name="uq_hoopr_team_stats"),
+        Index("ix_hoopr_team_stats_school_season", "school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    espn_team_id: Mapped[Optional[str]] = mapped_column(String(20))
+    espn_team_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Tempo
+    pbp_possession_sec: Mapped[Optional[float]] = mapped_column(Float)           # avg offensive possession duration (s)
+    # Shot type profile
+    pbp_rim_pct: Mapped[Optional[float]] = mapped_column(Float)                  # rim attempts / total shots
+    pbp_three_pct: Mapped[Optional[float]] = mapped_column(Float)                # 3PT attempts / total shots
+    pbp_mid_pct: Mapped[Optional[float]] = mapped_column(Float)                  # mid-range attempts / total shots
+    # Spatial shot zones (5-zone half-court; sums to ~1.0)
+    pbp_zone1_restricted_pct: Mapped[Optional[float]] = mapped_column(Float)     # restricted area (< 4ft from rim)
+    pbp_zone2_mid_pct: Mapped[Optional[float]] = mapped_column(Float)            # mid-range 2PT
+    pbp_zone3_corner3_pct: Mapped[Optional[float]] = mapped_column(Float)        # corner 3PT (y < 7.5)
+    pbp_zone4_straight3_pct: Mapped[Optional[float]] = mapped_column(Float)      # above-break center 3PT
+    pbp_zone5_wing3_pct: Mapped[Optional[float]] = mapped_column(Float)          # above-break wing 3PT
+    # Possession outcome rates
+    pbp_turnover_rate: Mapped[Optional[float]] = mapped_column(Float)            # TOs per tracked possession
+    pbp_transition_rate: Mapped[Optional[float]] = mapped_column(Float)          # shots within 7s / total shots
+    # Coverage metadata
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    school: Mapped[Optional[School]] = relationship()
+
+
 class CoachingTendency(Base):
     __tablename__ = "coaching_tendencies"
     __table_args__ = (
