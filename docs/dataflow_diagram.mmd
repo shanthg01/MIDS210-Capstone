@@ -2,11 +2,13 @@ flowchart TD
     subgraph SRC["Data Sources"]
         BART[barttorvik.com]
         HE[Hoop Explorer CSVs]
+        HOOPR[hoopR / ESPN PBP\nsportsdataverse releases]
     end
 
     subgraph INGEST["Ingest Scripts"]
         IB[ingest_barttorvik.py]
         IH[ingest_hoop_explorer.py]
+        IHR[ingest_hoopr.py]
     end
 
     subgraph PG["PostgreSQL"]
@@ -17,6 +19,7 @@ flowchart TD
             TSS[(team_season_stats)]
             HETS[(hoop_explorer_team_stats)]
             HEPS[(hoop_explorer_player_stats)]
+            HRTS[(hoopr_team_season_stats\n365 teams · 11 PBP features)]
         end
         subgraph ML_OUT["ML Output Tables"]
             PA[(player_archetypes)]
@@ -28,13 +31,13 @@ flowchart TD
     subgraph FE["Feature Engineering"]
         FEN[feature_eng_m1_m2_m3.ipynb]
         PFP[player_features.parquet]
-        TSV[team_style_vectors.parquet]
+        TSV[team_style_vectors.parquet\nBART + HE + hoopR cols]
     end
 
-    subgraph MODELS["Models — Phase 2"]
-        M1["Model 1: Player Clustering\nK-Means k=9, 7-dim"]
-        M2["Model 2: Team Clustering\nK-Means k=9, 10-dim BART+HE"]
-        M3["Model 3: Scheme Fit Scorer\nCosine similarity, 5-dim"]
+    subgraph MODELS["Models"]
+        M1["Model 1: Player Clustering ✅\nK-Means k=9, 7-dim"]
+        M2["Model 2: Team Clustering ✅\nK-Means, 4-dim BART + 12-dim HE"]
+        M3["Model 3: Scheme Fit Scorer ✅\nCosine similarity, scheme-cos-v2"]
         M4["Model 4: Playing Time Predictor\n⏳ not yet built"]
         M5["Model 5: Transfer Success\n⏳ not yet built"]
         M6["Model 6: Team Rating Projection\n⏳ not yet built"]
@@ -44,6 +47,7 @@ flowchart TD
     subgraph S3["S3: s3://portalpoint-data"]
         S3B[raw/barttorvik/YYYY-MM-DD/]
         S3H[raw/hoop_explorer/YYYY-MM-DD/]
+        S3HR[raw/hoopr/YYYY-MM-DD/\nplay_by_play_{season}.parquet]
         S3F[raw/features/]
         S3M1[models/player_clustering/]
         S3M2[models/team_clustering/]
@@ -54,19 +58,22 @@ flowchart TD
 
     BART --> IB
     HE --> IH
+    HOOPR -->|~120MB parquet/season| IHR
 
     IB -->|upsert| SCH & PLY & PSS & TSS
     IB -->|cache files| S3B
     IH -->|upsert| HETS & HEPS
     IH -->|CSVs| S3H
+    IHR -->|aggregate 365 rows| HRTS
+    IHR -->|raw PBP parquet| S3HR
 
-    PSS & TSS & HETS --> FEN
+    PSS & TSS & HETS & HRTS --> FEN
     FEN --> PFP & TSV
     FEN -->|parquet| S3F
 
     PFP --> M1
     TSV --> M2
-    PSS & HETS & PA & TSP --> M3
+    PSS & HETS & HRTS & PA & TSP --> M3
 
     M1 -->|upsert| PA
     M1 -->|pkl files| S3M1
@@ -78,7 +85,7 @@ flowchart TD
     M2 -->|metrics/params| MLDB
     M2 -->|model artifact| S3MLF
 
-    M3 -->|upsert| PTFS
+    M3 -->|upsert scheme_fit| PTFS
     M3 -->|metrics/params| MLDB
     M3 -->|pyfunc artifact| S3MLF
 

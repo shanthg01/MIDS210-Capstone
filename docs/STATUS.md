@@ -1,7 +1,7 @@
 # PortalPoint — Project Status
 
-**Date:** June 11, 2026  
-**Current branch:** `main`  
+**Date:** June 15, 2026  
+**Current branch:** `feature/integrate-sources` → PR #10 open to `main`  
 **Test suite:** 111 tests passing
 
 ---
@@ -39,18 +39,21 @@
 s3://portalpoint-data/
   raw/barttorvik/YYYY-MM-DD/
   raw/hoop_explorer/YYYY-MM-DD/
+  raw/hoopr/YYYY-MM-DD/          # raw PBP parquets (~120MB/season); not in git
+  raw/features/                  # player_features.parquet, team_style_vectors.parquet
   models/player_clustering/
   models/team_clustering/
   models/transfer_success/
-  mlflow/                       # MLflow artifacts (tracking stays sqlite:///mlruns.db)
+  mlflow/                        # MLflow artifacts (tracking stays sqlite:///mlruns.db)
 ```
 
-### Handoff: MLflow + M1–M3 re-log
+### Handoff: MLflow + M1–M3 re-log ✅ Complete
 
-1. Shanth stands up MLflow → S3 and shares `MLFLOW_TRACKING_URI` with the team.
-2. Justin re-logs **M1** (`player_clusterer`); Shanth re-logs **M2** (`team_system_clusterer`).
-3. Justin + Shanth jointly sign off **M3** feature contract (player + team vector columns) — no MLflow model; document `scheme-cos-v1` inputs in STATUS.
-4. Artifact source of truth moves from `data/models/*.pkl` only → S3 + MLflow run IDs documented below.
+MLflow is wired to S3 (`s3://portalpoint-data/mlflow`) via `notebooks/utils/mlflow_helpers.py`. Run metadata in `mlruns.db` (SQLite, local). Existing experiments patched to S3 artifact root via `client.update_experiment()` — no data loss.
+
+- M1 (`player_clusterer`) — pkl artifacts in S3 + MLflow run logged ✅
+- M2 (`team_system_clusterer`) — pkl artifacts in S3 + MLflow run logged ✅
+- M3 — no pkl artifact (deterministic cosine); MLflow run logged with scheme-cos-v2 metrics ✅
 
 ---
 
@@ -97,7 +100,7 @@ s3://portalpoint-data/
 | **Notebook** | `notebooks/models/scheme_fit_scorer.ipynb` |
 | **Player vector (3-dim)** | `three_point_rate`, `rim_rate`, `mid_range_rate` from `player_season_stats` |
 | **Team vector (3-dim)** | `team_three_rate`, `team_rim_rate`, `team_mid_rate` from `team_style_vectors.parquet` / team features |
-| **Output** | `player_team_fit_scores.scheme_fit` (0–100); `model_version` = `scheme-cos-v1` |
+| **Output** | `player_team_fit_scores.scheme_fit` (0–100); `model_version` = `scheme-cos-v2` |
 | **Depends on** | M1 not required for score; M2 labels used for breakdown heatmaps / UI context |
 
 **Why joint:** M3 is the first **cross-entity** model — player shot mix vs team shot mix. Both sides must use the **same season**, **same scale** (rates sum ~1), and **same school universe** or fits will be misleading.
@@ -148,9 +151,9 @@ The original design positioned players as the primary user (players discovering 
 |---|---|---|
 | PostgreSQL 15 (Docker) | ✅ Running | Port 5433 |
 | Redis 7 (Docker) | ✅ Running | Port 6379 |
-| Alembic migrations (3) | ✅ Applied | `064d7a23e792` initial schema → `b683e0eae93e` barttorvik_id → `4f15ed03ddbf` program pivot |
-| MLflow | 🔄 In progress | **Shanth** — S3-backed tracking; no dedicated server (local UI optional) |
-| AWS S3 | ✅ Live | **Justin** — `portalpoint-data`; team onboarding in `aws_s3_setup.md` |
+| Alembic migrations (5) | ✅ Applied | `064d7a23e792` → `b683e0eae93e` barttorvik_id → `4f15ed03ddbf` program pivot → `4d2553a387cc` expanded barttorvik fields → `a3f7b2c9e1d0` HE tables → `c1e8f4a2b5d3` hoopR table |
+| MLflow | ✅ Complete | S3 artifact backend wired; run metadata in `mlruns.db`; M1–M3 logged |
+| AWS S3 | ✅ Live | `portalpoint-data`; all ingest scripts write raw data + features; MLflow artifacts |
 | Supabase | 🔄 In progress | **Justin** — shared Postgres (optional replace local Docker for team) |
 | EC2 / ECS | ⏸️ Deferred | Local API + Docker only until beta |
 | Airflow DAGs | ❌ Not started | GitHub Actions cron first; Airflow Week 9–10 if needed |
@@ -160,18 +163,21 @@ The original design positioned players as the primary user (players discovering 
 
 | Stage | Status | Output |
 |---|---|---|
-| Barttorvik ETL (`scripts/ingest_barttorvik.py`) | ✅ Complete | ~4,500 players, 364 schools, 2025 season stats in DB |
-| Feature engineering — player (`barttorvik_feature_eng.ipynb`) | ✅ Complete | `data/features/player_features.parquet` |
-| Feature engineering — team (`barttorvik_feature_eng.ipynb`) | ✅ Complete | `data/features/team_style_vectors.parquet` |
+| Barttorvik ETL (`scripts/ingest_barttorvik.py`) | ✅ Complete | ~4,548 players, 365 schools, 2026 season; expanded advanced fields; S3 upload |
+| Hoop Explorer ETL (`scripts/ingest_hoop_explorer.py`) | ✅ Complete | `hoop_explorer_team_stats` (356 teams), `hoop_explorer_player_stats`; S3 upload |
+| hoopR PBP ETL (`scripts/ingest_hoopr.py`) | ✅ Complete | `hoopr_team_season_stats` (365 D1 teams, 11 PBP features); raw parquet → S3 |
+| Feature engineering (`feature_eng_m1_m2_m3.ipynb`) | ✅ Complete | `player_features.parquet` (4,083 players); `team_style_vectors.parquet` (365 teams, barttorvik + HE + hoopR cols); S3 upload |
 | Roster gap analysis | ❌ Not started | Required for Gap Matching (Component 1) |
+
+**gitignore:** `data/hoopr/`, `notebooks/data/`, `data/features/` — all large data files excluded; S3 is source of truth.
 
 ### ML Models
 
 | # | Model | Status | Artifacts | DB Table |
 |---|---|---|---|---|
-| 1 | Player Clustering (K-Means, K=10) | ✅ Complete — **owner: Justin** | `player_kmeans.pkl`, `player_scaler.pkl`, `player_archetype_labels.pkl` | `player_archetypes` |
-| 2 | Team System Clustering (K-Means, K=9) | ✅ Complete — **owner: Shanth** (dataset eval in progress) | `team_kmeans.pkl`, `team_scaler.pkl`, `team_system_labels.pkl` | `team_system_profiles` |
-| 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete — **owners: Justin + Shanth** (joint dataset eval in progress) | — (no training, deterministic; `scheme-cos-v1`) | `player_team_fit_scores` (scheme_fit col) |
+| 1 | Player Clustering (K-Means, K=9) | ✅ Complete | `player_kmeans.pkl`, `player_scaler.pkl`, `player_archetype_labels.pkl` → S3 + MLflow | `player_archetypes` |
+| 2 | Team System Clustering (K-Means) | ✅ Complete | `team_kmeans.pkl`, `team_bart_scaler.pkl`, `team_he_scaler.pkl`, `team_system_labels.pkl` → S3 + MLflow | `team_system_profiles` |
+| 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete | Deterministic; `scheme-cos-v2`; MLflow run logged | `player_team_fit_scores` (scheme_fit col) |
 | — | Gap Matching (cosine similarity) | ❌ Not started | — | `player_team_fit_scores` (gap_match col) |
 | 4 | Playing Time / Rotation Model → Role Fit Score | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
 | — | Program Fit Calculator (MAUT) | ❌ Not started | — | `player_team_fit_scores` (program_fit col) |
@@ -179,7 +185,15 @@ The original design positioned players as the primary user (players discovering 
 | 6 | Team Rating Projection (XGBoost) | ❌ Not started | Depends on Model 4 | `team_rating_projections` |
 | 7 | Recommendation Engine (SVD + content + fit) | ❌ Not started | Depends on all 4 fit components | `recommendations` |
 
-**Current fit score state:** `overall_fit = 0.30 × scheme_fit + 0.70 × 50.0` (gap/role_fit/program_fit stubbed at 50 until built). Pre-computed top-50 schools per player for 2025 season.
+**Current fit score state:** `overall_fit = 0.30 × scheme_fit + 0.70 × 50.0` (gap/role_fit/program_fit stubbed at 50 until built).
+
+**M2 feature vector (two-scaler approach):**
+- All 365 D1 teams: 4-dim barttorvik vector (`team_three_rate`, `team_rim_rate`, `team_mid_rate`, `adj_tempo`)
+- 356/365 HE-covered teams: +12 play-type frequency dimensions (second scaler)
+- 365/365 hoopR-covered teams: `pbp_*` spatial zone + tempo columns available in `team_style_vectors.parquet` for M3 enrichment
+- Non-HE teams assigned via 4-dim BART centroid projection (confidence discounted 25%)
+
+**M3 scheme vector (v2):** 3-dim base cosine (shot rates) always computed; `he_scheme_fit` supplementary in breakdown JSON for HE-covered pairs; hoopR spatial zones available for v3 expansion.
 
 ### API Routers
 
@@ -231,9 +245,9 @@ Model 7: Recommendation Engine ← unblocks recommendations.py
 
 | Task | Trigger |
 |---|---|
-| MLflow S3 tracking + instrument M1–M2 retroactively | **Now** — Shanth (MLflow platform); Justin (M1 re-log); Shanth (M2 re-log) |
-| M3 joint dataset feature contract | **Now** — Justin + Shanth (no MLflow model; document inputs) |
-| S3 bucket + sync ingest cache / model artifacts | **Now** — Justin |
+| ~~MLflow S3 tracking + instrument M1–M3~~ | ✅ Complete — `mlruns.db` + S3 artifact backend; M1–M3 runs logged |
+| ~~S3 bucket + sync ingest cache / model artifacts~~ | ✅ Complete — `portalpoint-data`; all three ingest scripts upload |
+| ~~M3 joint dataset feature contract~~ | ✅ Complete — `scheme-cos-v2` vector locked (3-dim BART shot rates) |
 | Supabase project + share `DATABASE_URL` with team | **When ready** — Justin; keep local Docker for offline dev |
 | Redis caching layer in `fit_scores.py` | When `fit_scores.py` wired to real DB |
 | Airflow DAGs + Docker Compose airflow service | After all critical-path models built (~Week 9–10) |
@@ -262,10 +276,9 @@ Next model to build. No new external data required; derivable from existing DB.
 1. **Gap matching — position handling:** Per-position (more accurate, needs clean position data) vs. school-wide aggregate (simpler). Decide after checking position coverage in DB.
 2. **Player archetype labels (M1 — Justin):** `ARCHETYPE_LABELS` in `player_clustering.ipynb` still uses auto-generated candidates — finalize before Gap Matching.
 3. **Team system labels (M2 — Shanth):** Auto-generated via taxonomy distance matching — review `SYSTEM_LABELS` for accuracy.
-4. **M3 feature contract (Justin + Shanth):** Confirm player and team shot-rate columns use consistent definitions and season alignment.
-5. **MLflow retroactive instrumentation:** M1 (Justin) and M2 (Shanth) notebooks have no MLflow tracking yet — re-log after Shanth configures S3 URI.
-6. **Program Fit data gaps:** `nil_valuations` and `schools.nil_estimated_budget_usd` are not populated from barttorvik (no public NIL data). NIL fit score will require either manual data entry, third-party source, or a proxy (conference tier, market size). Decide before building Program Fit calculator.
-7. **NCAA/FERPA compliance:** Legal review required before public launch. Use only public data; document data sources clearly.
+4. **Program Fit data gaps:** `nil_valuations` and `schools.nil_estimated_budget_usd` are not populated from barttorvik (no public NIL data). NIL fit score will require either manual data entry, third-party source, or a proxy (conference tier, market size). Decide before building Program Fit calculator.
+5. **NCAA/FERPA compliance:** Legal review required before public launch. Use only public data; document data sources clearly.
+6. **hoopR spatial zones in M3 v3:** hoopR 5-zone data now in `team_style_vectors.parquet`. Adding to scheme vector increases cosine dim from 3→8 — validate discrimination before wiring.
 
 ---
 
