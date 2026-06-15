@@ -19,6 +19,8 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Recommendation Engine (Model 7) | Blocked on remaining fit components |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
+See [`docs/STATUS.md`](docs/STATUS.md) for the full critical path and model tracker.
+
 ---
 
 ## Prerequisites
@@ -44,6 +46,8 @@ cp .env.example .env
 ```
 
 Edit `.env` — the defaults work for local Docker. At minimum verify `JWT_SECRET` is set to any non-empty string for local dev.
+
+**Teammates doing notebook / S3 work:** copy `.env.example` → `.env`, then add AWS keys from Justin (see [Team S3 access](#team-s3-access-aws) below).
 
 ### 2. Start infrastructure (PostgreSQL + Redis)
 
@@ -112,9 +116,37 @@ Copy `.env.example` to `.env`. All variables have sane defaults for local Docker
 | `JWT_ALGORITHM` | `HS256` | |
 | `JWT_EXPIRY_SECONDS` | `3600` | Set to `86400` in local dev to avoid hourly re-login |
 | `ENVIRONMENT` | `development` | |
-| `MLFLOW_TRACKING_URI` | `sqlite:///mlruns.db` | SQLite at repo root for local dev; set to S3 URI for prod |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlruns.db` | SQLite at repo root for local dev; do **not** use an `s3://` URI here |
+| `AWS_ACCESS_KEY_ID` | *(from Justin)* | Programmatic S3 access — see [Team S3 access](#team-s3-access-aws) |
+| `AWS_SECRET_ACCESS_KEY` | *(from Justin)* | Never commit; `.env` is gitignored |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Must match bucket region |
+| `S3_BUCKET` | `portalpoint-data` | Shared team bucket |
 
 **Token expiry note:** The default 1-hour expiry means you'll be logged out after 60 minutes. For active development, set `JWT_EXPIRY_SECONDS=86400` in `.env`.
+
+---
+
+## Team S3 access (AWS)
+
+Shared bucket for raw data, model artifacts, and MLflow artifacts. **Justin provisions IAM users** — teammates only need keys in `.env`.
+
+**Full guide:** [`docs/aws_s3_setup.md`](docs/aws_s3_setup.md)
+
+### Classmate quick start
+
+```powershell
+Copy-Item .env.example .env
+# Add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from Justin (DM)
+uv pip install -r notebooks/requirements-notebooks.txt
+aws s3 ls s3://portalpoint-data/    # smoke test
+```
+
+| Item | Value |
+|---|---|
+| Bucket | `portalpoint-data` |
+| Region | `us-east-1` |
+| Access | IAM user per teammate (programmatic keys only) |
+| Billing | Teammate AWS accounts linked to org for credit sharing; S3 keys come from bucket owner account |
 
 ---
 
@@ -129,7 +161,9 @@ uv pip install mlflow
 
 ### Tracking backend
 
-All runs write to `mlruns.db` (SQLite) at the repo root. The path is resolved automatically by `notebooks/utils/mlflow_helpers.py` — no CWD dependency. If `MLFLOW_TRACKING_URI` is set in `.env`, that URI is used instead (must be a `sqlite:///` or remote URI — `file:` paths are rejected by mlflow 3.x).
+All runs write to `mlruns.db` (SQLite) at the repo root. The path is resolved automatically by `notebooks/utils/mlflow_helpers.py` — no CWD dependency. If `MLFLOW_TRACKING_URI` is set in `.env`, that URI is used instead (must be `sqlite:///` or an MLflow server URL — **not** `s3://`; `file:` paths are rejected by mlflow 3.x).
+
+MLflow artifacts (`.pkl`, plots) can be stored in `s3://portalpoint-data/mlflow/` when wired; deploy bundles live under `s3://portalpoint-data/models/<model>/`. See [`docs/aws_s3_setup.md`](docs/aws_s3_setup.md).
 
 ### Launch the MLflow UI
 
@@ -288,6 +322,8 @@ MIDS210-Capstone/
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
 ├── docs/                        # Project documentation, diagrams, and model plans
+│   ├── STATUS.md                # Implementation tracker and critical path
+│   ├── aws_s3_setup.md          # Team S3 onboarding (keys, smoke test, layout)
 │   └── PORTALPOINT_DESIGN_PALETTE.md  # Design token reference
 └── README.md                    # Repo overview and setup guide
 ```
@@ -298,6 +334,8 @@ MIDS210-Capstone/
 
 | File | Contents |
 |---|---|
+| `docs/STATUS.md` | Implementation tracker, model owners, S3/MLflow handoff |
+| `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
 | `docs/player_projection_state_space_plan.md` | State-space player projection system plan |

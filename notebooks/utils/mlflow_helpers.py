@@ -28,6 +28,12 @@ def _load_env() -> dict[str, str]:
         env[k.strip()] = v.strip()
     return env
 
+def get_artifact_root() -> str | None:
+    """S3 artifact root when S3_BUCKET is set; else local default."""
+    bucket = _load_env().get("S3_BUCKET", "").strip()
+    if bucket and not bucket.startswith("#"):
+        return f"s3://{bucket}/mlflow"
+    return None
 
 def get_tracking_uri() -> str:
     """Read MLFLOW_TRACKING_URI from .env; fall back to SQLite at repo root."""
@@ -40,10 +46,20 @@ def get_tracking_uri() -> str:
 
 
 def setup_mlflow(experiment_name: str) -> MlflowClient:
-    """Set tracking URI + experiment, return MlflowClient."""
     mlflow.set_tracking_uri(get_tracking_uri())
-    mlflow.set_experiment(experiment_name)
-    return MlflowClient()
+    client = MlflowClient()
+    artifact_root = get_artifact_root()
+
+    exp = client.get_experiment_by_name(experiment_name)
+    if exp is None:
+        if artifact_root:
+            client.create_experiment(experiment_name, artifact_location=artifact_root)
+        else:
+            client.create_experiment(experiment_name)
+    else:
+        mlflow.set_experiment(experiment_name)
+
+    return client
 
 
 def maybe_promote(
