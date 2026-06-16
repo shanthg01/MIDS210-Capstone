@@ -36,6 +36,8 @@ htmlcov/
 # MLflow (added when ML pipeline is wired)
 mlruns/
 mlartifacts/
+**/mlruns.db
+**/mlruns_backup.db
 
 # Frontend
 frontend/node_modules/
