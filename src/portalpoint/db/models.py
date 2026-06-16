@@ -536,6 +536,58 @@ class HoopRTeamSeasonStats(Base):
     school: Mapped[Optional[School]] = relationship()
 
 
+class HoopRPlayerSeasonStats(Base):
+    """
+    Player-level features aggregated from hoopR ESPN play-by-play data.
+    Mirrors hoopr_team_season_stats' pbp_* feature set, keyed on athlete_id_1
+    instead of team_id, plus player-only additions (clutch TS%, assist rate).
+    player_id FK nullable until matched via crosswalk (name + team + season
+    fuzzy match — see scripts/crosswalk_hoopr_players.py, ~90% hit rate);
+    unmatched rows keep espn_athlete_id + raw_display_name for manual backfill,
+    same pattern hoop_explorer_player_stats uses for he_player_code.
+    """
+
+    __tablename__ = "hoopr_player_season_stats"
+    __table_args__ = (
+        UniqueConstraint("espn_athlete_id", "season", name="uq_hoopr_player_stats"),
+        Index("ix_hoopr_player_stats_player_season", "player_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    espn_athlete_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_display_name: Mapped[str] = mapped_column(String(200), nullable=False)  # text-parsed PBP name
+    espn_team_name: Mapped[str] = mapped_column(String(200), nullable=False)  # raw team, for manual backfill if unmatched
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float)  # fuzzy-match score; NULL if unmatched
+    # Shot type profile (mirrors hoopr_team_season_stats)
+    pbp_rim_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_three_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_mid_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Spatial shot zones (5-zone half-court; sum to ~1.0)
+    pbp_zone1_restricted_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone2_mid_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone3_corner3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone4_straight3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone5_wing3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Possession outcome rates
+    pbp_turnover_rate: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_transition_rate: Mapped[Optional[float]] = mapped_column(Float)
+    # Player-only additions
+    pbp_clutch_ts_pct: Mapped[Optional[float]] = mapped_column(Float)  # TS% last 2min, <=5pt margin
+    pbp_assist_rate: Mapped[Optional[float]] = mapped_column(Float)    # athlete_id_2 assists / possessions
+    # Coverage metadata
+    shot_attempts_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    player: Mapped[Optional[Player]] = relationship()
+    school: Mapped[Optional[School]] = relationship()
+
+
 class CoachingTendency(Base):
     __tablename__ = "coaching_tendencies"
     __table_args__ = (

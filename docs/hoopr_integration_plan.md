@@ -65,6 +65,13 @@ ESPN `team_id` → `home/away_team_name` map built from same parquet → fuzzy m
 Same difflib approach as `ingest_hoop_explorer.py` (threshold 0.82).
 Alias map `ESPN_TEAM_ALIASES` in `ingest_hoopr.py` handles common divergences.
 
+**Fixed 2026-06-16:** Phase 2 Step 1 crosswalk validation surfaced 30 unmatched D1 schools
+(see `STATUS.md`) — "X State" vs. "X St." below the fuzzy cutoff, a wrong `North Carolina`
+alias, wrong `ULM`/`Alcorn` entries, and a stray `SE Louisiana → Louisiana` fuzzy collision
+that was silently overwriting Louisiana's row on every ingest. All fixed in
+`ESPN_TEAM_ALIASES`; `hoopr_team_season_stats` re-ingested for 2026 — 364/365 matched
+(`IU Indianapolis` is a genuine missing-school gap, not a bug).
+
 **Player-level (Phase 2 — deferred):**
 ESPN `athlete_id_1` (~5.1M range) has no direct barttorvik crosswalk.
 Strategy: name + team + season fuzzy match (same as HE player match), expect ~90% hit rate.
@@ -169,6 +176,47 @@ needed for the crosswalk slot itself, only for the new stats table.
 - Log match-rate stats (X/Y matched, pct) every ingest run so a future regression
   is visible immediately instead of silently degrading.
 
+**Shipped 2026-06-16 (season 2026 only):** `compute_player_features()` added to
+`ingest_hoopr.py`, keyed on `athlete_id_1`. Real DB run on 2026 — 4990 athletes,
+90.0% matched (4493), 4 ambiguous, 478 unmatched, 15 no-school; `players.espn_id`
+backfilled for 4490 (idempotent NULL-only update, 3 fewer than matched due to
+duplicate matched_player_id across distinct ESPN athlete rows — expected, not a
+bug); zero `(espn_athlete_id, season)` collisions; `espn_team_name` always
+populated (no NULLs) per the unmatched-row manual-backfill requirement.
+`pbp_clutch_ts_pct`/`pbp_assist_rate` and `possessions_tracked` use the
+no-lineup-tracking proxies documented in the function docstring (FGA-only TS%
+denominator, FGA+TOV possession proxy) — see `compute_player_features()` for
+the full reasoning.
+
+**2021-2025 backfill shipped 2026-06-16:** first attempt crashed mid-2021 on a
+`players_espn_id_key` unique violation — two distinct `players` rows for the
+same human ("Trent Hudgens Jr." vs "Trent Hudgens Jr", punctuation drift from
+upstream ingests) both fuzzy-matched to the same `espn_athlete_id` across
+season runs. Fixed by wrapping each `_backfill_espn_ids` row in a SAVEPOINT
+(`session.begin_nested()`) so a collision is logged+skipped, not fatal to the
+season's transaction. Re-ran clean, all 5 seasons:
+
+| Season | Teams matched | Player rows | Player match % | espn_id collisions skipped |
+|---|---|---|---|---|
+| 2021 | 174/174 | 4,734 | 87.2% | 2 |
+| 2022 | 234/235 | 4,855 | 90.1% | 10 |
+| 2023 | 184/185 | 4,889 | 90.1% | 18 |
+| 2024 | 172/172 | 4,853 | 91.8% | 28 |
+| 2025 | 363/364 | 4,964 | 90.9% | 4 |
+| 2026 | 364/365 | 4,990 | 90.0% | — (ran before the fix existed) |
+
+Verified via direct SQL: zero `(espn_athlete_id, season)` duplicates, zero
+`players.espn_id` duplicates, zero empty `espn_team_name` across all 6
+seasons.
+
+**Data-completeness caveat (new finding, not a bug):** `hoopr_team_season_stats`
+team coverage is roughly half of D1 for 2021-2024 (172-235 teams) vs. near-full
+for 2025-2026 (363-364 teams) — ESPN's PBP tracking clearly expanded coverage
+in the last two seasons. Multi-season models (M1/M2) pooling 2021-2026 will see
+much sparser hoopR features for the earlier years; barttorvik/Hoop Explorer
+coverage is unaffected since they're independent sources. Flag this when
+validating cosine discrimination for the 10-dim scheme vector (Open Question 4).
+
 ### New table: `hoopr_player_season_stats`
 
 Mirrors the full breadth of `hoopr_team_season_stats` (parity-by-default — anything
@@ -228,14 +276,39 @@ the join. Adds `pbp_player_*` columns to `player_features.parquet`.
 ### Execution order
 
 ```
-0. Inspect 2026 parquet schema for player-identity columns
-1. Build crosswalk fn, run on 2026, spot-check N=50
-2. If ~90% hit rate confirmed → write Alembic migration + ORM model
-3. Extend ingest_hoopr.py (crosswalk + aggregation), re-run all seasons 2021+
-4. Extend feature_eng_m1_m2_m3.ipynb, regenerate player_features.parquet
+0. Inspect 2026 parquet schema for player-identity columns          ✅ done — no athlete_*name* col, text field used
+1. Build crosswalk fn, run on 2026, spot-check N=50                  ✅ done — 89.8% match rate (scripts/crosswalk_hoopr_players.py)
+2. If ~90% hit rate confirmed → write Alembic migration + ORM model  ✅ done — e47b1d6a9c52, HoopRPlayerSeasonStats
+3. Extend ingest_hoopr.py (crosswalk + aggregation), re-run all seasons 2021+  ✅ done — all 6 seasons (2021-2026)
+4. Extend feature_eng_m1_m2_m3.ipynb, regenerate player_features.parquet         ✅ done — see below
 5. Extend player_clustering.ipynb, new MLflow run, compare/promote
 6. Update STATUS.md + dataflow_diagram.mmd once shipped
 ```
+
+**Step 4 results:** Added `HOOPR_PLAYER_SQL` (Section 1) joined onto `feat_df` keyed on
+`player_id + season`, matched rows only (`player_id IS NOT NULL` filtered upstream — unmatched
+ESPN athletes can't join onto `player_season_stats` anyway). 9 duplicate `(player_id, season)`
+keys (fuzzy-match collisions in the crosswalk) deduped by `match_confidence` then
+`shot_attempts_tracked` before merge, so the join can't fan out player rows.
+
+New columns are raw-enrichment-only — not folded into `MODEL_FEATURES`, not scaled, not PCA'd.
+Whether to add them to the K-Means vector is decided in Step 5 (`player_clustering.ipynb`).
+
+Regenerated and re-uploaded both output parquets (pooled across all 6 seasons, 2021-2026):
+
+| Output | Rows | Cols | Notes |
+|---|---|---|---|
+| `player_features.parquet` | 23,913 | 44 | hoopR player coverage: 6,950/23,913 (29%) — tracks the ESPN PBP coverage gap (Open Question 3); 16,606 of the matched rows are low-volume (< 50 tracked shot attempts) |
+| `team_style_vectors.parquet` | 2,154 | 46 | unchanged row count — Step 4 only added player-level columns |
+
+Both uploaded to `s3://portalpoint-data/raw/features/`.
+
+**Bug found + fixed during this run:** `_to_parquet_safe()`'s raw-Python-list pyarrow writer
+inferred column type from list order — a column mixing `NaN` with strings (e.g. `conference`
+NULL for some pooled-season teams) made `pa.array()` guess `double` from leading NaNs, then
+fail on the first string (`ArrowInvalid: Could not convert 'B12'...`). Fixed by replacing NaN
+with `None` before list conversion — `None` is a universal null marker for `pa.array`'s type
+inference regardless of column dtype, so it can't be misled by element order.
 
 ---
 
