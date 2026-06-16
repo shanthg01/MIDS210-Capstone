@@ -284,14 +284,19 @@ def compute_team_features(pbp: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Shot categories
-    shots["is_rim"]   = shots["type_text"].isin(_RIM_TYPES)
-    shots["is_three"] = (shots["points_attempted"] == 3) & ~shots["is_rim"]
-    shots["is_mid"]   = ~shots["is_three"] & ~shots["is_rim"]
-
-    # Spatial zones (matching EDA zone boundaries)
-    dist = shots["dist_from_rim"]
+    dist       = shots["dist_from_rim"]
     norm_y_abs = shots["norm_y"].abs()
     beyond_arc = dist > ZONE2_MAX_DIST
+
+    shots["is_rim"] = shots["type_text"].isin(_RIM_TYPES)
+    if "points_attempted" in shots.columns:
+        shots["is_three"] = (shots["points_attempted"] == 3) & ~shots["is_rim"]
+    else:
+        # pre-2023 schemas lack points_attempted; geometry is equivalent
+        shots["is_three"] = beyond_arc & ~shots["is_rim"]
+    shots["is_mid"] = ~shots["is_three"] & ~shots["is_rim"]
+
+    # Spatial zones (matching EDA zone boundaries)
 
     zone_conds = [
         dist <= ZONE1_MAX_DIST,
@@ -327,46 +332,55 @@ def compute_team_features(pbp: pd.DataFrame) -> pd.DataFrame:
     shot_agg["pbp_zone5_wing3_pct"]       = shot_agg["z5"] / total
 
     # ---- Possession timing (EDA approach) ----
-    # Mark possession-ending events, assign possession IDs per game-half,
-    # then measure max(start) - min(end) per possession.
-    df_w = pbp.sort_values(["game_id", "half", "game_play_number"]).copy()
-    df_w["game_id_s"] = df_w["game_id"].astype(str)
-    df_w["half_s"]    = df_w["half"].astype(str)
-
-    is_turnover  = df_w["type_text"].str.contains("Turnover|Steal", case=False, na=False)
-    is_def_reb   = df_w["type_text"] == "Defensive Rebound"
-    is_made_shot = df_w["scoring_play"] & df_w["shooting_play"]
-    df_w["poss_end"] = is_turnover | is_def_reb | is_made_shot
-
-    df_w["poss_num"] = (
-        df_w.groupby(["game_id_s", "half_s"])["poss_end"]
-        .shift(1).fillna(False).astype(int)
+    # start/end_period_seconds_remaining absent in pre-2023 schemas; skip timing features if so.
+    _has_timing = (
+        "start_period_seconds_remaining" in pbp.columns and
+        "end_period_seconds_remaining" in pbp.columns
     )
-    df_w["poss_num"] = df_w.groupby(["game_id_s", "half_s"])["poss_num"].cumsum()
-    df_w["poss_id"]  = df_w["game_id_s"] + "_" + df_w["half_s"] + "_" + df_w["poss_num"].astype(str)
+    if not _has_timing:
+        log.warning("timing columns absent for this season — pbp_possession_sec and pbp_transition_rate will be NULL")
 
-    # Offensive team for each possession = team making a shot or turnover
-    poss_team = (
-        df_w[(df_w["shooting_play"] | is_turnover) & df_w["team_name"].notna()]
-        .groupby("poss_id")["team_name"]
-        .first()
-    )
+    if _has_timing:
+        df_w = pbp.sort_values(["game_id", "half", "game_play_number"]).copy()
+        df_w["game_id_s"] = df_w["game_id"].astype(str)
+        df_w["half_s"]    = df_w["half"].astype(str)
 
-    poss_metrics = df_w.groupby("poss_id").agg(
-        start_time=("start_period_seconds_remaining", "max"),
-        end_time=("end_period_seconds_remaining", "min"),
-    )
-    poss_metrics["duration"] = poss_metrics["start_time"] - poss_metrics["end_time"]
-    poss_metrics["team_name"] = poss_metrics.index.map(poss_team)
-    poss_metrics = poss_metrics.dropna(subset=["team_name"])
-    poss_metrics = poss_metrics[poss_metrics["duration"].between(0, POSS_MAX_SEC)]
+        is_turnover  = df_w["type_text"].str.contains("Turnover|Steal", case=False, na=False)
+        is_def_reb   = df_w["type_text"] == "Defensive Rebound"
+        is_made_shot = df_w["scoring_play"] & df_w["shooting_play"]
+        df_w["poss_end"] = is_turnover | is_def_reb | is_made_shot
 
-    tempo_df = (
-        poss_metrics.groupby("team_name")["duration"]
-        .agg(pbp_possession_sec="mean", n_possessions="count")
-        .reset_index()
-        .query("n_possessions > 5")
-    )
+        df_w["poss_num"] = (
+            df_w.groupby(["game_id_s", "half_s"])["poss_end"]
+            .shift(1).fillna(False).astype(int)
+        )
+        df_w["poss_num"] = df_w.groupby(["game_id_s", "half_s"])["poss_num"].cumsum()
+        df_w["poss_id"]  = df_w["game_id_s"] + "_" + df_w["half_s"] + "_" + df_w["poss_num"].astype(str)
+
+        poss_team = (
+            df_w[(df_w["shooting_play"] | is_turnover) & df_w["team_name"].notna()]
+            .groupby("poss_id")["team_name"]
+            .first()
+        )
+
+        poss_metrics = df_w.groupby("poss_id").agg(
+            start_time=("start_period_seconds_remaining", "max"),
+            end_time=("end_period_seconds_remaining", "min"),
+        )
+        poss_metrics["duration"] = poss_metrics["start_time"] - poss_metrics["end_time"]
+        poss_metrics["team_name"] = poss_metrics.index.map(poss_team)
+        poss_metrics = poss_metrics.dropna(subset=["team_name"])
+        poss_metrics = poss_metrics[poss_metrics["duration"].between(0, POSS_MAX_SEC)]
+
+        tempo_df = (
+            poss_metrics.groupby("team_name")["duration"]
+            .agg(pbp_possession_sec="mean", n_possessions="count")
+            .reset_index()
+            .query("n_possessions > 5")
+        )
+    else:
+        is_turnover = pbp["type_text"].str.contains("Turnover|Steal", case=False, na=False)
+        tempo_df = pd.DataFrame(columns=["team_name", "pbp_possession_sec", "n_possessions"])
 
     # ---- Turnover rate ----
     to_counts = (
@@ -377,18 +391,21 @@ def compute_team_features(pbp: pd.DataFrame) -> pd.DataFrame:
     )
 
     # ---- Transition rate ----
-    shots_full = pbp[pbp["shooting_play"]].copy()
-    shots_full["play_sec"] = (
-        pd.to_numeric(shots_full["start_period_seconds_remaining"], errors="coerce") -
-        pd.to_numeric(shots_full["end_period_seconds_remaining"], errors="coerce")
-    )
-    shots_full["team_name"] = shots_full["team_id"].astype(str).map(team_name_map)
-    fast = shots_full[shots_full["play_sec"].between(0, TRANSITION_MAX_SEC) & shots_full["team_name"].notna()]
-    transition_counts = (
-        fast.groupby("team_name")
-        .size()
-        .reset_index(name="n_transition_shots")
-    )
+    if _has_timing:
+        shots_full = pbp[pbp["shooting_play"]].copy()
+        shots_full["play_sec"] = (
+            pd.to_numeric(shots_full["start_period_seconds_remaining"], errors="coerce") -
+            pd.to_numeric(shots_full["end_period_seconds_remaining"], errors="coerce")
+        )
+        shots_full["team_name"] = shots_full["team_id"].astype(str).map(team_name_map)
+        fast = shots_full[shots_full["play_sec"].between(0, TRANSITION_MAX_SEC) & shots_full["team_name"].notna()]
+        transition_counts = (
+            fast.groupby("team_name")
+            .size()
+            .reset_index(name="n_transition_shots")
+        )
+    else:
+        transition_counts = pd.DataFrame(columns=["team_name", "n_transition_shots"])
 
     # ---- Game counts ----
     game_counts = (
