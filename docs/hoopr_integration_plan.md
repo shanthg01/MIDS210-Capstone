@@ -132,17 +132,110 @@ hoopR parquets are stable historical releases; downloading and re-processing is 
 
 ---
 
-## Phase 2: Player-Level Features (deferred)
+## Phase 2: Player-Level Features (planned, not started)
 
-Requires:
-1. ESPN↔barttorvik player crosswalk (name + team + season fuzzy match — est. ~90% hit rate)
-2. `players.espn_id` populated from hoopR data
-3. New table `hoopr_player_season_stats`
+### Step 0 — verify schema before building
 
-Features to add per player:
-- `pbp_player_zone_pct_*` — shot zone distribution (5 zones)
-- `pbp_player_clutch_ts_pct` — TS% in last 2min, ≤5pt margin
-- Feed into M5 (transfer success predictor) as additional features
+Team-level crosswalk worked because `home_team_id/name` sit directly in the parquet.
+Player side may NOT have an equivalent `athlete_display_name` column. Inspect the
+2026 parquet schema for any `athlete_*name*` column first. If absent, fall back to
+parsing player name out of the `text` play-description field (ESPN commentary embeds
+names: "Jalen Smith makes 2-pt jumper"). Do this before writing crosswalk logic —
+avoids a repeat of the `points_attempted` / timing-column schema-drift bugs hit on
+the team-level 2021 backfill.
+
+### Crosswalk strategy
+
+`players.espn_id` (nullable, unique) already exists on the model — no migration
+needed for the crosswalk slot itself, only for the new stats table.
+
+- Match key: `(full_name, team_id → school_id, season)` fuzzy match, same
+  `difflib.SequenceMatcher` threshold (0.82) used for team names.
+- Target hit rate: ~90% (unchanged from original estimate).
+- Same-name collisions on one roster: flag, don't auto-match. Use jersey number as
+  tiebreak if available; else leave unmatched for manual review.
+- Store a match-confidence score on the row — lets feature-eng filter low-confidence
+  joins later without re-running the match.
+- Idempotent: only fill `players.espn_id` if currently NULL; never overwrite an
+  existing match on re-run.
+
+### Testing & evaluation
+
+- Run crosswalk on 2026 first (fully ingested already) before widening to other seasons.
+- Manual spot check: sample N=50 matched players against known rosters.
+- Unmatched players: write the stats row anyway with `player_id = NULL`,
+  `espn_athlete_id` populated, raw name/team stored for later manual backfill —
+  same pattern `hoop_explorer_player_stats` already uses for `he_player_code`.
+- Log match-rate stats (X/Y matched, pct) every ingest run so a future regression
+  is visible immediately instead of silently degrading.
+
+### New table: `hoopr_player_season_stats`
+
+Mirrors the full breadth of `hoopr_team_season_stats` (parity-by-default — anything
+aggregated at team level from PBP gets aggregated at player level too via the same
+groupby logic, just keyed on `athlete_id_1` instead of `team_id`), plus player-only
+additions and volume/coverage columns:
+
+| Column | Source | Notes |
+|---|---|---|
+| `player_id` | crosswalk | FK → `players.id`, nullable |
+| `espn_athlete_id` | PBP `athlete_id_1` | |
+| `season` | | |
+| `raw_display_name` | PBP/text-parsed | for manual backfill on unmatched rows |
+| `match_confidence` | crosswalk | fuzzy-match score |
+| `pbp_rim_pct` / `pbp_three_pct` / `pbp_mid_pct` | mirrors team table | |
+| `pbp_zone1_restricted_pct` … `pbp_zone5_wing3_pct` | mirrors team table | 5 spatial zones |
+| `pbp_turnover_rate` | mirrors team table | |
+| `pbp_transition_rate` | mirrors team table | |
+| `pbp_clutch_ts_pct` | new | TS% last 2min, ≤5pt margin |
+| `pbp_assist_rate` | new | `athlete_id_2` is the assister column in PBP — cheap groupby, playmaking signal team table can't have |
+| `shot_attempts_tracked` | new | raw n, not just a rate — needed because per-player samples are much smaller than per-team |
+| `games_tracked` / `possessions_tracked` | mirrors team table coverage metadata | |
+
+**Why volume/coverage matters more here than at team level:** a team season is
+~30 games of stable rates; a bench player's season can be 5 games. A zone% built
+from 8 shot attempts is noise, not signal. Storing `shot_attempts_tracked` alongside
+the rate lets M1 clustering and the future Bayesian Role Fit model (M4) weight or
+filter low-n players instead of treating them as equally confident — directly
+addresses Open Design Question 1 in `CLAUDE.md` (limited data for players < 10 games).
+
+Unique constraint: `(espn_athlete_id, season)`.
+
+### Ingestion pipeline
+
+Extend `ingest_hoopr.py` (not a new script — already holds the PBP parsing/zone
+logic in memory for the season):
+1. Build athlete crosswalk per season → upsert `players.espn_id`.
+2. Aggregate player-level features (table above) → upsert `hoopr_player_season_stats`.
+3. Run immediately after the existing team-level aggregation in the same pass —
+   no separate CLI flag needed, same parquet already loaded.
+
+### Feature engineering notebook: `feature_eng_m1_m2_m3.ipynb`
+
+New section: left-join `hoopr_player_season_stats` onto `player_season_stats` by
+`player_id + season`. Unmatched players (NULL `player_id`) drop out naturally via
+the join. Adds `pbp_player_*` columns to `player_features.parquet`.
+
+### Modeling notebooks
+
+- **M1 (`player_clustering.ipynb`)**: add new features to clustering input, re-check
+  silhouette at k=9 (dimensionality changes, k may shift), log as new MLflow run —
+  `maybe_promote()` handles compare-and-promote automatically.
+- **M5 (Transfer Success, not yet built)**: `pbp_clutch_ts_pct` and `pbp_assist_rate`
+  are the intended SHAP-relevant features once M5 is built — not in scope to build
+  M5 now, just confirm these columns land in the feature table so M5 isn't blocked later.
+
+### Execution order
+
+```
+0. Inspect 2026 parquet schema for player-identity columns
+1. Build crosswalk fn, run on 2026, spot-check N=50
+2. If ~90% hit rate confirmed → write Alembic migration + ORM model
+3. Extend ingest_hoopr.py (crosswalk + aggregation), re-run all seasons 2021+
+4. Extend feature_eng_m1_m2_m3.ipynb, regenerate player_features.parquet
+5. Extend player_clustering.ipynb, new MLflow run, compare/promote
+6. Update STATUS.md + dataflow_diagram.mmd once shipped
+```
 
 ---
 
@@ -158,7 +251,11 @@ Features to add per player:
 
 3. **2025 season backfill** — hoopR releases are available for prior seasons.
    `--season 2025 --season 2026` ingests both; team clustering benefits from multi-year
-   stability check before expanding to 3+ seasons.
+   stability check before expanding to 3+ seasons. Notebook side is ready: `feature_eng_m1_m2_m3.ipynb`
+   queries `SEASONS = range(2021, 2027)`, and M1/M2 pool whatever seasons are present in
+   `player_features.parquet`/`team_style_vectors.parquet` rather than a hardcoded single
+   season. Remaining work is the actual ingest backfill (barttorvik + HE + hoopR for
+   2021–2025), not notebook changes.
 
 4. **Scheme vector dimension** — Model 3 currently uses 5-dim barttorvik vector
    (`three_pct, rim_pct, usage, assisted_pct, pace`). Adding hoopR zones makes it

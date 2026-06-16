@@ -169,6 +169,8 @@ The original design positioned players as the primary user (players discovering 
 | Feature engineering (`feature_eng_m1_m2_m3.ipynb`) | ✅ Complete | `player_features.parquet` (4,083 players); `team_style_vectors.parquet` (365 teams, barttorvik + HE + hoopR cols); S3 upload |
 | Roster gap analysis | ❌ Not started | Required for Gap Matching (Component 1) |
 
+**Multi-season support (notebooks):** `feature_eng_m1_m2_m3.ipynb` queries `SEASONS = range(2021, 2027)` (returns whatever's actually ingested — currently 2026 only). M1/M2 (`player_clustering.ipynb`, `team_clustering.ipynb`) pool all seasons present in the parquet as independent training rows, deriving `SEASONS_IN_DATA`/`CURRENT_SEASON` from the data instead of a hardcoded config int — each DB row keeps its own `season`, so re-running after a multi-season backfill trains on the larger pool automatically. M3 (`scheme_fit_scorer.ipynb`) is architecturally a current-roster snapshot scorer (`player_team_fit_scores` has no `season` column — it's a refreshed cache, not a historical archive), so it derives `CURRENT_SEASON = max season in data` and filters to it rather than pooling. Actual multi-season ingest (2021–2025 backfill) is still pending — see `hoopr_integration_plan.md` Open Question 3.
+
 **gitignore:** `data/hoopr/`, `notebooks/data/`, `data/features/` — all large data files excluded; S3 is source of truth.
 
 ### ML Models
