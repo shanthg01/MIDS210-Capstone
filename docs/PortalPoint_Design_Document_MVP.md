@@ -241,13 +241,13 @@ External APIs → Raw Storage (S3) → Validation → PostgreSQL → Feature Eng
 
 ### Model Architecture
 
-**Model 1: Player Clustering (K-Means)**
-- Purpose: Categorize players into 10 archetypes ("3&D Wing", "Stretch 4", etc.)
-- Input: 30 statistical features (shooting, creation, defense, physical)
-- Process: PCA (30→10 dims) → K-Means (k=10) → Manual labeling
+**Model 1: Player Clustering (Weighted K-Means)**
+- Purpose: Categorize players into 8 offensive role archetypes for program-facing evaluation
+- Input: Compact BartTorvik style, efficiency, scoring volume, and possession-security features
+- Process: Weighted scaling → K-Means (k=8) → centroid/top-player review → manual labeling
 - Output: Archetype assignment per player-season
-- Training: Weekly on Sundays, full dataset
-- Serving: Pre-computed, stored in database
+- Training: Re-run after major data refreshes or feature-set changes
+- Serving: Pre-computed, stored in `player_archetypes`
 
 **Model 2: Team System Clustering (K-Means)**
 - Purpose: Classify team offensive/defensive systems
@@ -434,7 +434,7 @@ PUT  /api/programs/{program_id}/preferences
     },
     "roster_needs": {
       "positions": ["SG", "PF"],
-      "target_archetypes": ["3&D Wing", "Stretch 4"]
+      "target_archetypes": ["Primary Engine", "Floor Spacer"]
     },
     "nil_budget_range": {"min": 50000, "max": 300000},
     "recruiting_regions": ["Southeast", "Midwest"],
@@ -906,7 +906,7 @@ Push to GitHub → Run Tests → Build Docker Image → Push to ECR →
 
 **Usage Rate:** Percentage of team possessions used by a player while on court
 
-**Archetype:** Player category based on statistical profile (e.g., "3&D Wing", "Stretch 4")
+**Archetype:** Player category based on statistical profile (e.g., "Primary Engine", "Floor Spacer")
 
 **Fit Score:** 0-100 metric quantifying player-team compatibility across multiple dimensions
 

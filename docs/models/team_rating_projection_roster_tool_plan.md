@@ -6,7 +6,7 @@
 **Primary output table:** `team_rating_projections`  
 **Upstream dependency:** Player Projection system, Playing Time / Rotation model  
 **Downstream consumers:** `/api/projections/team-rating`, Fit Score page, Compare page, Recommendation Engine  
-**Related plan:** `docs/playing_time_rotation_model_plan.md`
+**Related plan:** `docs/models/playing_time_rotation_model_plan.md`
 
 ---
 

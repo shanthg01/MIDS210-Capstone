@@ -175,4 +175,4 @@ Policy attached to `PortalPoint-Dev`: `PortalPointS3Access` (scoped to `portalpo
 
 - [`.env.example`](../.env.example) — env variable template
 - [`README.md`](../README.md) — full stack quick start + MLflow section
-- [`STATUS.md`](STATUS.md) — infrastructure status and bucket layout
+- [`status/ARCHITECTURE_STATUS.md`](status/ARCHITECTURE_STATUS.md) — infrastructure status and bucket layout
