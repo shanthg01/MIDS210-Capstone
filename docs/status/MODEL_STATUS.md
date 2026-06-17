@@ -16,8 +16,8 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | Model | Current state | MVP remaining work | v2 / improvement backlog | Primary references |
 |---|---|---|---|---|
 | M1 Player Clustering | Complete and usable; k=8 offensive archetypes written to `player_archetypes`. | Install notebook-only `mlflow` and re-log if shared run history is required; confirm S3 artifacts after final run. | Revisit with stable Hoop Explorer player play types; test action-level labels such as P&R handler, spot-up shooter, cutter, roller/pop big, transition scorer; consider defensive/matchup context. | [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
-| M2 Team System Clustering | Complete baseline in `team_system_profiles`; two-scaler BART + Hoop Explorer approach. | Human basketball review of `SYSTEM_LABELS`; confirm latest S3 artifacts and MLflow run after any rerun. | Decide whether hoopR spatial zones should alter team clusters or remain downstream context; reassess labels after broader HE/hoopR refresh. | [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
-| M3 Scheme Fit | Complete deterministic `scheme-cos-v2`; writes `scheme_fit`. | Keep 3-dim shot-rate contract stable while Gap Matching is built; validate score distribution if new seasons are loaded. | Test M3 v3 with hoopR spatial zones and/or HE supplementary scheme fit; improve breakdown explanations for coaches. | [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
+| M2 Team System Clustering | Complete baseline; ⚠️ re-train needed after feature_eng re-run (HE coverage 19%→98%). | Re-run feature_eng then re-train M2; human review of `SYSTEM_LABELS` after. | Evaluate adding `off_trans_pct`/`def_trans_pct` to style vector; hoopR spatial zones decision. | [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
+| M3 Scheme Fit | Complete deterministic `scheme-cos-v2`; ⚠️ re-run needed after M2 re-trains. | Re-run after M2; validate score distribution. | Test M3 v3 with hoopR spatial zones and/or HE supplementary scheme fit; improve breakdown explanations for coaches. | [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
 | Gap Matching | Not started; next critical path item. | Build notebook, decide position-specific vs school-wide gaps, write `gap_match` to `player_team_fit_scores`, then update `fit_scores.py` to expose real scheme + gap. | Add roster snapshots, portal departure confidence, coach-adjustable needs, and richer position/role buckets. | [`../models/gap_matching_plan.md`](../models/gap_matching_plan.md) |
 | M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; decide whether MVP only writes score or also stores opportunity details. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) |
 | Program Fit | Not started. | Define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities. | `APPLICATION_STATUS.md`; future program-fit plan needed |
@@ -28,7 +28,10 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 Immediate modeling order:
 
 ```text
-Gap Matching
+Re-run feature_eng_m1_m2_m3.ipynb   <- HE team coverage 19%->98% after 5-season load
+  -> Re-run M2 (team_clustering)    <- fresh team_style_vectors with full HE coverage
+  -> Re-run M3 (scheme_fit_scorer)  <- downstream of M2
+  -> Gap Matching
   -> fit_scores.py partial real scoring
   -> Role Fit / Playing Time
   -> Program Fit
@@ -62,8 +65,8 @@ overall_fit = 0.30 * scheme_fit + 0.70 * 50.0
 | Source | Status | Primary tables/files | Notes |
 |---|---|---|---|
 | BartTorvik | Complete, multi-season loaded | `player_season_stats`, `team_season_stats`, S3 `raw/barttorvik/` | Normalized Postgres rows plus raw S3 files. 2021-2026 player seasons are available locally. |
-| Hoop Explorer | Ingested, still expanding | `hoop_explorer_player_stats`, `hoop_explorer_team_stats`, S3 `raw/hoop_explorer/` | Do not depend on this for final player labels yet; revisit clustering when ingestion is stable. |
-| hoopR ESPN PBP | Complete for team season features | `hoopr_team_season_stats`, S3 `raw/hoopr/` | Useful for future team style and scheme vector expansion. |
+| Hoop Explorer | Complete — 5 seasons loaded (2022-2026) | `hoop_explorer_player_stats` (13,993 rows, all D1), `hoop_explorer_team_stats` (1,811 rows), S3 `raw/hoop_explorer/` | Player data includes 15 play-type pcts + `pos_confidence_pg/sg/sf/pf/c`. Team data includes trans/scramble pct+ppp. Feature engineering re-run needed before these flow into model inputs. |
+| hoopR ESPN PBP | Complete — 6 seasons (2021-2026) | `hoopr_team_season_stats`, `hoopr_player_season_stats`, S3 `raw/hoopr/` | Team PBP coverage partial for 2021-2024 (~172-235 teams); near-full for 2025-2026. |
 | Feature parquet | Generated by notebooks | `data/features/player_features.parquet`, `data/features/team_style_vectors.parquet` | Gitignored; S3 is source of truth for shared feature files. |
 | Model artifacts | Generated by notebooks | `data/models/*.pkl`, centroid CSVs, S3 `models/` | Local artifacts may differ by branch/run; upload to S3 when sharing. |
 
@@ -170,7 +173,9 @@ Partial validation before DB writes showed:
 
 ### Follow-Ups
 
-- Review `SYSTEM_LABELS` for basketball readability.
+- **Feature engineering re-run needed:** HE team coverage was ~19% (single season, 356 rows). Now 1,811 team-seasons (5 seasons); re-run `feature_eng_m1_m2_m3.ipynb` to pick up expanded HE data, then re-train M2.
+- Evaluate adding `off_trans_pct`/`def_trans_pct` (now in `hoop_explorer_team_stats`) to team style vector before re-training.
+- Review `SYSTEM_LABELS` for basketball readability after re-train.
 - Decide whether hoopR spatial zones should alter M2 or only feed M3/team projection.
 - Keep `adj_em` as an overlay/quality indicator, not a style feature.
 
@@ -205,9 +210,10 @@ Both vectors should be same-season shot-rate vectors on the same scale. M2 label
 
 ### Follow-Ups
 
+- Re-run after M2 re-trains on expanded HE data.
 - Validate whether score compression remains acceptable.
 - hoopR spatial zones can support an M3 v3 vector, but should be validated before replacing the stable 3-dim base.
-- Hoop Explorer supplementary scheme fit can appear in breakdown JSON when coverage is complete.
+- HE supplementary scheme fit can appear in breakdown JSON; HE team coverage is now 1,811 rows (5 seasons) — viable after feature_eng re-run.
 
 ---
 
@@ -228,9 +234,9 @@ ppg, rpg, apg, spg, bpg, ts_pct, usage_rate, three_point_rate
 
 Immediate decisions:
 
-1. Check position coverage in `player_season_stats`.
-2. Use per-position roster gaps if position coverage is reliable.
-3. Fall back to school-wide aggregate gaps if position coverage is weak.
+1. Position inference: `hoop_explorer_player_stats.pos_confidence_pg/sg/sf/pf/c` now populated for 13,993 player-seasons — use these rather than relying on BART's sparse position column.
+2. Use per-position roster gaps if HE position confidence is reliable (recommend this path now that data exists).
+3. Fall back to school-wide aggregate gaps if position coverage is weak after join.
 4. Write a small feature contract before scoring all player-team pairs.
 
 ---
@@ -248,7 +254,8 @@ Immediate decisions:
 Critical path:
 
 ```text
-Gap Matching
+feature_eng re-run -> M2 re-train -> M3 re-run
+  -> Gap Matching
   -> fit_scores.py partial real scoring
   -> Role Fit / Playing Time
   -> Program Fit
@@ -265,8 +272,9 @@ Parallel work:
 
 ## Model Open Questions
 
-1. Should Gap Matching be position-specific or school-wide for MVP?
+1. Gap Matching position handling: HE `pos_confidence_*` data now available (13,993 rows). Per-position gaps are now feasible — recommend this path. Confirm join rate to BART player-seasons before committing.
 2. Do we want to store richer opportunity outputs in a dedicated `playing_time_projections` table, or only write `role_fit` first?
 3. What public/proxy data should represent NIL budget and program fit?
-4. Should Hoop Explorer player data become part of M1, or should it power a separate play-type role model?
+4. Should Hoop Explorer player play-type data (`off_style_*_pct`, 15 types, 13,993 rows) become part of M1 feature vector? Coverage ~60% vs. hoopR's ~20% — higher coverage and semantically richer. Requires feature_eng update + new M1 experiment.
 5. How much score explanation is required for coaches before recommendation ranking feels trustworthy?
+6. Should `off_trans_pct`/`def_trans_pct` be added to M2 style vector in next re-train? Data is in DB now.

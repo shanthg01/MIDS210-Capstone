@@ -107,6 +107,8 @@ Applied migration chain:
 | `4d2553a387cc` | Expanded BartTorvik player/team fields |
 | `a3f7b2c9e1d0` | Hoop Explorer tables |
 | `c1e8f4a2b5d3` | hoopR team season stats |
+| `e47b1d6a9c52` | hoopR player season stats |
+| `f2a9c3d7e841` | HE `pos_confidence_*` (player) + `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` (team) |
 
 Important tables:
 
@@ -116,8 +118,10 @@ Important tables:
 | `player_school_seasons` | Player-team-season linkage |
 | `player_season_stats` | BartTorvik normalized player stats |
 | `team_season_stats` | BartTorvik normalized team stats |
-| `hoop_explorer_player_stats`, `hoop_explorer_team_stats` | Hoop Explorer normalized exports |
+| `hoop_explorer_player_stats` | HE player exports — 13,993 rows (5 seasons 2022-2026, all D1); includes RAPM, 15 play-type pcts, `pos_confidence_pg/sg/sf/pf/c` |
+| `hoop_explorer_team_stats` | HE team exports — 1,811 rows (5 seasons 2022-2026); includes 12 off/def play-type pcts, `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` |
 | `hoopr_team_season_stats` | ESPN PBP-derived team features |
+| `hoopr_player_season_stats` | ESPN PBP-derived player features (87-92% crosswalk per season, 2021-2026) |
 | `player_archetypes` | M1 cluster assignments |
 | `team_system_profiles` | M2 cluster assignments |
 | `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores |
@@ -162,9 +166,9 @@ Policy/ops notes:
 | Stage | Script / notebook | Status | Output |
 |---|---|---|---|
 | BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
-| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py` | Complete, still maturing | HE player/team stats in Postgres; raw files in S3 |
-| hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete for team features | `hoopr_team_season_stats`; raw parquet in S3 |
-| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | Complete for M1-M3 baseline | Feature parquets in `data/features/` and S3 |
+| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 5 seasons 2022-2026 | `hoop_explorer_team_stats` (1,811 rows) + `hoop_explorer_player_stats` (13,993 rows, all D1 tiers); new `pos_confidence_*` + trans/scramble cols populated; raw files in S3 |
+| hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
+| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ⚠️ Re-run needed | HE team coverage was 19% (single season); after 5-season load it will reach ~98%. Re-run before M2/M3 re-train. |
 | Model notebooks | `notebooks/models/*.ipynb` | M1-M3 complete | DB outputs and model artifacts |
 
 Suggested rebuild order from a fresh DB:
@@ -172,8 +176,8 @@ Suggested rebuild order from a fresh DB:
 ```text
 1. alembic upgrade head
 2. ingest_barttorvik.py
-3. ingest_hoop_explorer.py
-4. ingest_hoopr.py
+3. ingest_hoop_explorer.py --all-seasons
+4. ingest_hoopr.py --season <year>  (repeat per season or iterate 2021-2026)
 5. feature_eng_m1_m2_m3.ipynb
 6. team_clustering.ipynb
 7. player_clustering.ipynb
@@ -235,3 +239,4 @@ uv pip install mlflow
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?
 5. What is the minimum deployment target for beta: one VM, container platform, or managed app service?
 6. What data-quality checks should gate S3 uploads and DB upserts?
+7. Should `off_trans_pct`/`def_trans_pct` (now in `hoop_explorer_team_stats`) be added to the M2 team style vector in the next feature_eng re-run?
