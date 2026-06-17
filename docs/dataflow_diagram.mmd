@@ -17,8 +17,8 @@ flowchart TD
             PLY[(players)]
             PSS[(player_season_stats)]
             TSS[(team_season_stats)]
-            HETS[(hoop_explorer_team_stats)]
-            HEPS[(hoop_explorer_player_stats)]
+            HETS[(hoop_explorer_team_stats\n1811 team-seasons · 5 seasons\ntrans/scramble pct+ppp)]
+            HEPS[(hoop_explorer_player_stats\n13993 player-seasons · 5 seasons\npos_confidence · 15 play-type pct)]
             HRTS[(hoopr_team_season_stats\n365 teams · 11 PBP features)]
             HRPS[(hoopr_player_season_stats\nplayer-level pbp_* · 87-92% crosswalk)]
         end
@@ -31,7 +31,7 @@ flowchart TD
 
     subgraph FE["Feature Engineering"]
         FEN[feature_eng_m1_m2_m3.ipynb]
-        PFP[player_features.parquet\nBART scaled+PCA · hoopR pbp_* raw enrichment, 29% coverage]
+        PFP[player_features.parquet\nBART scaled+PCA · hoopR pbp_* raw enrichment, 29% coverage\n⚠️ re-run needed after HE 5-season load]
         TSV[team_style_vectors.parquet\nBART + HE + hoopR cols]
     end
 
@@ -63,13 +63,13 @@ flowchart TD
 
     IB -->|upsert| SCH & PLY & PSS & TSS
     IB -->|cache files| S3B
-    IH -->|upsert| HETS & HEPS
+    IH -->|upsert 5 seasons --all-seasons| HETS & HEPS
     IH -->|CSVs| S3H
     IHR -->|aggregate 365 rows| HRTS
     IHR -->|crosswalk + aggregate| HRPS
     IHR -->|raw PBP parquet| S3HR
 
-    PSS & TSS & HETS & HRTS & HRPS --> FEN
+    PSS & TSS & HETS & HEPS & HRTS & HRPS --> FEN
     FEN --> PFP & TSV
     FEN -->|parquet| S3F
 

@@ -1,6 +1,6 @@
 # PortalPoint — Project Status
 
-**Date:** June 15, 2026  
+**Date:** June 16, 2026  
 **Current branch:** `feature/integrate-sources` → PR #10 open to `main`  
 **Test suite:** 111 tests passing
 
@@ -151,7 +151,7 @@ The original design positioned players as the primary user (players discovering 
 |---|---|---|
 | PostgreSQL 15 (Docker) | ✅ Running | Port 5433 |
 | Redis 7 (Docker) | ✅ Running | Port 6379 |
-| Alembic migrations (7) | ✅ Applied | `064d7a23e792` → `b683e0eae93e` barttorvik_id → `4f15ed03ddbf` program pivot → `4d2553a387cc` expanded barttorvik fields → `a3f7b2c9e1d0` HE tables → `c1e8f4a2b5d3` hoopR team table → `e47b1d6a9c52` hoopR player table |
+| Alembic migrations (8) | ✅ Applied | `064d7a23e792` → `b683e0eae93e` barttorvik_id → `4f15ed03ddbf` program pivot → `4d2553a387cc` expanded barttorvik fields → `a3f7b2c9e1d0` HE tables → `c1e8f4a2b5d3` hoopR team table → `e47b1d6a9c52` hoopR player table → `f2a9c3d7e841` HE pos_confidence + trans/scramble cols |
 | MLflow | ✅ Complete | S3 artifact backend wired; run metadata in `mlruns.db`; M1–M3 logged |
 | AWS S3 | ✅ Live | `portalpoint-data`; all ingest scripts write raw data + features; MLflow artifacts |
 | Supabase | 🔄 In progress | **Justin** — shared Postgres (optional replace local Docker for team) |
@@ -164,7 +164,7 @@ The original design positioned players as the primary user (players discovering 
 | Stage | Status | Output |
 |---|---|---|
 | Barttorvik ETL (`scripts/ingest_barttorvik.py`) | ✅ Complete | ~4,548 players, 365 schools, 2026 season; expanded advanced fields; S3 upload |
-| Hoop Explorer ETL (`scripts/ingest_hoop_explorer.py`) | ✅ Complete | `hoop_explorer_team_stats` (356 teams), `hoop_explorer_player_stats`; S3 upload |
+| Hoop Explorer ETL (`scripts/ingest_hoop_explorer.py --all-seasons`) | ✅ Complete | `hoop_explorer_team_stats` (1,811 team-seasons, 5 seasons 2022-2026; adds `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp`), `hoop_explorer_player_stats` (13,993 player-seasons, all D1 tiers; adds `pos_confidence_pg/sg/sf/pf/c`); S3 upload |
 | hoopR PBP ETL (`scripts/ingest_hoopr.py`) | ✅ Complete | `hoopr_team_season_stats` + `hoopr_player_season_stats`, all 6 seasons 2021-2026 (87-92% player crosswalk per season); raw parquet → S3 |
 | Feature engineering (`feature_eng_m1_m2_m3.ipynb`) | ✅ Complete | `player_features.parquet` (23,913 player-seasons, 2021-2026 pooled; hoopR player coverage 6,950/23,913 = 29%); `team_style_vectors.parquet` (2,154 team-seasons, barttorvik + HE + hoopR cols); S3 upload |
 | Roster gap analysis | ❌ Not started | Required for Gap Matching (Component 1) |
@@ -201,7 +201,7 @@ folder, but worth a `.as_posix()` fix.
 
 | # | Model | Status | Artifacts | DB Table |
 |---|---|---|---|---|
-| 1 | Player Clustering (K-Means, K=9) | ✅ Complete | `player_kmeans.pkl`, `player_scaler.pkl`, `player_archetype_labels.pkl` → S3 + MLflow | `player_archetypes` |
+| 1 | Player Clustering (K-Means, K=9) | ✅ Complete (⚠️ DB concern) | `player_kmeans.pkl`, `player_scaler_bart.pkl`, `player_scaler_hoopr.pkl`, `player_archetype_labels.pkl` → S3 + MLflow; Production=v2 (silhouette 0.1649); `player_archetypes` DB holds v3 degraded assignments — revert to v2 pending | `player_archetypes` |
 | 2 | Team System Clustering (K-Means) | ✅ Complete | `team_kmeans.pkl`, `team_bart_scaler.pkl`, `team_he_scaler.pkl`, `team_system_labels.pkl` → S3 + MLflow | `team_system_profiles` |
 | 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete | Deterministic; `scheme-cos-v2`; MLflow run logged | `player_team_fit_scores` (scheme_fit col) |
 | — | Gap Matching (cosine similarity) | ❌ Not started | — | `player_team_fit_scores` (gap_match col) |
@@ -215,9 +215,10 @@ folder, but worth a `.as_posix()` fix.
 
 **M2 feature vector (two-scaler approach):**
 - All 365 D1 teams: 4-dim barttorvik vector (`team_three_rate`, `team_rim_rate`, `team_mid_rate`, `adj_tempo`)
-- 356/365 HE-covered teams: +12 play-type frequency dimensions (second scaler)
+- HE-covered teams: +12 play-type frequency dimensions (second scaler); coverage was 356/365 (single season) — **feature_eng re-run needed** to reflect 1,811 team-seasons (5 seasons, ~98% coverage)
 - 365/365 hoopR-covered teams: `pbp_*` spatial zone + tempo columns available in `team_style_vectors.parquet` for M3 enrichment
 - Non-HE teams assigned via 4-dim BART centroid projection (confidence discounted 25%)
+- **Pending:** after feature_eng re-run, M2 and M3 should be re-trained on updated `team_style_vectors.parquet`; also evaluate adding `off_trans_pct`/`def_trans_pct` (now in DB) to team style vector
 
 **M3 scheme vector (v2):** 3-dim base cosine (shot rates) always computed; `he_scheme_fit` supplementary in breakdown JSON for HE-covered pairs; hoopR spatial zones available for v3 expansion.
 
@@ -249,7 +250,13 @@ folder, but worth a `.as_posix()` fix.
 ### Critical path (blocks full fit score + recommendations)
 
 ```
-Gap Matching notebook          ← next immediate step
+Re-run feature_eng_m1_m2_m3   ← immediate next step (HE team coverage 19%→98%)
+        ↓
+Re-run M2 (team_clustering)    ← fresh team_style_vectors with 5-season HE
+        ↓
+Re-run M3 (scheme_fit_scorer)  ← downstream of M2 re-run
+        ↓
+Gap Matching notebook
         ↓
 wire fit_scores.py (partial)   ← scheme_fit + gap_match real, role/program stubbed
         ↓
@@ -299,7 +306,7 @@ Next model to build. No new external data required; derivable from existing DB.
 
 ## Open Design Questions
 
-1. **Gap matching — position handling:** Per-position (more accurate, needs clean position data) vs. school-wide aggregate (simpler). Decide after checking position coverage in DB.
+1. **Gap matching — position handling:** Per-position (more accurate) vs. school-wide aggregate (simpler). `hoop_explorer_player_stats.pos_confidence_pg/sg/sf/pf/c` now populated for 13,993 player-seasons — use these for position inference rather than relying on BART's sparse position column. Decide final approach before building Gap Matching.
 2. **Player archetype labels (M1 — Justin):** `ARCHETYPE_LABELS` in `player_clustering.ipynb` still uses auto-generated candidates — finalize before Gap Matching.
 3. **Team system labels (M2 — Shanth):** Auto-generated via taxonomy distance matching — review `SYSTEM_LABELS` for accuracy.
 4. **Program Fit data gaps:** `nil_valuations` and `schools.nil_estimated_budget_usd` are not populated from barttorvik (no public NIL data). NIL fit score will require either manual data entry, third-party source, or a proxy (conference tier, market size). Decide before building Program Fit calculator.
