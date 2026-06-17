@@ -175,6 +175,26 @@ The original design positioned players as the primary user (players discovering 
 
 **hoopR Phase 2 Step 3 fully shipped, all 6 seasons (2026-06-16):** `hoopr_player_season_stats` populated for real across 2021-2026 (player match rate 87.2%-91.8% per season, ~4,700-4,990 ESPN athletes/season). 2021 backfill first crashed on a `players_espn_id_key` unique violation (two duplicate `players` rows for the same human, "Trent Hudgens Jr." vs "Trent Hudgens Jr", from upstream name-punctuation drift, both fuzzy-matched to the same ESPN athlete across season runs) — fixed by wrapping `_backfill_espn_ids` per-row in a SAVEPOINT so a collision is logged+skipped instead of aborting the season's transaction; re-ran clean (2-28 collisions skipped per season, see `hoopr_integration_plan.md`). Verified via direct SQL: zero `(espn_athlete_id, season)` dupes, zero `players.espn_id` dupes, zero empty `espn_team_name` across all 6 seasons. **New finding:** team-level PBP coverage is ~half of D1 for 2021-2024 (172-235 teams) vs. near-full for 2025-2026 (363-364 teams) — ESPN expanded tracking in recent seasons; flag this for any multi-season M1/M2 training. See `hoopr_integration_plan.md` Phase 2 for full per-season table.
 
+**hoopR Phase 2 Step 5 shipped (2026-06-16):** found `feature_eng_m1_m2_m3.ipynb`'s export cell wrote
+to a CWD-relative `../data/features` (landing in `notebooks/data/features` under nbconvert's default
+working directory), while `player_clustering.ipynb`/`team_clustering.ipynb`/`scheme_fit_scorer.ipynb`
+all read from a CWD-agnostic `{repo_root}/data/features` — three consumers agreed, the one writer
+didn't. A `player_clustering.ipynb` run against the (silently stale, single-season, 4,083-player)
+repo-root copy had already registered MLflow `player-clustering` v1 and auto-promoted it to Production
+(no prior baseline existed to gate it). Fixed the writer to match the consumers' path convention,
+re-ran feature engineering (same 23,913/2,154-row pooled output, now at the correct path), then re-ran
+`player_clustering.ipynb`: v2, 23,913 players across 2021-2026, k=9, silhouette 0.1649. Manually
+promoted v2 → Production and archived v1, since the auto-promotion delta (+0.1% vs. v1) was too small
+to clear the 5% gate on its own — expected, since v1's score was a coincidence of training on the
+wrong data, not a real baseline to beat. `player_archetypes` (23,913 rows) and the `.pkl`/centroid
+artifacts already reflected the correct v2 run regardless, since those writes happen unconditionally
+before the MLflow section. Folding the 12 hoopR `pbp_*` player columns into the clustering vector
+itself (vs. keeping the production model on the original 7 barttorvik dims) is still deferred — see
+`hoopr_integration_plan.md` Open Questions. Also flagged, not fixed: `mlflow_helpers.get_tracking_uri()`
+builds a sqlite URI from a raw Windows path, which silently resolves to a CWD-relative `mlruns.db`
+instead of the intended repo-root one — harmless so far since all three modeling notebooks share one
+folder, but worth a `.as_posix()` fix.
+
 **gitignore:** `data/hoopr/`, `notebooks/data/`, `data/features/` — all large data files excluded; S3 is source of truth.
 
 ### ML Models

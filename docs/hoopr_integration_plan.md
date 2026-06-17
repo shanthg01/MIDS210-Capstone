@@ -281,8 +281,8 @@ the join. Adds `pbp_player_*` columns to `player_features.parquet`.
 2. If ~90% hit rate confirmed → write Alembic migration + ORM model  ✅ done — e47b1d6a9c52, HoopRPlayerSeasonStats
 3. Extend ingest_hoopr.py (crosswalk + aggregation), re-run all seasons 2021+  ✅ done — all 6 seasons (2021-2026)
 4. Extend feature_eng_m1_m2_m3.ipynb, regenerate player_features.parquet         ✅ done — see below
-5. Extend player_clustering.ipynb, new MLflow run, compare/promote
-6. Update STATUS.md + dataflow_diagram.mmd once shipped
+5. Extend player_clustering.ipynb, new MLflow run, compare/promote   ✅ done — see below
+6. Update STATUS.md + dataflow_diagram.mmd once shipped              ✅ done — see STATUS.md
 ```
 
 **Step 4 results:** Added `HOOPR_PLAYER_SQL` (Section 1) joined onto `feat_df` keyed on
@@ -309,6 +309,38 @@ NULL for some pooled-season teams) made `pa.array()` guess `double` from leading
 fail on the first string (`ArrowInvalid: Could not convert 'B12'...`). Fixed by replacing NaN
 with `None` before list conversion — `None` is a universal null marker for `pa.array`'s type
 inference regardless of column dtype, so it can't be misled by element order.
+
+**Step 5 results:** `player_clustering.ipynb`, `team_clustering.ipynb`, and `scheme_fit_scorer.ipynb`
+all resolve `FEATURES_DIR` via a CWD-agnostic walk to `{repo_root}/data/features`. The Step 4 export
+cell used a CWD-relative `Path('../data/features')` instead, which — under nbconvert's default
+notebook-relative working directory — wrote to `notebooks/data/features`. Three consumers agreed on
+one path; the one writer didn't. Fixed by switching the writer to the same `_root`-based resolution
+used everywhere else, then re-ran. `data/features/{player_features,team_style_vectors}.parquet` now
+hold the correct pooled 23,913-row / 2,154-row 6-season data at the path all three modeling notebooks
+actually read.
+
+The first `player_clustering.ipynb` run this session (before the bug was found) had silently trained
+on the stale single-season copy (4,083 players, 2026 only) and registered as MLflow `player-clustering`
+v1 — auto-promoted to Production since no prior baseline existed. Re-ran after the fix: v2, 23,913
+players across 2021-2026, k=9, silhouette 0.1649 (vs. v1's 0.1648 — `maybe_promote()`'s 5% delta gate
+correctly didn't fire on two near-identical scores, but the comparison was meaningless since v1 wasn't
+a real baseline). Manually promoted v2 → Production, archived v1 — DB (`player_archetypes`, 23,913
+rows) and artifacts (`player_kmeans.pkl`, `centroids_player.csv`) already reflected the correct v2 run
+regardless of registry stage, since those writes happen unconditionally before the MLflow section.
+
+**Related bug found, not fixed:** `mlflow_helpers.get_tracking_uri()` builds
+`f"sqlite:///{db_path}"` from a Windows backslash path. It doesn't error, but silently resolves to a
+CWD-relative `mlruns.db` instead of the intended `{repo_root}/mlruns.db` whenever the backslashes
+don't parse as part of the URI. Both M1 runs this session landed in `notebooks/models/mlruns.db`, not
+repo-root `mlruns.db` — harmless so far since M1/M2/M3 notebooks all share that folder, but a latent
+footgun if a notebook is ever launched from a different working directory. Needs a `.as_posix()` fix;
+not addressed this session.
+
+**hoopR player-column fold-in — deferred:** kept `MODEL_FEATURES` at the original 7 barttorvik dims
+for the production v2 run. Every player needs an archetype and 71% lack hoopR coverage, so production
+stays in the existing 7-dim space. Folding the 12 `pbp_*` dims into a separate, hoopR-covered-only
+experimental run (not calling `maybe_promote()`) to check whether they improve cluster discrimination
+is still open — not attempted this session.
 
 ---
 

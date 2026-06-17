@@ -20,6 +20,7 @@ flowchart TD
             HETS[(hoop_explorer_team_stats)]
             HEPS[(hoop_explorer_player_stats)]
             HRTS[(hoopr_team_season_stats\n365 teams · 11 PBP features)]
+            HRPS[(hoopr_player_season_stats\nplayer-level pbp_* · 87-92% crosswalk)]
         end
         subgraph ML_OUT["ML Output Tables"]
             PA[(player_archetypes)]
@@ -30,7 +31,7 @@ flowchart TD
 
     subgraph FE["Feature Engineering"]
         FEN[feature_eng_m1_m2_m3.ipynb]
-        PFP[player_features.parquet]
+        PFP[player_features.parquet\nBART scaled+PCA · hoopR pbp_* raw enrichment, 29% coverage]
         TSV[team_style_vectors.parquet\nBART + HE + hoopR cols]
     end
 
@@ -65,9 +66,10 @@ flowchart TD
     IH -->|upsert| HETS & HEPS
     IH -->|CSVs| S3H
     IHR -->|aggregate 365 rows| HRTS
+    IHR -->|crosswalk + aggregate| HRPS
     IHR -->|raw PBP parquet| S3HR
 
-    PSS & TSS & HETS & HRTS --> FEN
+    PSS & TSS & HETS & HRTS & HRPS --> FEN
     FEN --> PFP & TSV
     FEN -->|parquet| S3F
 

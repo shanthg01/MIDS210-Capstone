@@ -399,6 +399,15 @@ class HoopExplorerTeamStats(Base):
     def_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
     def_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
     def_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Standalone transition / scramble rates (separate from play-style classification pct)
+    off_trans_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_trans_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    def_trans_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_trans_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    off_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_scramble_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    def_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_scramble_ppp: Mapped[Optional[float]] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -409,8 +418,8 @@ class HoopExplorerTeamStats(Base):
 class HoopExplorerPlayerStats(Base):
     """
     Player-level data from Hoop Explorer CSV exports.
-    Covers Power 6 + strong mid-majors only (high tier, ~672 players per season).
-    Primary use: RAPM for transfer outcome model (Model 5), play-style vectors for scheme fit (Model 3).
+    Covers all D1 tiers (~2,958 players per season; 5 seasons loaded = ~14,500 rows).
+    Primary use: RAPM for transfer outcome model (Model 5), play-style vectors for M1 clustering and M3 scheme fit.
     Cross-source join: he_player_code stable across seasons; he_ncaa_id → barttorvik roster.
     player_id FK nullable until reconciled via (name, team, season) match.
     """
@@ -482,6 +491,12 @@ class HoopExplorerPlayerStats(Base):
     off_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
     off_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
     off_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Position probability distributions (posConfidences[_PG_] etc. from HE CSV)
+    pos_confidence_pg: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_sg: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_sf: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_pf: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_c: Mapped[Optional[float]] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
