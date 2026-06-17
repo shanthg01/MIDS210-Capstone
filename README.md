@@ -21,7 +21,10 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Recommendation Engine (Model 7) | ❌ Blocked on remaining fit components |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
-See [`docs/STATUS.md`](docs/STATUS.md) for the full critical path and model tracker.
+See [`docs/status/STATUS.md`](docs/status/STATUS.md) for the status index, or jump directly to
+[`docs/status/MODEL_STATUS.md`](docs/status/MODEL_STATUS.md),
+[`docs/status/ARCHITECTURE_STATUS.md`](docs/status/ARCHITECTURE_STATUS.md), and
+[`docs/status/APPLICATION_STATUS.md`](docs/status/APPLICATION_STATUS.md).
 
 ---
 
@@ -189,7 +192,7 @@ Open http://127.0.0.1:5000. Three experiments are visible:
 
 | Experiment | Model | Key metric | Registry name |
 |---|---|---|---|
-| `player-clustering` | K-Means player archetypes (k=9) | `silhouette_score` | `player-clustering` |
+| `player-clustering` | K-Means player archetypes (k=8) | `silhouette_score` | `player-clustering` |
 | `team-clustering` | K-Means team system profiles | `silhouette_score` | `team-clustering` |
 | `scheme-fit-scorer` | Cosine similarity `scheme-cos-v2` | `n_records_written` | `scheme-fit-scorer` |
 
@@ -331,7 +334,7 @@ MIDS210-Capstone/
 │   ├── features/
 │   │   └── feature_eng_m1_m2_m3.ipynb # BART + HE + hoopR → player_features + team_style_vectors
 │   ├── models/
-│   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=9)
+│   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=8)
 │   │   ├── team_clustering.ipynb      # Model 2 ✅ — K-Means team system profiles (two-scaler)
 │   │   └── scheme_fit_scorer.ipynb    # Model 3 ✅ — cosine similarity scheme-cos-v2
 │   ├── utils/
@@ -343,7 +346,12 @@ MIDS210-Capstone/
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
 ├── docs/                        # Project documentation, diagrams, and model plans
-│   ├── STATUS.md                # Implementation tracker and critical path
+│   ├── status/
+│   │   ├── STATUS.md                # Status index
+│   │   ├── MODEL_STATUS.md          # Models, feature contracts, artifacts, critical path
+│   │   ├── ARCHITECTURE_STATUS.md   # Infrastructure, DB, S3, ingest, MLflow
+│   │   └── APPLICATION_STATUS.md    # Product, API, frontend, tests
+│   ├── models/                  # Model plans, handoffs, and model data-source notes
 │   ├── aws_s3_setup.md          # Team S3 onboarding (keys, smoke test, layout)
 │   └── PORTALPOINT_DESIGN_PALETTE.md  # Design token reference
 └── README.md                    # Repo overview and setup guide
@@ -355,15 +363,19 @@ MIDS210-Capstone/
 
 | File | Contents |
 |---|---|
-| `docs/STATUS.md` | Authoritative implementation tracker — model owners, critical path, open questions |
+| `docs/status/STATUS.md` | Index for the split status docs |
+| `docs/status/MODEL_STATUS.md` | Model notebooks, feature contracts, artifacts, critical path, open model questions |
+| `docs/status/ARCHITECTURE_STATUS.md` | Local/cloud infrastructure, database, S3, ingest, MLflow |
+| `docs/status/APPLICATION_STATUS.md` | Product direction, API routers, frontend pages, tests, app blockers |
 | `docs/dataflow_diagram.mmd` | Mermaid: sources → ingest → DB → features → models (all 3 sources) |
-| `docs/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
+| `docs/models/gap_matching_plan.md` | Gap Matching model plan — next critical-path fit component |
+| `docs/models/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
 | `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
-| `docs/player_projection_state_space_plan.md` | State-space player projection system plan |
-| `docs/playing_time_rotation_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
-| `docs/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
+| `docs/models/player_projection_state_space_plan.md` | State-space player projection system plan |
+| `docs/models/playing_time_rotation_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
+| `docs/models/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
 | `docs/diagram_1_three_layer_architecture.md` | Fit scoring methodology detail |
 | `docs/diagram_2_solution_architecture.md` | Full AWS infrastructure design |
 | `docs/diagram_3_data_science_workflow.md` | End-to-end ML pipeline with code examples |

@@ -90,8 +90,8 @@
 │ UNSUPERVISED ML: Player Clustering (K-Means)                           │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ 1. PCA: 30 features → 10 principal components                          │
-│ 2. K-Means: Cluster players (k=9)                                      │
-│ 3. Manual labeling: "3&D Wing", "Stretch 4", etc.                      │
+│ 2. K-Means: Cluster players (k=8)                                      │
+│ 3. Manual labeling: offensive role archetypes                           │
 │ 4. Output: player_archetypes table                                      │
 └─────────────────────────────────────────────────────────────────────────┘
                                 ↓

@@ -580,9 +580,9 @@
 │  │                                                               │        │
 │  │      # Manually label clusters (based on centroids)          │        │
 │  │      archetype_labels = {                                    │        │
-│  │          0: "Elite Ball-Handler/Scorer",                     │        │
-│  │          1: "3&D Wing",                                      │        │
-│  │          2: "Stretch 4/5",                                   │        │
+│  │          0: "Primary Engine",                                │        │
+│  │          1: "Efficient Perimeter Scorer",                    │        │
+│  │          2: "Rim Finisher",                                  │        │
 │  │          # ... etc                                           │        │
 │  │      }                                                        │        │
 │  │      df['archetype_label'] = df['archetype_id'].map(         │        │
