@@ -2,8 +2,11 @@ import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
+from sqlalchemy import func, select
 
-from portalpoint.api.deps import CurrentUser
+from portalpoint.api.deps import CurrentUser, DbSession
+from portalpoint.api.routers.fit_scores import CURRENT_SEASON
+from portalpoint.api.routers.players import _safe_class_year, _safe_position
 from portalpoint.api.schemas.comparison import (
     CompareRequest,
     CompareResponse,
@@ -11,101 +14,65 @@ from portalpoint.api.schemas.comparison import (
     ComparisonPlayerEntry,
     TradeOff,
 )
-from portalpoint.api.schemas.fit_score import (
-    FitBreakdown,
-    FitScoreResponse,
-    FitWeights,
-    GapMatchBreakdown,
-    ProgramFitBreakdown,
-    RoleFitBreakdown,
-    SchemeBreakdown,
-)
 from portalpoint.api.schemas.player import ClassYear, PlayerBase, Position
 from portalpoint.api.schemas.prediction import PredictedRole, PredictionResponse, SimilarTransfer
+from portalpoint.api.services import fit_score_service
+from portalpoint.db.models import Player, PlayerSeasonStats, School
 
 router = APIRouter(prefix="/api/compare", tags=["comparison"])
 
-_KNOWN_PLAYERS: dict[int, tuple] = {
-    1001: ("Marcus Johnson",  "SG", "UNC Greensboro",   301, ClassYear.JUNIOR),
-    1002: ("Devon Carter",    "PG", "Vermont",           302, ClassYear.SENIOR),
-    1003: ("Elijah Williams", "SF", "Fordham",           303, ClassYear.SOPHOMORE),
-    1004: ("Jaylen Brooks",   "PF", "Sacred Heart",      304, ClassYear.JUNIOR),
-    1005: ("Tremont Davis",   "SG", "Wright State",      305, ClassYear.SENIOR),
-    1006: ("Kai Thompson",    "PG", "Eastern Kentucky",  306, ClassYear.GRADUATE),
-    1007: ("Andre Mitchell",  "C",  "Longwood",          307, ClassYear.JUNIOR),
-    1008: ("Darius Evans",    "SF", "Norfolk State",     308, ClassYear.SOPHOMORE),
-    1009: ("Malik Foster",    "PF", "Rider",             309, ClassYear.SENIOR),
-    1010: ("Jordan Hayes",    "SG", "UNC Greensboro",    310, ClassYear.JUNIOR),
-}
 
-
-def _player_base(player_id: int) -> PlayerBase:
-    if player_id in _KNOWN_PLAYERS:
-        name, pos, school, school_id, class_year = _KNOWN_PLAYERS[player_id]
-    else:
-        name, pos, school, school_id, class_year = f"Player #{player_id}", "SG", "Unknown", 0, ClassYear.JUNIOR
-    return PlayerBase(
-        player_id=player_id,
-        full_name=name,
-        position=Position(pos),
-        class_year=class_year,
-        current_school=school,
-        current_school_id=school_id,
+async def _player_info(db: DbSession, player_ids: list[int]) -> dict[int, PlayerBase]:
+    """Real player/school data where available; stub fallback for IDs not yet in the DB."""
+    latest_season_sq = (
+        select(
+            PlayerSeasonStats.player_id,
+            func.max(PlayerSeasonStats.season).label("max_season"),
+        )
+        .where(PlayerSeasonStats.player_id.in_(player_ids))
+        .group_by(PlayerSeasonStats.player_id)
+        .subquery()
     )
-
-
-def _stub_fit(program_id: int, player_id: int) -> FitScoreResponse:
-    rng = random.Random(program_id * 1000 + player_id)
-    gap = round(rng.uniform(55.0, 95.0), 1)
-    scheme = round(rng.uniform(55.0, 95.0), 1)
-    role = round(rng.uniform(55.0, 90.0), 1)
-    program = round(rng.uniform(50.0, 85.0), 1)
-    w = FitWeights()
-    overall = round(gap * w.gap + scheme * w.scheme + role * w.role_fit + program * w.program_fit, 1)
-    proj_min = round(rng.uniform(16.0, 28.0), 1)
-    return FitScoreResponse(
-        player_id=player_id,
-        school_id=program_id,
-        overall_fit=overall,
-        gap_match=gap,
-        scheme_fit=scheme,
-        role_fit=role,
-        program_fit=program,
-        breakdown=FitBreakdown(
-            scheme=SchemeBreakdown(
-                three_point_match=round(rng.uniform(60.0, 98.0), 1),
-                pace_match=round(rng.uniform(60.0, 98.0), 1),
-                usage_match=round(rng.uniform(60.0, 98.0), 1),
-                rim_attack_match=round(rng.uniform(60.0, 98.0), 1),
-                ball_movement_match=round(rng.uniform(60.0, 98.0), 1),
-            ),
-            role_fit=RoleFitBreakdown(
-                projected_minutes=proj_min,
-                confidence_interval=(round(proj_min - 5.5, 1), round(proj_min + 5.5, 1)),
-                starter_probability=round(rng.uniform(0.35, 0.85), 2),
-                depth_chart_position=rng.randint(1, 3),
-            ),
-            gap=GapMatchBreakdown(
-                archetype_needed=rng.random() > 0.3,
-                position_depth_score=round(rng.uniform(50.0, 95.0), 1),
-                uniqueness_bonus=round(rng.uniform(0.0, 15.0), 1),
-                redundancy_penalty=round(rng.uniform(-15.0, 0.0), 1),
-            ),
-            program_fit=ProgramFitBreakdown(
-                nil_score=round(rng.uniform(40.0, 90.0), 1),
-                geographic_score=round(rng.uniform(30.0, 95.0), 1),
-                academic_score=round(rng.uniform(55.0, 95.0), 1),
-                cultural_score=round(rng.uniform(50.0, 90.0), 1),
-                nil_budget_alignment=round(rng.uniform(50.0, 1800.0), 0),
-            ),
-        ),
-        weights_used=w,
-        computed_at=datetime.now(timezone.utc),
-        model_version="fit_v1.0-stub",
+    stmt = (
+        select(Player, School.name.label("school_name"), School.id.label("school_id"))
+        .join(latest_season_sq, latest_season_sq.c.player_id == Player.id)
+        .join(
+            PlayerSeasonStats,
+            (PlayerSeasonStats.player_id == Player.id)
+            & (PlayerSeasonStats.season == latest_season_sq.c.max_season),
+        )
+        .join(School, School.id == PlayerSeasonStats.school_id)
+        .where(Player.id.in_(player_ids))
     )
+    rows = (await db.execute(stmt)).all()
+
+    found: dict[int, PlayerBase] = {
+        p.id: PlayerBase(
+            player_id=p.id,
+            full_name=p.full_name,
+            position=_safe_position(p.position),
+            class_year=_safe_class_year(p.class_year),
+            current_school=school_name,
+            current_school_id=school_id,
+        )
+        for p, school_name, school_id in rows
+    }
+
+    for pid in player_ids:
+        if pid not in found:
+            found[pid] = PlayerBase(
+                player_id=pid,
+                full_name=f"Player #{pid}",
+                position=Position.SG,
+                class_year=ClassYear.JUNIOR,
+                current_school="Unknown",
+                current_school_id=0,
+            )
+    return found
 
 
 def _stub_prediction(program_id: int, player_id: int) -> PredictionResponse:
+    # STUB — replace with Model 5 (transfer success predictor) output
     rng = random.Random(program_id * 1000 + player_id + 999)
     return PredictionResponse(
         player_id=player_id,
@@ -136,12 +103,13 @@ def _stub_prediction(program_id: int, player_id: int) -> PredictionResponse:
 
 
 @router.post("", response_model=CompareResponse)
-async def compare_players(body: CompareRequest, current_user: CurrentUser):
-    # STUB — replace with parallel fit score + prediction fetches in Phase 2
+async def compare_players(body: CompareRequest, current_user: CurrentUser, db: DbSession):
+    player_info = await _player_info(db, body.player_ids)
+
     entries = [
         ComparisonPlayerEntry(
-            player=_player_base(pid),
-            fit_score=_stub_fit(body.program_id, pid),
+            player=player_info[pid],
+            fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, CURRENT_SEASON),
             prediction=_stub_prediction(body.program_id, pid),
         )
         for pid in body.player_ids
@@ -155,11 +123,24 @@ async def compare_players(body: CompareRequest, current_user: CurrentUser):
         program_fit={e.player.full_name: e.fit_score.program_fit for e in entries},
     )
 
+    best_scheme = max(entries, key=lambda e: e.fit_score.scheme_fit)
+    best_gap    = max(entries, key=lambda e: e.fit_score.gap_match)
     best_role   = max(entries, key=lambda e: e.fit_score.role_fit)
     best_nil    = max(entries, key=lambda e: e.fit_score.breakdown.program_fit.nil_score)
-    best_scheme = max(entries, key=lambda e: e.fit_score.scheme_fit)
 
     trade_offs = [
+        TradeOff(
+            factor="Scheme Fit",
+            description=f"{best_scheme.player.full_name} system profile most closely matches program offensive identity.",
+            best_player_name=best_scheme.player.full_name,
+            best_player_id=best_scheme.player.player_id,
+        ),
+        TradeOff(
+            factor="Gap Match",
+            description=f"{best_gap.player.full_name} best fills the program's current roster needs.",
+            best_player_name=best_gap.player.full_name,
+            best_player_id=best_gap.player.player_id,
+        ),
         TradeOff(
             factor="Role Fit",
             description=f"{best_role.player.full_name} offers the best projected role and starter probability.",
@@ -171,12 +152,6 @@ async def compare_players(body: CompareRequest, current_user: CurrentUser):
             description=f"{best_nil.player.full_name} best aligns with the program's NIL budget.",
             best_player_name=best_nil.player.full_name,
             best_player_id=best_nil.player.player_id,
-        ),
-        TradeOff(
-            factor="Scheme Fit",
-            description=f"{best_scheme.player.full_name} system profile most closely matches program offensive identity.",
-            best_player_name=best_scheme.player.full_name,
-            best_player_id=best_scheme.player.player_id,
         ),
     ]
 
