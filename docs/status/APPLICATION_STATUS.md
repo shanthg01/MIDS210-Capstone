@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** June 16, 2026  
+**Last updated:** June 18, 2026  
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -30,18 +30,18 @@ User-facing fit should eventually expose four components:
 
 | Component | Status | App implication |
 |---|---|---|
-| Scheme Fit | Real | Can be shown now when `player_team_fit_scores.scheme_fit` exists. |
-| Gap Match | Not built | Next critical-path model; app should keep placeholder treatment until available. |
-| Role Fit | Not built | Requires playing time / rotation model. |
-| Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. |
+| Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
+| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v1`); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
+| Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
+| Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
 Current state:
 
 ```text
-overall_fit = 0.30 * scheme_fit + 0.70 * 50.0
+overall_fit = 0.30 * scheme_fit + 0.20 * gap_match + 0.50 * 50.0
 ```
 
-This means app surfaces that show `overall_fit` should be treated as partial until all components are live.
+`overall_fit` is still partial — narrow effective range until role_fit and program_fit are real. Do not present `overall_fit` as a trustworthy ranking signal yet; `gap_match` and `scheme_fit` individually are meaningful now.
 
 ---
 
@@ -56,7 +56,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
 | `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial/stub | Reads `player_team_fit_scores`, but full value blocked by missing gap/role/program components. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, default season 2026. Real `scheme_fit` + `gap_match`; `role_fit`/`program_fit` stubbed at 50.0. Falls back to full stub when no row exists for the triple (pair outside M3/Gap Matching scope). |
 | `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub | Blocked on team rating projection model. |
@@ -130,6 +130,8 @@ Watch-outs:
 
 - Default JWT expiry is one hour; set `JWT_EXPIRY_SECONDS=86400` locally if helpful.
 - Any page that assumes complete fit scores must communicate partial/stub state until all components are real.
+- `fit_scores.py` hardcodes `CURRENT_SEASON = 2026` — no season config exists yet. Add a `season` query param override if the frontend needs historical seasons.
+- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v1`.
 
 ---
 
@@ -174,19 +176,19 @@ Recent fixture/testing notes:
 The app becomes truly useful when the fit stack is no longer mostly stubbed.
 
 ```text
-Build Gap Matching
-  -> wire fit_scores.py to real scheme_fit + gap_match
-  -> expose partial but meaningful fit breakdown in UI
-  -> build Role Fit / Playing Time
-  -> build Program Fit
-  -> wire complete fit_scores.py
-  -> build Recommendation Engine
-  -> replace recommendation stubs with ranked program-specific players
+✅ Build Gap Matching
+✅ wire fit_scores.py to real scheme_fit + gap_match
+-> expose partial but meaningful fit breakdown in UI
+-> build Role Fit / Playing Time
+-> build Program Fit
+-> wire complete fit_scores.py
+-> build Recommendation Engine
+-> replace recommendation stubs with ranked program-specific players
 ```
 
 Recommended app-side order:
 
-1. After Gap Matching lands, update `fit_scores.py` and the Fit Score page to distinguish real vs placeholder components.
+1. Update the Fit Score page to distinguish real (scheme, gap) from placeholder (role, program) components — `fit_scores.py` now returns real values for the first two.
 2. Add clearer empty/loading/error states around missing scores.
 3. Make player shortlist actions prominent from search/profile/fit pages.
 4. Once recommendations are real, make Dashboard the coach's daily recruiting queue.

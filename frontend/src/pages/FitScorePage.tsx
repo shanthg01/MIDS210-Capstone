@@ -17,7 +17,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
 import { getPlayer } from '../api/players';
 import { useAuth } from '../context/AuthContext';
-import { scoreColor } from '../components/FitScoreBar';
+import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -37,18 +37,23 @@ function ScoreHeader({
   label,
   score,
   weight,
+  component,
 }: {
   label: string;
   score: number;
   weight: string;
+  component: string;
 }) {
   const color = scoreColor(score);
   return (
     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1.5 }}>
       <Box>
-        <Typography variant="h6" fontWeight={700}>
-          {label}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="h6" fontWeight={700}>
+            {label}
+          </Typography>
+          <DataStatusChip component={component} />
+        </Box>
         <Typography variant="caption" color="text.secondary">
           {weight} weight
         </Typography>
@@ -131,17 +136,28 @@ function OverallPanel({
       </Box>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1 }}>
         {[
-          { label: 'Gap Match', value: gap },
-          { label: 'Scheme', value: scheme },
-          { label: 'Role Fit', value: role },
-          { label: 'Program Fit', value: program },
-        ].map(({ label, value }) => {
+          { label: 'Gap Match', value: gap, component: 'gap_match' },
+          { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+          { label: 'Role Fit', value: role, component: 'role_fit' },
+          { label: 'Program Fit', value: program, component: 'program_fit' },
+        ].map(({ label, value, component }) => {
           const c = scoreColor(value);
+          const isLive = LIVE_COMPONENTS.has(component);
           return (
             <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="body2" color="text.secondary">
-                {label}
-              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Box
+                  sx={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: isLive ? 'success.main' : 'grey.400',
+                  }}
+                />
+                <Typography variant="body2" color="text.secondary">
+                  {label}
+                </Typography>
+              </Box>
               <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
                 {fmtScore(value)}
               </Typography>
@@ -362,7 +378,7 @@ export default function FitScorePage() {
 
       {/* Scheme Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Scheme Fit" score={fit.scheme_fit} weight="30%" />
+        <ScoreHeader label="Scheme Fit" score={fit.scheme_fit} weight="30%" component="scheme_fit" />
         <Divider sx={{ mb: 2 }} />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} />
         <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} />
@@ -373,7 +389,7 @@ export default function FitScorePage() {
 
       {/* Role Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Role Fit" score={fit.role_fit} weight="25%" />
+        <ScoreHeader label="Role Fit" score={fit.role_fit} weight="25%" component="role_fit" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2 }}>
           <Box>
@@ -411,7 +427,7 @@ export default function FitScorePage() {
 
       {/* Gap Match breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="20%" />
+        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="20%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
@@ -462,7 +478,7 @@ export default function FitScorePage() {
 
       {/* Program Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" />
+        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
         <SubBar label="NIL Score" value={fit.breakdown.program_fit.nil_score} />
         <SubBar label="Geographic Fit" value={fit.breakdown.program_fit.geographic_score} />

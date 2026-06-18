@@ -25,11 +25,13 @@ import { useNavigate } from 'react-router-dom';
 import { getShortlist } from '../api/users';
 import { comparePlayers } from '../api/compare';
 import { useAuth } from '../context/AuthContext';
-import { scoreColor } from '../components/FitScoreBar';
+import { scoreColor, DataStatusChip } from '../components/FitScoreBar';
 import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
 
+// overall_fit has no single component key — it blends real (scheme, gap) and
+// stub (role, program), so it gets no Live/Placeholder chip, just the row metrics below it.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
   { key: 'scheme_fit', label: 'Scheme Fit' },
@@ -104,7 +106,10 @@ function ComparisonResults({
                 return (
                   <TableRow key={key} hover>
                     <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                      {label}
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                        {label}
+                        {key !== 'overall_fit' && <DataStatusChip component={key} />}
+                      </Box>
                     </TableCell>
                     {entries.map((e) => {
                       const val = row[e.player.full_name] ?? 0;
