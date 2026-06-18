@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 16, 2026  
+**Last updated:** June 18, 2026  
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -110,6 +110,7 @@ Applied migration chain:
 | `e47b1d6a9c52` | hoopR player season stats |
 | `f2a9c3d7e841` | HE `pos_confidence_*` (player) + `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` (team) |
 | `d3b7e2a1c498` | `player_season_stats.min_pct` — barttorvik team minutes % (replaces broken `minutes_per_game` as MPG filter) |
+| `b5d2e9f4` | `player_team_fit_scores.season` — enables multi-season fit score storage; `uq_fit_score` rebuilt on `(player_id, school_id, season)` |
 
 Important tables:
 
@@ -125,11 +126,13 @@ Important tables:
 | `hoopr_player_season_stats` | ESPN PBP-derived player features (87-92% crosswalk per season, 2021-2026) |
 | `player_archetypes` | M1 cluster assignments |
 | `team_system_profiles` | M2 cluster assignments |
-| `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores |
+| `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores; multi-season (`season` col, 1.34M rows 2021-2026); `scheme_fit`+`gap_match` real, `role_fit`/`program_fit` stubbed |
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Future team impact outputs |
 | `recommendations` | Future ranked player recommendations |
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
+
+**Known data gaps:** `transfers` and `player_school_seasons` are both empty (0 rows) — no VerbalCommits ingest yet. Gap Matching currently treats every player in `player_season_stats` as roster-resident (no departure filter) rather than scoping to actual portal entrants. Populating `transfers` is required before Gap Matching can distinguish "still on roster" from "departed/portal."
 
 ---
 
@@ -169,8 +172,8 @@ Policy/ops notes:
 | BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
 | Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026 | `hoop_explorer_team_stats` (~2,170 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
-| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ⚠️ Re-run needed | HE team coverage was 19% (single season); after 5-season load it will reach ~98%. Re-run before M2/M3 re-train. |
-| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 complete | DB outputs and model artifacts |
+| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons | Re-run with 6-season HE/hoopR data; feeds M1/M2/M3 |
+| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete | DB outputs and model artifacts; `gap_matching.ipynb` added |
 
 Suggested rebuild order from a fresh DB:
 
@@ -183,6 +186,7 @@ Suggested rebuild order from a fresh DB:
 6. team_clustering.ipynb
 7. player_clustering.ipynb
 8. scheme_fit_scorer.ipynb
+9. gap_matching.ipynb
 ```
 
 Gitignored local data:

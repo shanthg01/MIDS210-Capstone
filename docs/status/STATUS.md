@@ -1,6 +1,6 @@
 # PortalPoint Status Index
 
-**Last updated:** June 16, 2026
+**Last updated:** June 18, 2026
 
 The original single status tracker has been split into three focused handoff docs:
 
@@ -10,4 +10,4 @@ The original single status tracker has been split into three focused handoff doc
 | Architecture | [`ARCHITECTURE_STATUS.md`](ARCHITECTURE_STATUS.md) | Local/cloud infrastructure, Postgres/Alembic, S3, ingest, MLflow, and operational runbook context. |
 | Application | [`APPLICATION_STATUS.md`](APPLICATION_STATUS.md) | Product direction, backend routers, frontend pages, tests, and app-side blockers. |
 
-Start with `MODEL_STATUS.md` for the current critical path. Hoop Explorer 5-season load (2022-2026) is complete — feature_eng re-run → M2 re-train → M3 re-run is the immediate next step before Gap Matching.
+Start with `MODEL_STATUS.md` for the current critical path. M1/M2/M3 and Gap Matching are complete; `fit_scores.py` now serves real `scheme_fit` + `gap_match` from `player_team_fit_scores`. Role Fit (M4) is the next critical-path model.
