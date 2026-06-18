@@ -2,6 +2,7 @@ import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,7 @@ from portalpoint.api.schemas.fit_score import (
     SchemeBreakdown,
 )
 from portalpoint.db.models import PlayerTeamFitScore
+from portalpoint.db.redis_client import get_redis
 from portalpoint.db.session import get_db
 
 router = APIRouter(prefix="/api/fit-scores", tags=["fit-scores"])
@@ -23,6 +25,14 @@ router = APIRouter(prefix="/api/fit-scores", tags=["fit-scores"])
 # player_team_fit_scores is multi-season (uq_fit_score includes season).
 # No active-season config exists yet — hardcode until one is added.
 CURRENT_SEASON = 2026
+
+# Matches the pre-compute cache policy in CLAUDE.md (top-50 portal players,
+# cached 30min in Redis).
+CACHE_TTL_SECONDS = 1800
+
+
+def _cache_key(player_id: int, school_id: int, season: int) -> str:
+    return f"fitscore:{player_id}:{school_id}:{season}"
 
 
 def _stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
@@ -151,10 +161,23 @@ def _real_fit_score(row: PlayerTeamFitScore) -> FitScoreResponse:
 async def get_fit_score(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
     player_id: int = Query(...),
     school_id: int = Query(...),
     season: int = Query(default=CURRENT_SEASON),
 ):
+    cache_key = _cache_key(player_id, school_id, season)
+
+    try:
+        cached = await redis.get(cache_key)
+    except Exception:
+        cached = None  # Redis unavailable — fall through to DB, skip caching this request
+
+    if cached is not None:
+        response = FitScoreResponse.model_validate_json(cached)
+        response.cache_hit = True
+        return response
+
     result = await db.execute(
         select(PlayerTeamFitScore).where(
             PlayerTeamFitScore.player_id == player_id,
@@ -163,8 +186,12 @@ async def get_fit_score(
         )
     )
     row = result.scalar_one_or_none()
-    if row is not None:
-        return _real_fit_score(row)
-
     # No row for this player/school/season pair (outside M3 scoring scope) — full stub.
-    return _stub_fit_score(player_id, school_id)
+    response = _real_fit_score(row) if row is not None else _stub_fit_score(player_id, school_id)
+
+    try:
+        await redis.set(cache_key, response.model_dump_json(), ex=CACHE_TTL_SECONDS)
+    except Exception:
+        pass  # Redis unavailable — request still succeeds, just not cached
+
+    return response
