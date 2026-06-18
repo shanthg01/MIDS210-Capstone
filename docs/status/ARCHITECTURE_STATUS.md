@@ -109,6 +109,7 @@ Applied migration chain:
 | `c1e8f4a2b5d3` | hoopR team season stats |
 | `e47b1d6a9c52` | hoopR player season stats |
 | `f2a9c3d7e841` | HE `pos_confidence_*` (player) + `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` (team) |
+| `d3b7e2a1c498` | `player_season_stats.min_pct` — barttorvik team minutes % (replaces broken `minutes_per_game` as MPG filter) |
 
 Important tables:
 
@@ -118,8 +119,8 @@ Important tables:
 | `player_school_seasons` | Player-team-season linkage |
 | `player_season_stats` | BartTorvik normalized player stats |
 | `team_season_stats` | BartTorvik normalized team stats |
-| `hoop_explorer_player_stats` | HE player exports — 13,993 rows (5 seasons 2022-2026, all D1); includes RAPM, 15 play-type pcts, `pos_confidence_pg/sg/sf/pf/c` |
-| `hoop_explorer_team_stats` | HE team exports — 1,811 rows (5 seasons 2022-2026); includes 12 off/def play-type pcts, `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` |
+| `hoop_explorer_player_stats` | HE player exports — ~16,750 rows (6 seasons 2021-2026, all D1); includes RAPM, 15 play-type pcts, `pos_confidence_pg/sg/sf/pf/c` |
+| `hoop_explorer_team_stats` | HE team exports — ~2,170 rows (6 seasons 2021-2026); includes 12 off/def play-type pcts, `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` |
 | `hoopr_team_season_stats` | ESPN PBP-derived team features |
 | `hoopr_player_season_stats` | ESPN PBP-derived player features (87-92% crosswalk per season, 2021-2026) |
 | `player_archetypes` | M1 cluster assignments |
@@ -166,7 +167,7 @@ Policy/ops notes:
 | Stage | Script / notebook | Status | Output |
 |---|---|---|---|
 | BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
-| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 5 seasons 2022-2026 | `hoop_explorer_team_stats` (1,811 rows) + `hoop_explorer_player_stats` (13,993 rows, all D1 tiers); new `pos_confidence_*` + trans/scramble cols populated; raw files in S3 |
+| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026 | `hoop_explorer_team_stats` (~2,170 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
 | Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ⚠️ Re-run needed | HE team coverage was 19% (single season); after 5-season load it will reach ~98%. Re-run before M2/M3 re-train. |
 | Model notebooks | `notebooks/models/*.ipynb` | M1-M3 complete | DB outputs and model artifacts |
@@ -175,8 +176,8 @@ Suggested rebuild order from a fresh DB:
 
 ```text
 1. alembic upgrade head
-2. ingest_barttorvik.py
-3. ingest_hoop_explorer.py --all-seasons
+2. ingest_barttorvik.py --seasons 2021 2022 2023 2024 2025 2026   # --seasons required to populate min_pct across all years
+3. ingest_hoop_explorer.py --all-seasons          # picks up all ??_?? season pairs incl 20_21
 4. ingest_hoopr.py --season <year>  (repeat per season or iterate 2021-2026)
 5. feature_eng_m1_m2_m3.ipynb
 6. team_clustering.ipynb

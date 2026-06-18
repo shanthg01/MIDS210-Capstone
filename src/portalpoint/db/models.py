@@ -177,6 +177,7 @@ class PlayerSeasonStats(Base):
     # Traditional
     games_played: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     minutes_per_game: Mapped[float] = mapped_column(Float, nullable=False)
+    min_pct: Mapped[Optional[float]] = mapped_column(Float)  # % of team minutes played (barttorvik min_per, 0-100)
     points_per_game: Mapped[float] = mapped_column(Float, nullable=False)
     rebounds_per_game: Mapped[float] = mapped_column(Float, nullable=False)
     assists_per_game: Mapped[float] = mapped_column(Float, nullable=False)
@@ -722,13 +723,14 @@ class NILValuation(Base):
 class PlayerTeamFitScore(Base):
     __tablename__ = "player_team_fit_scores"
     __table_args__ = (
-        UniqueConstraint("player_id", "school_id", name="uq_fit_score"),
+        UniqueConstraint("player_id", "school_id", "season", name="uq_fit_score"),
         Index("ix_fit_scores_overall_fit", "overall_fit"),  # for ranking queries
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     gap_match: Mapped[float] = mapped_column(Float, nullable=False)
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)

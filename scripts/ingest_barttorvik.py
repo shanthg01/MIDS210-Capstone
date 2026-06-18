@@ -505,6 +505,7 @@ async def ingest_player_season_stats(
 
         gp = _safe_int(r.get("gp")) or 0
         mpg = _safe_float(r.get("min_per_game"))
+        min_pct = _safe_float(r.get("min_per"))  # % of team minutes (0-100); min_per_game is sparsely populated
         three_rate, rim_rate, mid_rate = _shot_distribution(r)
 
         # Minimum quality gate: at least 5 games
@@ -536,6 +537,7 @@ async def ingest_player_season_stats(
             "season": season,
             "games_played": gp,
             "minutes_per_game": mpg or 0.0,
+            "min_pct": min_pct,
             # Traditional — barttorvik per-game cols (provisional; confirmed for ppg)
             "points_per_game": raw_ppg or 0.0,
             "rebounds_per_game": raw_rpg or 0.0,
