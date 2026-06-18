@@ -8,7 +8,10 @@ Data source: sportsdataverse GitHub releases
   espn_mens_college_basketball_pbp/play_by_play_{season}.parquet
 
 Populates:
-  - hoopr_team_season_stats  (~365 D1 teams, 11 PBP-derived features per season)
+  - hoopr_team_season_stats    (~365 D1 teams, 11 PBP-derived features per season)
+  - hoopr_player_season_stats  (~5-8K ESPN athletes/season, name+team+season fuzzy
+                                 crosswalk to players.id, ~90% hit rate; unmatched
+                                 rows kept with player_id=NULL for manual backfill)
 
 Raw PBP is NOT stored in PostgreSQL (2.9M rows/season — no row-level query use case).
 Aggregated features only. Raw parquet uploaded to s3://portalpoint-data/raw/hoopr/
@@ -39,6 +42,7 @@ import argparse
 import asyncio
 import difflib
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -51,10 +55,11 @@ if hasattr(sys.stderr, "reconfigure"):
 import numpy as np
 import pandas as pd
 import requests
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
-from portalpoint.db.models import HoopRTeamSeasonStats, School
+from portalpoint.db.models import HoopRPlayerSeasonStats, HoopRTeamSeasonStats, Player, PlayerSeasonStats, School
 from portalpoint.db.session import AsyncSessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -92,8 +97,36 @@ STRAIGHT_3_MAX_Y = 8.0
 POSS_MAX_SEC = 45.0     # filter noise: possession duration > 45s = invalid
 TRANSITION_MAX_SEC = 7.0  # shots within 7s of possession start = transition
 
+# Clutch window (player-only feature): final period, <=2min left, <=5pt margin
+CLUTCH_MAX_SEC_REMAINING = 120.0
+CLUTCH_MAX_MARGIN = 5
+
 # Rim shot event types in ESPN PBP
 _RIM_TYPES = {"LayUpShot", "DunkShot", "TipShot"}
+
+# No athlete_*name* column in any cached season (2021-2026) — confirmed Phase 2
+# Step 0 (docs/hoopr_integration_plan.md). Parse player name out of `text` instead.
+# Marker-based, order matters — same approach scripts/crosswalk_hoopr_players.py
+# validated at 89.8% hit rate.
+_PLAYER_NAME_MARKERS = [
+    " makes ", " misses ", " Defensive Rebound", " Offensive Rebound",
+    " Steal", " Block", " bad pass", " traveling turnover", " turnover",
+    " Turnover", " subbing in", " subbing out",
+]
+_FOUL_RE = re.compile(r"^(?:Technical )?Foul on (.+?)\.?$")
+
+
+def _extract_player_name(type_text: str, raw_text: str) -> str | None:
+    if not isinstance(raw_text, str):
+        return None
+    if type_text in ("PersonalFoul", "Technical Foul"):
+        m = _FOUL_RE.match(raw_text)
+        return m.group(1).rstrip(".") if m else None
+    for marker in _PLAYER_NAME_MARKERS:
+        idx = raw_text.find(marker)
+        if idx > 0:
+            return raw_text[:idx].strip()
+    return None
 
 # D1 team ESPN IDs (from eda_hoopr.ipynb — 365 teams, 2025-26 season)
 D1_TEAM_IDS: set[int] = {
@@ -130,7 +163,6 @@ D1_TEAM_IDS: set[int] = {
 
 # ESPN team name → barttorvik/DB school name
 ESPN_TEAM_ALIASES: dict[str, str] = {
-    "North Carolina": "UNC",
     "Connecticut": "UConn",
     "Saint Mary's": "St. Mary's",
     "Pitt": "Pittsburgh",
@@ -140,7 +172,7 @@ ESPN_TEAM_ALIASES: dict[str, str] = {
     "URI": "Rhode Island",
     "UIC": "Illinois Chicago",
     "UIW": "Incarnate Word",
-    "ULM": "UL Monroe",
+    "UL Monroe": "Louisiana Monroe",
     "UNI": "Northern Iowa",
     "UMES": "Maryland Eastern Shore",
     "UNCW": "UNC Wilmington",
@@ -161,12 +193,44 @@ ESPN_TEAM_ALIASES: dict[str, str] = {
     "Nebraska Omaha": "Nebraska Omaha",
     "SFA": "Stephen F. Austin",
     "SIUE": "SIU Edwardsville",
-    "Southeastern Louisiana": "Southeastern Louisiana",
+    "SE Louisiana": "Southeastern Louisiana",
     "Southern Illinois": "Southern Illinois",
     "UT Martin": "Tennessee Martin",
     "UTRGV": "UT Rio Grande Valley",
-    "Alcorn": "Alcorn State",
+    "Alcorn State": "Alcorn St.",
     "Bethune-Cookman": "Bethune Cookman",
+    # "X State" (ESPN full word) -> "X St." (barttorvik/DB abbreviation) — found via
+    # Phase 2 player crosswalk validation (docs/hoopr_integration_plan.md): these all
+    # scored below the 0.82 fuzzy cutoff (e.g. "Kent State" vs "Kent St." = 0.778),
+    # so they were silently unmatched in hoopr_team_season_stats too, not just here.
+    "Pennsylvania": "Penn",
+    "Kent State": "Kent St.",
+    "Ohio State": "Ohio St.",
+    "Texas State": "Texas St.",
+    "Boise State": "Boise St.",
+    "Oregon State": "Oregon St.",
+    "Idaho State": "Idaho St.",
+    "Fresno State": "Fresno St.",
+    "Ball State": "Ball St.",
+    "Wright State": "Wright St.",
+    "Utah State": "Utah St.",
+    "Penn State": "Penn St.",
+    "Kansas State": "Kansas St.",
+    "Iowa State": "Iowa St.",
+    "Weber State": "Weber St.",
+    "Murray State": "Murray St.",
+    "Morgan State": "Morgan St.",
+    "Coppin State": "Coppin St.",
+    "San José State": "San Jose St.",
+    "South Carolina Upstate": "USC Upstate",
+    "St. Thomas-Minnesota": "St. Thomas",
+    "Kansas City": "UMKC",
+    "Omaha": "Nebraska Omaha",
+    "California Baptist": "Cal Baptist",
+    "Loyola Maryland": "Loyola MD",
+    "Long Island University": "LIU",
+    "American University": "American",
+    "Queens University": "Queens",
 }
 
 
@@ -439,6 +503,196 @@ def compute_team_features(pbp: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def compute_player_features(pbp: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate PBP rows into one feature row per ESPN athlete_id_1.
+
+    Mirrors compute_team_features' shot-zone/turnover/transition logic, keyed
+    on athlete_id_1 instead of team_id, plus two player-only metrics with no
+    team-level equivalent (pbp_clutch_ts_pct, pbp_assist_rate).
+
+    No on-court lineup tracking exists in this PBP feed, so there's no true
+    per-player possession count. possessions_tracked is a usage proxy —
+    shot attempts + turnovers committed by this player — and turnover_rate /
+    assist_rate are both expressed against it.
+
+    pbp_clutch_ts_pct is an approximation: the dataset has zero
+    MissedFreeThrow rows in any cached season (confirmed by exhaustive
+    type_text enumeration), so true FTA (makes+misses) isn't computable.
+    Denominator uses FG attempts only (MadeFreeThrow rows excluded from FGA,
+    but their points still count in the numerator) — biased slightly high
+    for high-FT-volume players in clutch minutes. Documented limitation, not
+    a bug.
+
+    Returns DataFrame indexed by athlete_id_1 with columns:
+        espn_athlete_id, raw_display_name, espn_team_name, shot_attempts_tracked,
+        games_tracked, possessions_tracked, pbp_rim_pct ... pbp_zone5_wing3_pct,
+        pbp_turnover_rate, pbp_transition_rate, pbp_clutch_ts_pct, pbp_assist_rate
+    """
+    pbp = pbp[
+        pbp["home_team_id"].isin(D1_TEAM_IDS) &
+        pbp["away_team_id"].isin(D1_TEAM_IDS)
+    ].copy()
+
+    team_name_map = _build_team_name_map(pbp)
+    pbp["team_name"] = pbp["team_id"].astype(str).map(team_name_map)
+    pbp["raw_name"] = [
+        _extract_player_name(t, x) for t, x in zip(pbp["type_text"], pbp["text"])
+    ]
+
+    # ---- Identity: mode raw_name / team per athlete (handles rare text-parse noise) ----
+    named = pbp[pbp["athlete_id_1"].notna() & pbp["raw_name"].notna()].copy()
+    identity = (
+        named.groupby("athlete_id_1")
+        .agg(
+            raw_display_name=("raw_name", lambda s: s.value_counts().idxmax()),
+            espn_team_name=("team_name", lambda s: s.dropna().value_counts().idxmax() if s.notna().any() else None),
+        )
+        .reset_index()
+    )
+
+    # ---- Shot profile + spatial zones (identical geometry to team level) ----
+    shots = pbp[pbp["shooting_play"] & pbp["athlete_id_1"].notna()].copy()
+    shots = shots.loc[
+        shots["coordinate_x"].abs().le(COORD_MAX_X) &
+        shots["coordinate_y"].abs().le(COORD_MAX_Y)
+    ].copy()
+    shots["norm_x"] = shots["coordinate_x"].abs()
+    shots["norm_y"] = shots["coordinate_y"]
+    shots["dist_from_rim"] = np.sqrt(
+        (shots["norm_x"] - RIM_NORM_X) ** 2 +
+        (shots["norm_y"] - RIM_NORM_Y) ** 2
+    )
+
+    dist       = shots["dist_from_rim"]
+    norm_y_abs = shots["norm_y"].abs()
+    beyond_arc = dist > ZONE2_MAX_DIST
+
+    shots["is_rim"] = shots["type_text"].isin(_RIM_TYPES)
+    if "points_attempted" in shots.columns:
+        shots["is_three"] = (shots["points_attempted"] == 3) & ~shots["is_rim"]
+    else:
+        shots["is_three"] = beyond_arc & ~shots["is_rim"]
+    shots["is_mid"] = ~shots["is_three"] & ~shots["is_rim"]
+
+    zone_conds = [
+        dist <= ZONE1_MAX_DIST,
+        (dist > ZONE1_MAX_DIST) & (dist <= ZONE2_MAX_DIST),
+        beyond_arc & (norm_y_abs >= CORNER_3_MIN_Y),
+        beyond_arc & (norm_y_abs < STRAIGHT_3_MAX_Y),
+    ]
+    zone_choices = ["zone1_restricted", "zone2_mid", "zone3_corner3", "zone4_straight3"]
+    shots["zone"] = np.select(zone_conds, zone_choices, default="zone5_wing3")
+
+    shot_agg = shots.groupby("athlete_id_1").agg(
+        total_shots=("shooting_play", "count"),
+        rim_shots=("is_rim", "sum"),
+        three_shots=("is_three", "sum"),
+        mid_shots=("is_mid", "sum"),
+        z1=("zone", lambda z: (z == "zone1_restricted").sum()),
+        z2=("zone", lambda z: (z == "zone2_mid").sum()),
+        z3=("zone", lambda z: (z == "zone3_corner3").sum()),
+        z4=("zone", lambda z: (z == "zone4_straight3").sum()),
+        z5=("zone", lambda z: (z == "zone5_wing3").sum()),
+    ).reset_index()
+
+    total = shot_agg["total_shots"].clip(lower=1)
+    shot_agg["pbp_rim_pct"]               = shot_agg["rim_shots"]  / total
+    shot_agg["pbp_three_pct"]             = shot_agg["three_shots"] / total
+    shot_agg["pbp_mid_pct"]               = shot_agg["mid_shots"]  / total
+    shot_agg["pbp_zone1_restricted_pct"]  = shot_agg["z1"] / total
+    shot_agg["pbp_zone2_mid_pct"]         = shot_agg["z2"] / total
+    shot_agg["pbp_zone3_corner3_pct"]     = shot_agg["z3"] / total
+    shot_agg["pbp_zone4_straight3_pct"]   = shot_agg["z4"] / total
+    shot_agg["pbp_zone5_wing3_pct"]       = shot_agg["z5"] / total
+    shot_agg["shot_attempts_tracked"]     = shot_agg["total_shots"]
+
+    # FG-only universe — excludes MadeFreeThrow, used for transition/clutch FGA below
+    fg_only = shots[shots["type_text"] != "MadeFreeThrow"].copy()
+
+    # ---- Turnovers (same type_text rule as team level) ----
+    is_turnover = pbp["type_text"].str.contains("Turnover|Steal", case=False, na=False)
+    to_counts = (
+        pbp[is_turnover & pbp["athlete_id_1"].notna()]
+        .groupby("athlete_id_1")
+        .size()
+        .reset_index(name="n_turnovers")
+    )
+
+    # ---- Transition rate (FG attempt within 7s of period-clock elapsed) ----
+    _has_timing = (
+        "start_period_seconds_remaining" in pbp.columns and
+        "end_period_seconds_remaining" in pbp.columns
+    )
+    if _has_timing:
+        fg_only["play_sec"] = (
+            pd.to_numeric(fg_only["start_period_seconds_remaining"], errors="coerce") -
+            pd.to_numeric(fg_only["end_period_seconds_remaining"], errors="coerce")
+        )
+        fast = fg_only[fg_only["play_sec"].between(0, TRANSITION_MAX_SEC)]
+        transition_counts = fast.groupby("athlete_id_1").size().reset_index(name="n_transition_shots")
+    else:
+        transition_counts = pd.DataFrame(columns=["athlete_id_1", "n_transition_shots"])
+
+    # ---- Clutch TS% (final period, <=2min, <=5pt margin; FGA-only denominator) ----
+    if _has_timing:
+        last_period = pbp.groupby("game_id")["period_number"].transform("max")
+        margin = (pbp["home_score"] - pbp["away_score"]).abs()
+        clutch_mask = (
+            (pbp["period_number"] == last_period) &
+            (pbp["end_period_seconds_remaining"] <= CLUTCH_MAX_SEC_REMAINING) &
+            (margin <= CLUTCH_MAX_MARGIN)
+        )
+        clutch_pbp = pbp[clutch_mask & pbp["athlete_id_1"].notna()]
+        clutch_fga = clutch_pbp[
+            clutch_pbp["shooting_play"] & (clutch_pbp["type_text"] != "MadeFreeThrow")
+        ].groupby("athlete_id_1").size().rename("clutch_fga")
+        clutch_pts = clutch_pbp[clutch_pbp["scoring_play"]].groupby("athlete_id_1")["score_value"].sum().rename("clutch_pts")
+        clutch_df = pd.concat([clutch_fga, clutch_pts], axis=1).reset_index()
+        clutch_df["pbp_clutch_ts_pct"] = clutch_df["clutch_pts"] / (2 * clutch_df["clutch_fga"].clip(lower=1))
+        clutch_df = clutch_df[["athlete_id_1", "pbp_clutch_ts_pct"]]
+    else:
+        clutch_df = pd.DataFrame(columns=["athlete_id_1", "pbp_clutch_ts_pct"])
+
+    # ---- Assists (athlete_id_2 on made-shot rows — confirmed via sample text rows) ----
+    assist_counts = (
+        pbp[pbp["scoring_play"] & pbp["shooting_play"] & pbp["athlete_id_2"].notna()]
+        .groupby("athlete_id_2")
+        .size()
+        .reset_index(name="n_assists")
+        .rename(columns={"athlete_id_2": "athlete_id_1"})
+    )
+
+    # ---- Games tracked ----
+    game_counts = (
+        pbp[["athlete_id_1", "game_id"]].dropna(subset=["athlete_id_1"])
+        .drop_duplicates()
+        .groupby("athlete_id_1")["game_id"]
+        .nunique()
+        .reset_index(name="games_tracked")
+    )
+
+    # ---- Merge ----
+    result = identity.merge(shot_agg, on="athlete_id_1", how="left")
+    result = result.merge(to_counts, on="athlete_id_1", how="left")
+    result = result.merge(transition_counts, on="athlete_id_1", how="left")
+    result = result.merge(clutch_df, on="athlete_id_1", how="left")
+    result = result.merge(assist_counts, on="athlete_id_1", how="left")
+    result = result.merge(game_counts, on="athlete_id_1", how="left")
+
+    result["shot_attempts_tracked"] = result["shot_attempts_tracked"].fillna(0).astype(int)
+    result["n_turnovers"] = result["n_turnovers"].fillna(0)
+    result["possessions_tracked"] = (result["shot_attempts_tracked"] + result["n_turnovers"]).astype(int)
+    result["pbp_turnover_rate"] = result["n_turnovers"] / result["possessions_tracked"].clip(lower=1)
+    result["pbp_transition_rate"] = (
+        result["n_transition_shots"].fillna(0) / result["shot_attempts_tracked"].clip(lower=1)
+    )
+    result["pbp_assist_rate"] = result["n_assists"].fillna(0) / result["possessions_tracked"].clip(lower=1)
+    result["espn_athlete_id"] = result["athlete_id_1"].astype(float).astype(int).astype(str)
+
+    log.info("player features computed for %d athletes", len(result))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -520,6 +774,171 @@ async def ingest_features(
     return await _upsert(session, records)
 
 
+async def _build_roster(session, season: int) -> pd.DataFrame:
+    stmt = (
+        select(PlayerSeasonStats.player_id, PlayerSeasonStats.school_id, Player.full_name)
+        .join(Player, Player.id == PlayerSeasonStats.player_id)
+        .where(PlayerSeasonStats.season == season)
+        .distinct()
+    )
+    result = await session.execute(stmt)
+    return pd.DataFrame(result.all(), columns=["player_id", "school_id", "full_name"])
+
+
+def _match_player_rosters(agg: pd.DataFrame, roster: pd.DataFrame, threshold: float = 0.82) -> pd.DataFrame:
+    """Fuzzy-match raw_display_name against the resolved school's roster.
+
+    Same-name collisions on one roster are flagged (status='ambiguous'), not
+    auto-matched — per docs/hoopr_integration_plan.md Phase 2 spec. No jersey
+    number available in PBP text to tiebreak.
+    """
+    roster_by_school: dict[int, list[str]] = (
+        roster.groupby("school_id")["full_name"].apply(list).to_dict()
+    )
+    pid_lookup = {(r.school_id, r.full_name): r.player_id for r in roster.itertuples()}
+
+    rows = []
+    for r in agg.itertuples():
+        school_id = r.school_id
+        if school_id is None or (isinstance(school_id, float) and np.isnan(school_id)):
+            rows.append({"status": "no_school", "matched_player_id": None, "confidence": None})
+            continue
+        candidates = roster_by_school.get(school_id, [])
+        matches = difflib.get_close_matches(r.raw_display_name, candidates, n=2, cutoff=threshold)
+        if not matches:
+            rows.append({"status": "unmatched", "matched_player_id": None, "confidence": None})
+        elif len(matches) > 1:
+            rows.append({"status": "ambiguous", "matched_player_id": None, "confidence": None})
+        else:
+            name = matches[0]
+            conf = difflib.SequenceMatcher(None, r.raw_display_name, name).ratio()
+            rows.append({
+                "status": "matched",
+                "matched_player_id": pid_lookup.get((school_id, name)),
+                "confidence": round(conf, 3),
+            })
+
+    return pd.concat([agg.reset_index(drop=True), pd.DataFrame(rows)], axis=1)
+
+
+async def _backfill_espn_ids(session, matched: pd.DataFrame) -> int:
+    """Idempotent: only fill players.espn_id if currently NULL, never overwrite.
+
+    espn_id is unique on players. Two distinct player_id rows (e.g. duplicate
+    "Trent Hudgens Jr." / "Trent Hudgens Jr" from upstream name-punctuation
+    drift) can each fuzzy-match the same espn_athlete_id across seasons —
+    a savepoint per row means that collision is skipped+logged, not fatal
+    to the other 4000+ valid backfills in the same season's transaction.
+    """
+    n = 0
+    n_skipped = 0
+    for r in matched.itertuples():
+        stmt = (
+            update(Player)
+            .where(Player.id == r.matched_player_id, Player.espn_id.is_(None))
+            .values(espn_id=r.espn_athlete_id)
+        )
+        try:
+            async with session.begin_nested():
+                result = await session.execute(stmt)
+            n += result.rowcount
+        except IntegrityError:
+            n_skipped += 1
+            log.warning(
+                "espn_id backfill skipped (collision): player_id=%s espn_athlete_id=%s already used by another player",
+                r.matched_player_id, r.espn_athlete_id,
+            )
+    await session.commit()
+    if n_skipped:
+        log.info("espn_id backfill collisions skipped: %d", n_skipped)
+    return n
+
+
+async def _upsert_players(session, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    for row in rows:
+        stmt = pg_insert(HoopRPlayerSeasonStats).values(**row)
+        update_cols = {k: stmt.excluded[k] for k in row if k not in ("id", "espn_athlete_id", "season")}
+        stmt = stmt.on_conflict_do_update(index_elements=["espn_athlete_id", "season"], set_=update_cols)
+        await session.execute(stmt)
+    await session.commit()
+    return len(rows)
+
+
+async def ingest_player_features(
+    session,
+    player_features: pd.DataFrame,
+    school_map: dict[str, int],
+    season: int,
+    dry_run: bool = False,
+) -> int:
+    db_names = list(school_map.keys())
+
+    def resolve_school(espn_name) -> int | None:
+        if not isinstance(espn_name, str):
+            return None
+        canonical = _normalize_espn_name(espn_name)
+        if canonical in school_map:
+            return school_map[canonical]
+        fuzzy = _fuzzy_match(canonical, db_names)
+        return school_map.get(fuzzy) if fuzzy else None
+
+    agg = player_features.copy()
+    agg["school_id"] = agg["espn_team_name"].map(resolve_school)
+
+    roster = await _build_roster(session, season)
+    matched = _match_player_rosters(agg, roster)
+
+    counts = matched["status"].value_counts()
+    total = len(matched)
+    log.info(
+        "players: %d feature rows | matched %d (%.1f%%) | ambiguous %d | unmatched %d | no_school %d",
+        total,
+        int(counts.get("matched", 0)), 100 * counts.get("matched", 0) / max(total, 1),
+        int(counts.get("ambiguous", 0)), int(counts.get("unmatched", 0)), int(counts.get("no_school", 0)),
+    )
+
+    if dry_run:
+        return total
+
+    matched_rows = matched[matched["status"] == "matched"]
+    n_backfilled = await _backfill_espn_ids(session, matched_rows)
+    log.info("players.espn_id backfilled: %d (idempotent — existing values untouched)", n_backfilled)
+
+    records: list[dict] = []
+    for row in matched.itertuples():
+        school_id = row.school_id
+        if isinstance(school_id, float) and np.isnan(school_id):
+            school_id = None
+        records.append({
+            "player_id": row.matched_player_id if row.status == "matched" else None,
+            "school_id": school_id,
+            "season": season,
+            "espn_athlete_id": row.espn_athlete_id,
+            "raw_display_name": row.raw_display_name,
+            "espn_team_name": str(row.espn_team_name) if pd.notna(row.espn_team_name) else "UNKNOWN",
+            "match_confidence": row.confidence,
+            "pbp_rim_pct":              _safe_float(row.pbp_rim_pct),
+            "pbp_three_pct":            _safe_float(row.pbp_three_pct),
+            "pbp_mid_pct":              _safe_float(row.pbp_mid_pct),
+            "pbp_zone1_restricted_pct": _safe_float(row.pbp_zone1_restricted_pct),
+            "pbp_zone2_mid_pct":        _safe_float(row.pbp_zone2_mid_pct),
+            "pbp_zone3_corner3_pct":    _safe_float(row.pbp_zone3_corner3_pct),
+            "pbp_zone4_straight3_pct":  _safe_float(row.pbp_zone4_straight3_pct),
+            "pbp_zone5_wing3_pct":      _safe_float(row.pbp_zone5_wing3_pct),
+            "pbp_turnover_rate":        _safe_float(row.pbp_turnover_rate),
+            "pbp_transition_rate":      _safe_float(row.pbp_transition_rate),
+            "pbp_clutch_ts_pct":        _safe_float(getattr(row, "pbp_clutch_ts_pct", None)),
+            "pbp_assist_rate":          _safe_float(row.pbp_assist_rate),
+            "shot_attempts_tracked":    int(row.shot_attempts_tracked or 0),
+            "games_tracked":            int(row.games_tracked or 0),
+            "possessions_tracked":      int(row.possessions_tracked or 0),
+        })
+
+    return await _upsert_players(session, records)
+
+
 def _try_s3_upload(local_path: Path, s3_key: str) -> None:
     try:
         _script_dir = Path(__file__).resolve().parent
@@ -568,6 +987,7 @@ async def run(args: argparse.Namespace) -> None:
         log.info("loaded %d rows, %d cols", len(pbp), len(pbp.columns))
 
         features = compute_team_features(pbp)
+        player_features = compute_player_features(pbp)
 
         if args.dry_run:
             log.info("[dry-run] features computed — no DB writes")
@@ -577,12 +997,20 @@ async def run(args: argparse.Namespace) -> None:
                 "pbp_zone3_corner3_pct", "games_tracked",
             ]
             print(features[[c for c in show_cols if c in features.columns]].head(30).to_string(index=False))
+            show_player_cols = [
+                "raw_display_name", "espn_team_name", "pbp_rim_pct", "pbp_three_pct",
+                "pbp_clutch_ts_pct", "pbp_assist_rate", "shot_attempts_tracked", "games_tracked",
+            ]
+            print(player_features[[c for c in show_player_cols if c in player_features.columns]].head(30).to_string(index=False))
             continue
 
         async with AsyncSessionLocal() as session:
             school_map = await _build_school_map(session)
             n = await ingest_features(session, features, school_map, season)
             log.info("hoopr_team_season_stats upserted: %d rows", n)
+
+            n_players = await ingest_player_features(session, player_features, school_map, season)
+            log.info("hoopr_player_season_stats upserted: %d rows", n_players)
 
         _date = datetime.now().strftime("%Y-%m-%d")
         _try_s3_upload(parquet_path, f"raw/hoopr/{_date}/play_by_play_{season}.parquet")

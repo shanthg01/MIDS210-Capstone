@@ -177,6 +177,7 @@ class PlayerSeasonStats(Base):
     # Traditional
     games_played: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     minutes_per_game: Mapped[float] = mapped_column(Float, nullable=False)
+    min_pct: Mapped[Optional[float]] = mapped_column(Float)  # % of team minutes played (barttorvik min_per, 0-100)
     points_per_game: Mapped[float] = mapped_column(Float, nullable=False)
     rebounds_per_game: Mapped[float] = mapped_column(Float, nullable=False)
     assists_per_game: Mapped[float] = mapped_column(Float, nullable=False)
@@ -399,6 +400,15 @@ class HoopExplorerTeamStats(Base):
     def_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
     def_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
     def_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Standalone transition / scramble rates (separate from play-style classification pct)
+    off_trans_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_trans_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    def_trans_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_trans_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    off_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    off_scramble_ppp: Mapped[Optional[float]] = mapped_column(Float)
+    def_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
+    def_scramble_ppp: Mapped[Optional[float]] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -409,8 +419,8 @@ class HoopExplorerTeamStats(Base):
 class HoopExplorerPlayerStats(Base):
     """
     Player-level data from Hoop Explorer CSV exports.
-    Covers Power 6 + strong mid-majors only (high tier, ~672 players per season).
-    Primary use: RAPM for transfer outcome model (Model 5), play-style vectors for scheme fit (Model 3).
+    Covers all D1 tiers (~2,958 players per season; 5 seasons loaded = ~14,500 rows).
+    Primary use: RAPM for transfer outcome model (Model 5), play-style vectors for M1 clustering and M3 scheme fit.
     Cross-source join: he_player_code stable across seasons; he_ncaa_id → barttorvik roster.
     player_id FK nullable until reconciled via (name, team, season) match.
     """
@@ -482,6 +492,12 @@ class HoopExplorerPlayerStats(Base):
     off_style_high_low_pct: Mapped[Optional[float]] = mapped_column(Float)
     off_style_reb_scramble_pct: Mapped[Optional[float]] = mapped_column(Float)
     off_style_transition_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Position probability distributions (posConfidences[_PG_] etc. from HE CSV)
+    pos_confidence_pg: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_sg: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_sf: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_pf: Mapped[Optional[float]] = mapped_column(Float)
+    pos_confidence_c: Mapped[Optional[float]] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -533,6 +549,58 @@ class HoopRTeamSeasonStats(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    school: Mapped[Optional[School]] = relationship()
+
+
+class HoopRPlayerSeasonStats(Base):
+    """
+    Player-level features aggregated from hoopR ESPN play-by-play data.
+    Mirrors hoopr_team_season_stats' pbp_* feature set, keyed on athlete_id_1
+    instead of team_id, plus player-only additions (clutch TS%, assist rate).
+    player_id FK nullable until matched via crosswalk (name + team + season
+    fuzzy match — see scripts/crosswalk_hoopr_players.py, ~90% hit rate);
+    unmatched rows keep espn_athlete_id + raw_display_name for manual backfill,
+    same pattern hoop_explorer_player_stats uses for he_player_code.
+    """
+
+    __tablename__ = "hoopr_player_season_stats"
+    __table_args__ = (
+        UniqueConstraint("espn_athlete_id", "season", name="uq_hoopr_player_stats"),
+        Index("ix_hoopr_player_stats_player_season", "player_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    espn_athlete_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_display_name: Mapped[str] = mapped_column(String(200), nullable=False)  # text-parsed PBP name
+    espn_team_name: Mapped[str] = mapped_column(String(200), nullable=False)  # raw team, for manual backfill if unmatched
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float)  # fuzzy-match score; NULL if unmatched
+    # Shot type profile (mirrors hoopr_team_season_stats)
+    pbp_rim_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_three_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_mid_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Spatial shot zones (5-zone half-court; sum to ~1.0)
+    pbp_zone1_restricted_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone2_mid_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone3_corner3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone4_straight3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_zone5_wing3_pct: Mapped[Optional[float]] = mapped_column(Float)
+    # Possession outcome rates
+    pbp_turnover_rate: Mapped[Optional[float]] = mapped_column(Float)
+    pbp_transition_rate: Mapped[Optional[float]] = mapped_column(Float)
+    # Player-only additions
+    pbp_clutch_ts_pct: Mapped[Optional[float]] = mapped_column(Float)  # TS% last 2min, <=5pt margin
+    pbp_assist_rate: Mapped[Optional[float]] = mapped_column(Float)    # athlete_id_2 assists / possessions
+    # Coverage metadata
+    shot_attempts_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    player: Mapped[Optional[Player]] = relationship()
     school: Mapped[Optional[School]] = relationship()
 
 
@@ -655,13 +723,14 @@ class NILValuation(Base):
 class PlayerTeamFitScore(Base):
     __tablename__ = "player_team_fit_scores"
     __table_args__ = (
-        UniqueConstraint("player_id", "school_id", name="uq_fit_score"),
+        UniqueConstraint("player_id", "school_id", "season", name="uq_fit_score"),
         Index("ix_fit_scores_overall_fit", "overall_fit"),  # for ranking queries
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     gap_match: Mapped[float] = mapped_column(Float, nullable=False)
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)

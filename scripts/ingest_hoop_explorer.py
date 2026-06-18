@@ -4,8 +4,8 @@ scripts/ingest_hoop_explorer.py
 Ingests Hoop Explorer CSV exports into PostgreSQL.
 
 Populates:
-  - hoop_explorer_team_stats   (play-style vectors, 4 factors, efficiency — ~365 teams)
-  - hoop_explorer_player_stats (RAPM, play-style vectors, shot profile — ~672 players)
+  - hoop_explorer_team_stats   (play-style vectors, 4 factors, efficiency — ~365 teams/season)
+  - hoop_explorer_player_stats (RAPM, play-style vectors, shot profile — ~2,958 players/season)
 
 CSV acquisition
 ---------------
@@ -20,13 +20,16 @@ and pass --fetch. These URLs are session-authenticated; obtain them by inspectin
 the network request made when clicking "Export CSV" in the browser.
 
 Usage:
-  # Local CSVs (default — uses most recent *player* and *team* CSV in data/hoop_explorer/)
-  uv run python scripts/ingest_hoop_explorer.py
+  # Load all per-season CSVs (all_player_stats_YY_YY.csv + all_team_explorer_stats_YY_YY.csv)
+  uv run python scripts/ingest_hoop_explorer.py --all-seasons
 
-  # Explicit CSV paths
+  # Single season via explicit CSV paths
   uv run python scripts/ingest_hoop_explorer.py \\
-      --player-csv data/hoop_explorer/all_player_stats_high_tier.csv \\
-      --team-csv   data/hoop_explorer/all_team_explorer_stats_power_6.csv
+      --player-csv data/hoop_explorer/all_player_stats_25_26.csv \\
+      --team-csv   data/hoop_explorer/all_team_explorer_stats_25_26.csv
+
+  # Default single-file mode (most recently modified *player* and *team* CSV)
+  uv run python scripts/ingest_hoop_explorer.py
 
   # Fetch fresh from HE export URLs (requires HE_PLAYER_EXPORT_URL / HE_TEAM_EXPORT_URL in .env)
   uv run python scripts/ingest_hoop_explorer.py --fetch --season 2026
@@ -356,6 +359,15 @@ async def ingest_team_stats(
             "def_style_high_low_pct": _safe_float(r.get("def_style_high_low_pct")),
             "def_style_reb_scramble_pct": _safe_float(r.get("def_style_reb_scramble_pct")),
             "def_style_transition_pct": _safe_float(r.get("def_style_transition_pct")),
+            # Standalone transition / scramble rates + PPP
+            "off_trans_pct":    _safe_float(r.get("off_trans_pct")),
+            "off_trans_ppp":    _safe_float(r.get("off_trans_ppp")),
+            "def_trans_pct":    _safe_float(r.get("def_trans_pct")),
+            "def_trans_ppp":    _safe_float(r.get("def_trans_ppp")),
+            "off_scramble_pct": _safe_float(r.get("off_scramble_pct")),
+            "off_scramble_ppp": _safe_float(r.get("off_scramble_ppp")),
+            "def_scramble_pct": _safe_float(r.get("def_scramble_pct")),
+            "def_scramble_ppp": _safe_float(r.get("def_scramble_ppp")),
         })
 
     matched = sum(1 for r in records if r["school_id"] is not None)
@@ -473,6 +485,12 @@ async def ingest_player_stats(
             "off_style_high_low_pct": _safe_float(r.get("off_style_high_low_pct")),
             "off_style_reb_scramble_pct": _safe_float(r.get("off_style_reb_scramble_pct")),
             "off_style_transition_pct": _safe_float(r.get("off_style_transition_pct")),
+            # Position probability distributions
+            "pos_confidence_pg": _safe_float(r.get("posConfidences[_PG_]")),
+            "pos_confidence_sg": _safe_float(r.get("posConfidences[_SG_]")),
+            "pos_confidence_sf": _safe_float(r.get("posConfidences[_SF_]")),
+            "pos_confidence_pf": _safe_float(r.get("posConfidences[_PF_]")),
+            "pos_confidence_c":  _safe_float(r.get("posConfidences[_C_]")),
         })
 
     matched_players = sum(1 for r in records if r["player_id"] is not None)
@@ -518,10 +536,56 @@ def _try_s3_upload(local_path: Path, s3_key: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+def _find_per_season_pairs(data_dir: Path) -> list[tuple[Path, Path]]:
+    """Return [(player_csv, team_csv)] pairs for per-season files (all_player_stats_YY_YY.csv)."""
+    player_files = sorted(data_dir.glob("all_player_stats_??_??.csv"))
+    team_files   = sorted(data_dir.glob("all_team_explorer_stats_??_??.csv"))
+    # Match by position in sorted order (same suffix YY_YY); warn if counts differ
+    pairs = []
+    team_by_suffix = {p.stem.replace("all_team_explorer_stats_", ""): p for p in team_files}
+    for pf in player_files:
+        suffix = pf.stem.replace("all_player_stats_", "")
+        tf = team_by_suffix.get(suffix)
+        if tf:
+            pairs.append((pf, tf))
+        else:
+            log.warning("no matching team CSV for player file %s (suffix=%s) — skipping", pf.name, suffix)
+    return pairs
+
+
 async def run(args: argparse.Namespace) -> None:
     # --- Resolve CSV paths ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if getattr(args, "all_seasons", False):
+        pairs = _find_per_season_pairs(DATA_DIR)
+        if not pairs:
+            log.error("--all-seasons: no per-season CSVs found in %s", DATA_DIR)
+            sys.exit(1)
+        log.info("--all-seasons: found %d season pairs", len(pairs))
+        async with AsyncSessionLocal() as session:
+            school_map = await _build_school_map(session)
+            player_map = await _build_player_map(session)
+        for player_csv_path, team_csv_path in pairs:
+            log.info("--- season pair: %s | %s ---", player_csv_path.name, team_csv_path.name)
+            player_rows = load_csv(player_csv_path)
+            team_rows   = load_csv(team_csv_path)
+            sample_year = _str_or_none(team_rows[0].get("year")) if team_rows else None
+            season = _parse_he_year(sample_year)
+            if season is None:
+                log.error("cannot infer season from %s year='%s' — skipping", team_csv_path.name, sample_year)
+                continue
+            log.info("season=%d", season)
+            async with AsyncSessionLocal() as session:
+                n_teams   = await ingest_team_stats(session, team_rows, school_map, season, dry_run=args.dry_run)
+                n_players = await ingest_player_stats(session, player_rows, school_map, player_map, season, dry_run=args.dry_run)
+            log.info("season=%d upserted: %d teams, %d players", season, n_teams, n_players)
+            _date = datetime.now().strftime("%Y-%m-%d")
+            _try_s3_upload(player_csv_path, f"raw/hoop_explorer/{_date}/{season}_player_stats.csv")
+            _try_s3_upload(team_csv_path,   f"raw/hoop_explorer/{_date}/{season}_team_stats.csv")
+        log.info("--all-seasons done")
+        return
 
     if args.fetch:
         player_url = args.player_url or os.environ.get("HE_PLAYER_EXPORT_URL")
@@ -607,6 +671,15 @@ async def run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Ingest Hoop Explorer CSV data into PostgreSQL")
+    p.add_argument(
+        "--all-seasons",
+        action="store_true",
+        help=(
+            "Loop over all per-season CSVs in data/hoop_explorer/ "
+            "(all_player_stats_YY_YY.csv + all_team_explorer_stats_YY_YY.csv). "
+            "Season inferred from each CSV's 'year' column."
+        ),
+    )
     p.add_argument(
         "--player-csv",
         help="Path to player CSV (default: most recent *player* file in data/hoop_explorer/)",
