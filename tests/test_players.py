@@ -5,7 +5,14 @@ def test_get_player_is_public(client):
 
 def test_get_player_response_shape(client):
     data = client.get("/api/players/101").json()
-    for field in ("player_id", "full_name", "position", "class_year", "current_school", "current_school_id"):
+    for field in (
+        "player_id",
+        "full_name",
+        "position",
+        "class_year",
+        "current_school",
+        "current_school_id",
+    ):
         assert field in data, f"missing field: {field}"
 
 
@@ -56,7 +63,7 @@ def test_search_returns_matching_results(client):
     assert isinstance(data["results"], list)
     assert data["total"] == len(data["results"])
     for player in data["results"]:
-        assert "Marcus" in player["full_name"]
+        assert "marcus" in player["full_name"].lower()
 
 
 def test_search_case_insensitive(client):

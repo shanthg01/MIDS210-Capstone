@@ -25,14 +25,9 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from datetime import datetime
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
 
 import requests
 from sqlalchemy import select
@@ -40,6 +35,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from portalpoint.db.models import Player, PlayerSeasonStats, School, TeamSeasonStats
 from portalpoint.db.session import AsyncSessionLocal
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,8 @@ CACHE_DIR = Path(".torvik_cache")
 REQUEST_DELAY = 0.5  # seconds between requests — be polite
 
 # Column names for getadvstats.php — 67-column response.
-# Source: eda_barttorvik.ipynb PLAYER_STATS_POSITION_LABELS (1-based positions → 0-based indices here).
+# Source: eda_barttorvik.ipynb PLAYER_STATS_POSITION_LABELS
+# (1-based positions → 0-based indices here).
 # BUG FIX: role/role_metric/birth_date are at 1-based positions 65-67 (0-based 64-66),
 # NOT at positions 45-47 as previously coded — prior stored role values were from unknown columns.
 # Positions 45-64 (0-based 44-63) are partially identified:
@@ -201,6 +203,7 @@ def read_csv_endpoint(
         StringIO(text),
         header=0 if has_header else None,
         names=col_names if not has_header else None,
+        index_col=False,
         on_bad_lines="skip",
     )
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -447,7 +450,13 @@ async def ingest_players(
     player_rows: list[dict],
 ) -> dict[str, int]:
     """Upsert players. Returns {barttorvik_id: player.id}."""
-    CLASS_YEAR_MAP = {"Fr": "freshman", "So": "sophomore", "Jr": "junior", "Sr": "senior", "Gr": "graduate"}
+    CLASS_YEAR_MAP = {
+        "Fr": "freshman",
+        "So": "sophomore",
+        "Jr": "junior",
+        "Sr": "senior",
+        "Gr": "graduate",
+    }
 
     rows = []
     for r in player_rows:
@@ -505,7 +514,8 @@ async def ingest_player_season_stats(
 
         gp = _safe_int(r.get("gp")) or 0
         mpg = _safe_float(r.get("min_per_game"))
-        min_pct = _safe_float(r.get("min_per"))  # % of team minutes (0-100); min_per_game is sparsely populated
+        # % of team minutes (0-100); min_per_game is sparsely populated.
+        min_pct = _safe_float(r.get("min_per"))
         three_rate, rim_rate, mid_rate = _shot_distribution(r)
 
         # Minimum quality gate: at least 5 games
@@ -627,7 +637,10 @@ async def run(seasons: list[int], use_cache: bool = True) -> None:
             player_rows = []
             for r in player_raw:
                 vals = list(r.values())
-                named = {PLAYER_STATS_COLS[i]: vals[i] for i in range(min(len(PLAYER_STATS_COLS), len(vals)))}
+                named = {
+                    PLAYER_STATS_COLS[i]: vals[i]
+                    for i in range(min(len(PLAYER_STATS_COLS), len(vals)))
+                }
                 player_rows.append(named)
 
             # 4. Upsert
