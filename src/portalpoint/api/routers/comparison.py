@@ -1,11 +1,11 @@
 import random
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 
 from portalpoint.api.deps import CurrentUser, DbSession
-from portalpoint.api.routers.fit_scores import CURRENT_SEASON
 from portalpoint.api.routers.players import _safe_class_year, _safe_position
 from portalpoint.api.schemas.comparison import (
     CompareRequest,
@@ -18,6 +18,7 @@ from portalpoint.api.schemas.player import ClassYear, PlayerBase, Position
 from portalpoint.api.schemas.prediction import PredictedRole, PredictionResponse, SimilarTransfer
 from portalpoint.api.services import fit_score_service
 from portalpoint.db.models import Player, PlayerSeasonStats, School
+from portalpoint.db.redis_client import get_redis
 
 router = APIRouter(prefix="/api/compare", tags=["comparison"])
 
@@ -103,13 +104,19 @@ def _stub_prediction(program_id: int, player_id: int) -> PredictionResponse:
 
 
 @router.post("", response_model=CompareResponse)
-async def compare_players(body: CompareRequest, current_user: CurrentUser, db: DbSession):
+async def compare_players(
+    body: CompareRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+    redis: Redis = Depends(get_redis),
+):
+    season = await fit_score_service.get_current_season(db, redis)
     player_info = await _player_info(db, body.player_ids)
 
     entries = [
         ComparisonPlayerEntry(
             player=player_info[pid],
-            fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, CURRENT_SEASON),
+            fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, season),
             prediction=_stub_prediction(body.program_id, pid),
         )
         for pid in body.player_ids

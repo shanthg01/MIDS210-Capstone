@@ -7,7 +7,8 @@ stub-generation logic in one place.
 import random
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from redis.asyncio import Redis
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portalpoint.api.schemas.fit_score import (
@@ -130,6 +131,39 @@ def real_fit_score(row: PlayerTeamFitScore) -> FitScoreResponse:
         model_version=row.model_version,
         cache_hit=False,
     )
+
+
+# Cache key/TTL for the resolved "current season" — only changes when M3 or
+# Gap Matching are rerun for a new season, so an hour of staleness is fine.
+_CURRENT_SEASON_CACHE_KEY = "current_season"
+_CURRENT_SEASON_CACHE_TTL = 3600
+_CURRENT_SEASON_FALLBACK = 2026  # used only if player_team_fit_scores is empty
+
+
+async def get_current_season(db: AsyncSession, redis: Redis | None = None) -> int:
+    """Most recent season present in player_team_fit_scores.
+
+    Replaces the old CURRENT_SEASON=2026 hardcode — that constant would go
+    stale the moment a new season's data lands without a code change + deploy.
+    """
+    if redis is not None:
+        try:
+            cached = await redis.get(_CURRENT_SEASON_CACHE_KEY)
+        except Exception:
+            cached = None
+        if cached is not None:
+            return int(cached)
+
+    result = await db.execute(select(func.max(PlayerTeamFitScore.season)))
+    season = result.scalar_one_or_none() or _CURRENT_SEASON_FALLBACK
+
+    if redis is not None:
+        try:
+            await redis.set(_CURRENT_SEASON_CACHE_KEY, str(season), ex=_CURRENT_SEASON_CACHE_TTL)
+        except Exception:
+            pass
+
+    return season
 
 
 async def get_fit_score(
