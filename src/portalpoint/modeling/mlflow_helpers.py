@@ -1,33 +1,12 @@
-"""Shared MLflow helpers for PortalPoint model notebooks."""
+"""Shared MLflow helpers for PortalPoint modeling pipeline (notebooks + scripts)."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import mlflow
 from mlflow import MlflowClient
 
-
-def _find_repo_root() -> Path:
-    p = Path(__file__).resolve()
-    for parent in [p, *p.parents]:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    raise FileNotFoundError("Could not find repo root (pyproject.toml)")
-
-
-def _load_env() -> dict[str, str]:
-    env: dict[str, str] = {}
-    p = _find_repo_root() / ".env"
-    if not p.exists():
-        return env
-    for line in p.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        env[k.strip()] = v.strip()
-    return env
+from portalpoint.modeling.io import find_repo_root, load_env
 
 
 def ensure_aws_env() -> None:
@@ -37,7 +16,7 @@ def ensure_aws_env() -> None:
     not from .env. This ensures the right IAM user is used regardless of
     what's in ~/.aws/credentials.
     """
-    env = _load_env()
+    env = load_env()
     for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"):
         if key not in os.environ and key in env:
             os.environ[key] = env[key]
@@ -45,18 +24,27 @@ def ensure_aws_env() -> None:
 
 def get_artifact_root() -> str | None:
     """S3 artifact root when S3_BUCKET is set; else local default."""
-    bucket = _load_env().get("S3_BUCKET", "").strip()
+    bucket = load_env().get("S3_BUCKET", "").strip()
     if bucket and not bucket.startswith("#"):
         return f"s3://{bucket}/mlflow"
     return None
 
 def get_tracking_uri() -> str:
-    """Read MLFLOW_TRACKING_URI from .env; fall back to SQLite at repo root."""
-    env = _load_env()
+    """Read MLFLOW_TRACKING_URI from .env; fall back to SQLite at repo root.
+
+    A relative `sqlite:///mlruns.db` resolves against the *process* CWD, which
+    differs between notebooks (cwd=notebooks/models) and scripts (cwd=repo
+    root) — they'd silently track to two different files. Anchor relative
+    sqlite paths to the repo root so both land in the same store.
+    """
+    env = load_env()
     uri = env.get("MLFLOW_TRACKING_URI", "")
     if not uri or uri.startswith("#") or uri.startswith("file:"):
-        db_path = _find_repo_root() / "mlruns.db"
-        uri = f"sqlite:///{db_path}"
+        db_path = find_repo_root() / "mlruns.db"
+        return f"sqlite:///{db_path}"
+    if uri.startswith("sqlite:///") and not uri[len("sqlite:///"):].startswith(("/", "\\")) and ":" not in uri[len("sqlite:///"):]:
+        rel_path = uri[len("sqlite:///"):]
+        return f"sqlite:///{find_repo_root() / rel_path}"
     return uri
 
 
@@ -73,10 +61,9 @@ def setup_mlflow(experiment_name: str) -> MlflowClient:
         else:
             client.create_experiment(experiment_name)
     else:
-        # Patch artifact_location if S3 is configured but experiment still points locally.
-        # Metadata (params/metrics/runs) stays in SQLite — only future artifact writes change.
-        if artifact_root and not (exp.artifact_location or "").startswith("s3://"):
-            client.update_experiment(exp.experiment_id, artifact_location=artifact_root)
+        # artifact_location is immutable once an experiment is created (no such
+        # thing as MlflowClient.update_experiment) — can't patch a pre-existing
+        # local-artifact experiment onto S3 here. Just use it as-is.
         mlflow.set_experiment(experiment_name)
 
     return client
