@@ -6,6 +6,7 @@ kept separate intentionally.
 """
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -37,8 +38,13 @@ def load_env() -> dict[str, str]:
 
 
 def get_sync_engine() -> Engine:
-    """Sync SQLAlchemy engine (psycopg2) for notebook/script DB access."""
-    raw_url = load_env().get(
+    """Sync SQLAlchemy engine (psycopg2) for notebook/script DB access.
+
+    Real env vars win over .env file (matches mlflow_helpers.ensure_aws_env's
+    precedence) — needed for CI, which sets DATABASE_URL directly and has no
+    .env file at all.
+    """
+    raw_url = os.environ.get("DATABASE_URL") or load_env().get(
         "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5433/portalpoint"
     )
     sync_url = raw_url.replace("+asyncpg", "+psycopg2")
