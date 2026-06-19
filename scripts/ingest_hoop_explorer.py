@@ -332,7 +332,13 @@ async def ingest_team_stats(
             "def_twopmidr": _safe_float(r.get("def_twopmidr")),
             # Assist rates
             "off_assist": _safe_float(r.get("off_assist")),
+            "off_ast_rim": _safe_float(r.get("off_ast_rim")),
+            "off_ast_mid": _safe_float(r.get("off_ast_mid")),
+            "off_ast_threep": _safe_float(r.get("off_ast_threep")),
             "def_assist": _safe_float(r.get("def_assist")),
+            "def_ast_rim": _safe_float(r.get("def_ast_rim")),
+            "def_ast_mid": _safe_float(r.get("def_ast_mid")),
+            "def_ast_threep": _safe_float(r.get("def_ast_threep")),
             # Offensive play-style (12 types)
             "off_style_rim_attack_pct": _safe_float(r.get("off_style_rim_attack_pct")),
             "off_style_attack_kick_pct": _safe_float(r.get("off_style_attack_kick_pct")),

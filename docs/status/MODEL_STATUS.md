@@ -15,8 +15,8 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 
 | Model | Current state | MVP remaining work | v2 / improvement backlog | Primary references |
 |---|---|---|---|---|
-| M1 Player Clustering | ✅ Re-trained — tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.3% HE-covered; weight search (120 trials) replaces flat two-scaler concat. DB write uses delete-then-insert. | Human basketball review of new auto-labels (C0 Slashing Connector vs C7 Interior Connector — confirm distinct). | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference. | [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
-| M2 Team System Clustering | ⚠️ Rewritten to tuned group-weighted `team-k9-v3` (ported from M1's architecture) — **not yet run**. Targets the C7 degenerate-cluster issue (n=20, HE=5) from the old unweighted concat. | Run the notebook against live DB to confirm whether C7 (or an analog) persists under tuned weights. Human review of `SYSTEM_LABELS`. | Evaluate `off_trans_pct`/`def_trans_pct` as a new group; hoopR spatial zones decision. | [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
+| M1 Player Clustering | ✅ Re-trained — tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.3% HE-covered; weight search (120 trials) replaces flat two-scaler concat. Writes top-three distance-derived `archetype_memberships` JSONB. Reviewed labels now include C4 `Perimeter Scoring Guard` and C5 `Pressure Connector Guard`. | Human basketball review of remaining labels (C0 Slashing Connector vs C7 Interior Connector — confirm distinct). | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference. | [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
+| M2 Team System Clustering | ✅ Rebuilt and re-run — two-layer tuned group-weighted `team-v4-2026`; 2,158 team-seasons. Offense layer includes shot shape, pace, play type, and passing; defense layer includes opponent play-type shape plus transition/scramble frequency; top-three offense/defense/system memberships are written as JSONB. Reviewed labels replace raw centroid text. | Continue basketball review of offense/defense names using centroid summaries and representative teams. | Later evaluate hoopR spatial zones and defensive PPP/four-factor quality overlays. | [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
 | M3 Scheme Fit | ✅ Re-run — `scheme-cos-v2`; all 6 seasons (2021-2026); 1,343,150 records; 57.5% HE-extended. `player_team_fit_scores` now has `season` column. | ⚠️ API `fit_scores.py` must add `season` filter before wiring real scheme_fit. Score compression noted (mean 85.7; range 55-65 for overall_fit while 3 stubs remain). | M3 v3 with hoopR spatial zones; normalization/rescaling of scheme_fit for UI display. | [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
 | Gap Matching | ✅ Complete — `gap-cos-v1`; all 6 seasons; 1,343,050 records updated. Mean 6.1, std 16.8. Sparse distribution expected — correct behavior. | Wire `fit_scores.py` (add `season` filter, return real `gap_match` + `scheme_fit`). Populate transfers table for departure-aware gaps. | Add roster snapshots, portal departure confidence, coach-adjustable needs, hoopR play-type gap features. | [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
 | M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; decide whether MVP only writes score or also stores opportunity details. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) |
@@ -29,8 +29,8 @@ Immediate modeling order:
 
 ```text
 ✅ feature_eng_m1_m2_m3.ipynb   (min_pct >= 20 filter; HE player enrichment added; 18,769 players)
-✅ M1 player_clustering          (tuned group-weighted k9-tuned-v1-2026; 85.3% HE-covered; 18,769 rows in DB)
-⚠️ M2 team_clustering            (rewritten to tuned group-weighted team-k9-v3; NOT YET RUN — targets C7 fix)
+✅ M1 player_clustering          (tuned group-weighted k9-tuned-v1-2026; top-three memberships populated)
+✅ M2 team_clustering            (two-layer team-v4-2026 notebook/DB/artifacts populated)
 ✅ M3 scheme_fit_scorer          (scheme-cos-v2; all 6 seasons; 1,343,150 rows; migration b5d2e9f4 applied)
 ✅ Gap Matching                  (gap-cos-v1; all 6 seasons; 1,343,050 rows updated; soft positions via HE)
 ✅ fit_scores.py partial real scoring (scheme + gap, dynamic current-season resolution)
@@ -66,7 +66,7 @@ overall_fit = 0.30 * scheme_fit + 0.20 * gap_match + 0.50 * 50.0
 | Source | Status | Primary tables/files | Notes |
 |---|---|---|---|
 | BartTorvik | Complete, multi-season loaded | `player_season_stats`, `team_season_stats`, S3 `raw/barttorvik/` | Normalized Postgres rows plus raw S3 files. 2021-2026 player seasons are available locally. |
-| Hoop Explorer | Complete — 6 seasons loaded (2021-2026) | `hoop_explorer_player_stats` (~16,750 rows, all D1), `hoop_explorer_team_stats` (~2,170 rows), S3 `raw/hoop_explorer/` | Player data includes 15 play-type pcts + `pos_confidence_pg/sg/sf/pf/c`. Team data includes trans/scramble pct+ppp. Feature engineering re-run needed before these flow into model inputs. |
+| Hoop Explorer | Complete — 6 seasons loaded (2021-2026) | `hoop_explorer_player_stats` (~16,750 rows, all D1), `hoop_explorer_team_stats` (~2,170 rows), S3 `raw/hoop_explorer/` | Player data includes 15 play-type pcts + `pos_confidence_pg/sg/sf/pf/c`. Team data includes offensive/defensive play-type pct, passing/assist texture, trans/scramble pct+ppp, and defensive four-factor overlays; these now flow into `team_style_vectors.parquet`. |
 | hoopR ESPN PBP | Complete — 6 seasons (2021-2026) | `hoopr_team_season_stats`, `hoopr_player_season_stats`, S3 `raw/hoopr/` | Team PBP coverage partial for 2021-2024 (~172-235 teams); near-full for 2025-2026. |
 | Feature parquet | Generated by notebooks | `data/features/player_features.parquet`, `data/features/team_style_vectors.parquet` | Gitignored; S3 is source of truth for shared feature files. |
 | Model artifacts | Generated by notebooks | `data/models/*.pkl`, centroid CSVs, S3 `models/` | Local artifacts may differ by branch/run; upload to S3 when sharing. |
@@ -95,7 +95,7 @@ Useful docs:
 | Model version | `k9-tuned-v1-2026` (was `k9-he-v1-2026`) |
 | Training seasons | 2021-2026 pooled (min_pct ≥ 20 filter) |
 | Training rows | 18,769 player-seasons |
-| Output table | `player_archetypes` (18,769 rows; delete-then-insert on re-run) |
+| Output table | `player_archetypes` (18,769 rows; delete-then-insert on re-run; adds `archetype_memberships` JSONB after migration `9c8b7a6d5e4f`) |
 | Local artifacts | `data/models/player_kmeans.pkl`, `player_scaler_base.pkl`, `player_scalers_grouped.pkl`, `player_archetype_labels.pkl`, `centroids_player.csv` — **renamed** from `player_scaler_bart.pkl`/`player_scaler_he.pkl` |
 
 ### Architecture (v2 — tuned group-weighted)
@@ -132,19 +132,20 @@ Weight search: 120 candidates, log-normal jitter on a 5,000-player HE-covered sa
 
 | Cluster | Label | n | HE two-way | Avg confidence |
 |---:|---|---:|---:|---:|
-| C0 | Slashing Connector | 2,922 | 2,613 | 0.349 |
-| C1 | Primary Playmaker | 2,559 | 2,298 | 0.459 |
-| C2 | Secondary Ball Handler | 2,950 | 2,378 | 0.433 |
-| C3 | Post Scoring Big | 1,066 | 960 | 0.399 |
-| C4 | Defensive Guard | 1,585 | 1,397 | 0.422 |
-| C5 | Movement Shooter | 3,586 | 3,113 | 0.454 |
-| C6 | Defensive Rim Protector | 984 | 816 | 0.466 |
-| C7 | Interior Connector | 1,827 | 1,378 | 0.402 |
-| C8 | Stretch Big | 1,290 | 1,056 | 0.386 |
+| C0 | Slashing Connector | 1,812 | 1,607 | 0.466 |
+| C1 | Primary Playmaker | 1,633 | 1,473 | 0.355 |
+| C2 | Secondary Ball Handler | 1,277 | 1,090 | 0.394 |
+| C3 | Post Scoring Big | 2,013 | 1,592 | 0.446 |
+| C4 | Perimeter Scoring Guard | 2,555 | 2,294 | 0.418 |
+| C5 | Pressure Connector Guard | 2,258 | 1,917 | 0.406 |
+| C6 | Defensive Rim Protector | 2,403 | 1,957 | 0.342 |
+| C7 | Interior Connector | 3,189 | 2,646 | 0.441 |
+| C8 | Stretch Big | 1,629 | 1,452 | 0.410 |
 
 ### Known Follow-Ups
 
 - **Review labels:** New labels are auto-generated from the tuned centroids (not yet basketball-reviewed) — confirm C0 (Slashing Connector) vs C7 (Interior Connector) read as genuinely distinct.
+- **Monitor membership usefulness:** The notebook now stores top-three distance-derived archetype memberships; downstream consumers should decide whether to expose the confidence/top-three values directly.
 - **Silhouette not comparable to prior run:** clustering objective changed (31-dim weighted vs 22-dim unweighted) — do not compare silhouette across the two-scaler and tuned-weight architectures directly.
 - **Candidate v3 features:** HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference from `pnr_passer_pct` vs `big_cut_roll_pct`.
 
@@ -155,39 +156,47 @@ Weight search: 120 candidates, log-normal jitter on a 5,000-player HE-covered sa
 | Item | Current state |
 |---|---|
 | Notebook | `notebooks/models/team_clustering.ipynb` |
-| Status | ⚠️ Rewritten to tuned group-weighted architecture (`team-k9-v3`) — **not yet run**. Code complete, awaiting execution against live DB. |
-| Algorithm | K-Means, tuned group-weighted (mirrors M1's architecture) + BART-only projection fallback |
-| Current k | `9` |
-| Model version | `team-k9-v3-{season}` (was `team-k9-v2-2026`) |
+| Status | ✅ Rebuilt and re-run for two-layer tuned group-weighted architecture (`team-v4-2026`). Notebook source, DB rows, and artifacts are aligned. |
+| Algorithm | Two K-Means layers: offense identity + defense identity; definitive combined label plus top-three soft memberships |
+| Current k | `K_OFFENSE=7`, `K_DEFENSE=5` |
+| Model version | `team-v4-2026` (was `team-k9-v3-{season}` / `team-k9-v2-2026`) |
 | Training seasons | 2021-2026 pooled (unchanged) |
-| Output table | `team_system_profiles` (delete-then-insert on re-run) |
-| Artifacts | `team_kmeans.pkl`, `team_scaler_base.pkl`, `team_scalers_grouped.pkl`, `team_system_labels.pkl` — **renamed** from `team_bart_scaler.pkl`/`team_he_scaler.pkl`; no other file referenced the old names, confirmed via repo-wide grep |
+| Output table | `team_system_profiles` (delete-then-insert on re-run; writes `offense_cluster_id`, `defense_cluster_id`, and membership JSONB columns after migration `9c8b7a6d5e4f`) |
+| Artifacts | `team_offense_kmeans.pkl`, `team_defense_kmeans.pkl`, backward-compatible `team_kmeans.pkl`, `team_scaler_base.pkl`, `team_scalers_grouped.pkl`, `team_system_labels.pkl` |
 
-### Architecture (v3 — ported from M1's tuned-weight design)
+### Architecture (v4 — two-layer tuned system identity)
 
-Replaces the old flat two-scaler concat (BART-4 + HE-6, unweighted) with named feature groups, each independently scaled and recombined with **tuned weights** rather than naive concatenation:
+Replaces the old one-layer offense-only clustering with two small, interpretable K-Means layers:
 
 | Group | Features | Fit on |
 |---|---|---|
-| `style_shape` | `team_three_rate`, `team_rim_rate`, `team_mid_rate` | All D1 teams |
-| `pace` | `adj_tempo` | All D1 teams |
-| `he_play_type` | 6 HE play-type pcts (transition, post-up, pick-pop, big-cut-roll, attack-kick, perimeter-cut) | HE-covered subset only |
+| Offense `style_shape` | `team_three_rate`, `team_rim_rate`, `team_mid_rate` | All D1 teams |
+| Offense `pace` | `adj_tempo` | All D1 teams |
+| Offense `off_play_type` | transition, post-up, pick-pop, big-cut-roll, attack-kick, perimeter-cut | HE cluster-covered subset |
+| Offense `off_passing` | assisted FG pct, assisted rim/mid/3PT texture | HE cluster-covered subset |
+| Defense `def_play_type` | opponent/allowed defensive HE play-type shape | HE cluster-covered subset |
+| Defense `def_pressure_shape` | `def_trans_pct`, `def_scramble_pct` | HE cluster-covered subset |
 
-`pace` is isolated into its own group rather than folded into `style_shape` — `adj_tempo`'s scale/variance differs sharply from rate features, and concatenating it unweighted is the suspected root cause of the degenerate C7 cluster below.
+The definitive `system_label` is `{offense_label} / {defense_label}`. `cluster_id` remains the offense cluster for backward compatibility, while `offense_cluster_id` and `defense_cluster_id` carry the two-layer identity explicitly.
 
-**Weight tuning:** 100-trial log-normal random search around basketball-informed defaults (`style_shape=0.35, pace=0.20, he_play_type=0.45`), scored on `0.40×silhouette + 0.25×davies_bouldin + 0.35×cluster_balance`. No "defense_focus" term (team style vector is offense-only, no analog to M1's defense floor) — `balance` weighted heavier than M1's 0.20 instead, since fixing C7 (a size-imbalance problem) is the explicit target.
+**Soft memberships:** K-Means distances are converted into distance-derived affinity scores. The DB stores top-three `offense_memberships`, `defense_memberships`, and combined `system_memberships` JSONB arrays while preserving one definitive label.
 
-Fallback projection (BART-only teams, ~3%) and confidence discount (×0.75) unchanged from v2.
+Fallback teams receive an offense projection from shot shape + pace. Defense is marked `Defense Unavailable` rather than inferred from unrelated offense-only data.
+
+Reviewed labels written to artifacts/DB:
+
+| Layer | Cluster labels |
+|---|---|
+| Offense | O0 `Perimeter Creation Offense`; O1 `Rim Pressure Offense`; O2 `Transition Attack`; O3 `Fast Spread Attack`; O4 `Mid-Range Half-Court Offense`; O5 `Deliberate Half-Court Offense`; O6 `3PT Spacing Offense` |
+| Defense | D0 `Scramble-Heavy Set Defense`; D1 `Rim-Exposure Defense`; D2 `Transition-Vulnerable Defense`; D3 `Jump-Shot Funnel Defense`; D4 `Controlled Half-Court Defense` |
 
 ### Known Issue This Targets
 
-- **Degenerate C7 (v2):** n=20, only 5 HE-covered, centroid effectively defined by 5 teams. Root cause suspected: unweighted concat let `adj_tempo`'s scale dominate distance for the BART-only fallback assignment. **Not yet confirmed fixed** — needs a run.
+- **Degenerate C7 (v2/v3):** prior one-layer runs produced undersized/offense-only clusters. v4 separates offense/defense and keeps fallback offense-only to avoid defense labels from sparse data.
 
 ### Known Follow-Ups
 
-- **Run the notebook** against live DB/parquet to get real weight-search results, silhouette/Davies-Bouldin, and confirm whether C7 (or an analogous degenerate cluster) persists under tuned weights.
-- **Human label review:** `SYSTEM_LABELS` are candidate auto-labels only — need basketball review for named system archetypes.
-- **Candidate v4 features:** `off_trans_pct`/`def_trans_pct` now in DB — evaluate adding as a new group. hoopR spatial zones available but validate cosine discrimination first.
+- **Continue label review:** current names are reviewed pass-1 labels grounded in centroids and representative 2026 teams.
 - Keep `adj_em` as overlay/quality indicator, not style feature.
 
 ---
