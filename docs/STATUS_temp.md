@@ -201,24 +201,23 @@ folder, but worth a `.as_posix()` fix.
 
 | # | Model | Status | Artifacts | DB Table |
 |---|---|---|---|---|
-| 1 | Player Clustering (K-Means, K=9) | ✅ Complete (⚠️ DB concern) | `player_kmeans.pkl`, `player_scaler_bart.pkl`, `player_scaler_hoopr.pkl`, `player_archetype_labels.pkl` → S3 + MLflow; Production=v2 (silhouette 0.1649); `player_archetypes` DB holds v3 degraded assignments — revert to v2 pending | `player_archetypes` |
-| 2 | Team System Clustering (K-Means) | ✅ Complete | `team_kmeans.pkl`, `team_bart_scaler.pkl`, `team_he_scaler.pkl`, `team_system_labels.pkl` → S3 + MLflow | `team_system_profiles` |
+| 1 | Player Clustering (K-Means, K=9) | ✅ Complete | `player_kmeans.pkl`, `player_scalers_grouped.pkl`, `player_archetype_labels.pkl`, `centroids_player.csv` → S3 + MLflow; `k9-tuned-v1-2026`; writes definitive label plus top-three `archetype_memberships` | `player_archetypes` |
+| 2 | Team System Clustering (two-layer K-Means) | ✅ Complete | `team_offense_kmeans.pkl`, `team_defense_kmeans.pkl`, `team_scalers_grouped.pkl`, `team_system_labels.pkl`, offense/defense centroids → S3 + MLflow; `team-v4-2026`; writes top-three offense/defense/system memberships | `team_system_profiles` |
 | 3 | Scheme Fit Scorer (cosine similarity) | ✅ Complete | Deterministic; `scheme-cos-v2`; MLflow run logged | `player_team_fit_scores` (scheme_fit col) |
-| — | Gap Matching (cosine similarity) | ❌ Not started | — | `player_team_fit_scores` (gap_match col) |
+| — | Gap Matching (cosine similarity) | ✅ Complete | `gap-cos-v1`; all 6 seasons populated | `player_team_fit_scores` (gap_match col) |
 | 4 | Playing Time / Rotation Model → Role Fit Score | ❌ Not started | — | `player_team_fit_scores` (role_fit col) |
 | — | Program Fit Calculator (MAUT) | ❌ Not started | — | `player_team_fit_scores` (program_fit col) |
 | 5 | Transfer Success Predictor (XGBoost) | ❌ Not started | — | `predictions` |
 | 6 | Team Rating Projection (XGBoost) | ❌ Not started | Depends on Model 4 | `team_rating_projections` |
 | 7 | Recommendation Engine (SVD + content + fit) | ❌ Not started | Depends on all 4 fit components | `recommendations` |
 
-**Current fit score state:** `overall_fit = 0.30 × scheme_fit + 0.70 × 50.0` (gap/role_fit/program_fit stubbed at 50 until built).
+**Current fit score state:** `fit_scores.py` serves real `scheme_fit` + `gap_match` from `player_team_fit_scores`; `role_fit` and `program_fit` remain stubbed.
 
-**M2 feature vector (two-scaler approach):**
-- All 365 D1 teams: 4-dim barttorvik vector (`team_three_rate`, `team_rim_rate`, `team_mid_rate`, `adj_tempo`)
-- HE-covered teams: +12 play-type frequency dimensions (second scaler); coverage was 356/365 (single season) — **feature_eng re-run needed** to reflect 1,811 team-seasons (5 seasons, ~98% coverage)
-- 365/365 hoopR-covered teams: `pbp_*` spatial zone + tempo columns available in `team_style_vectors.parquet` for M3 enrichment
-- Non-HE teams assigned via 4-dim BART centroid projection (confidence discounted 25%)
-- **Pending:** after feature_eng re-run, M2 and M3 should be re-trained on updated `team_style_vectors.parquet`; also evaluate adding `off_trans_pct`/`def_trans_pct` (now in DB) to team style vector
+**M2 feature vector (two-layer system profile):**
+- Offense layer: shot shape, pace, offensive HE play-type mix, and assist/passing texture.
+- Defense layer: opponent/allowed HE play-type mix plus transition/scramble pressure shape.
+- `team_style_vectors.parquet` has been regenerated with the new Hoop Explorer team columns.
+- Non-HE defense gaps are labeled `Defense Unavailable`; offense fallback remains projected from BART shot shape + pace.
 
 **M3 scheme vector (v2):** 3-dim base cosine (shot rates) always computed; `he_scheme_fit` supplementary in breakdown JSON for HE-covered pairs; hoopR spatial zones available for v3 expansion.
 
@@ -250,15 +249,15 @@ folder, but worth a `.as_posix()` fix.
 ### Critical path (blocks full fit score + recommendations)
 
 ```
-Re-run feature_eng_m1_m2_m3   ← immediate next step (HE team coverage 19%→98%)
+M1 player clustering           ✅ complete; top-three memberships populated
         ↓
-Re-run M2 (team_clustering)    ← fresh team_style_vectors with 5-season HE
+M2 team clustering             ✅ complete; offense/defense memberships populated
         ↓
-Re-run M3 (scheme_fit_scorer)  ← downstream of M2 re-run
+M3 scheme fit                  ✅ complete
         ↓
-Gap Matching notebook
+Gap Matching                   ✅ complete
         ↓
-wire fit_scores.py (partial)   ← scheme_fit + gap_match real, role/program stubbed
+fit_scores.py (partial)        ✅ scheme_fit + gap_match real, role/program stubbed
         ↓
 Model 4: Playing Time / Rotation model      ← opportunity outputs → role_fit score
         ↓
@@ -306,9 +305,8 @@ Next model to build. No new external data required; derivable from existing DB.
 
 ## Open Design Questions
 
-1. **Gap matching — position handling:** Per-position (more accurate) vs. school-wide aggregate (simpler). `hoop_explorer_player_stats.pos_confidence_pg/sg/sf/pf/c` now populated for 13,993 player-seasons — use these for position inference rather than relying on BART's sparse position column. Decide final approach before building Gap Matching.
-2. **Player archetype labels (M1 — Justin):** `ARCHETYPE_LABELS` in `player_clustering.ipynb` still uses auto-generated candidates — finalize before Gap Matching.
-3. **Team system labels (M2 — Shanth):** Auto-generated via taxonomy distance matching — review `SYSTEM_LABELS` for accuracy.
+1. **Player archetype labels (M1):** Reviewed pass-1 labels are in the notebook/artifacts; continue checking edge cases such as C0 vs C7.
+2. **Team system labels (M2):** Reviewed pass-1 offense/defense labels are in the notebook/artifacts; continue checking representative teams and centroid summaries.
 4. **Program Fit data gaps:** `nil_valuations` and `schools.nil_estimated_budget_usd` are not populated from barttorvik (no public NIL data). NIL fit score will require either manual data entry, third-party source, or a proxy (conference tier, market size). Decide before building Program Fit calculator.
 5. **NCAA/FERPA compliance:** Legal review required before public launch. Use only public data; document data sources clearly.
 6. **hoopR spatial zones in M3 v3:** hoopR 5-zone data now in `team_style_vectors.parquet`. Adding to scheme vector increases cosine dim from 3→8 — validate discrimination before wiring.
