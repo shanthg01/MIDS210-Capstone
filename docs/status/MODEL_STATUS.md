@@ -15,7 +15,7 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 
 | Model | Current state | MVP remaining work | v2 / improvement backlog | Primary references |
 |---|---|---|---|---|
-| M1 Player Clustering | ✅ Re-trained — tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.3% HE-covered; weight search (120 trials) replaces flat two-scaler concat. Writes top-three distance-derived `archetype_memberships` JSONB. Reviewed labels now include C4 `Perimeter Scoring Guard` and C5 `Pressure Connector Guard`. | Human basketball review of remaining labels (C0 Slashing Connector vs C7 Interior Connector — confirm distinct). | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference. | [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
+| M1 Player Clustering | ✅ Re-trained — tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.3% HE-covered; weight search (120 trials) replaces flat two-scaler concat. Writes top-three distance-derived `archetype_memberships` JSONB. Labels were cleaned up against centroid summaries and top representatives. | Human basketball review of final pass-one labels, especially C1 `High-Usage Frontcourt Creator` and C6 `Defensive Connector Forward`. | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference. | [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
 | M2 Team System Clustering | ✅ Rebuilt and re-run — two-layer tuned group-weighted `team-v4-2026`; 2,158 team-seasons. Offense layer includes shot shape, pace, play type, and passing; defense layer includes opponent play-type shape plus transition/scramble frequency; top-three offense/defense/system memberships are written as JSONB. Reviewed labels replace raw centroid text. | Continue basketball review of offense/defense names using centroid summaries and representative teams. | Later evaluate hoopR spatial zones and defensive PPP/four-factor quality overlays. | [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
 | M3 Scheme Fit | ✅ Re-run — `scheme-cos-v2`; all 6 seasons (2021-2026); 1,343,150 records; 57.5% HE-extended. `player_team_fit_scores` now has `season` column. | ⚠️ API `fit_scores.py` must add `season` filter before wiring real scheme_fit. Score compression noted (mean 85.7; range 55-65 for overall_fit while 3 stubs remain). | M3 v3 with hoopR spatial zones; normalization/rescaling of scheme_fit for UI display. | [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
 | Gap Matching | ✅ Complete — `gap-cos-v1`; all 6 seasons; 1,343,050 records updated. Mean 6.1, std 16.8. Sparse distribution expected — correct behavior. | Wire `fit_scores.py` (add `season` filter, return real `gap_match` + `scheme_fit`). Populate transfers table for departure-aware gaps. | Add roster snapshots, portal departure confidence, coach-adjustable needs, hoopR play-type gap features. | [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
@@ -132,19 +132,19 @@ Weight search: 120 candidates, log-normal jitter on a 5,000-player HE-covered sa
 
 | Cluster | Label | n | HE two-way | Avg confidence |
 |---:|---|---:|---:|---:|
-| C0 | Slashing Connector | 1,812 | 1,607 | 0.466 |
-| C1 | Primary Playmaker | 1,633 | 1,473 | 0.355 |
-| C2 | Secondary Ball Handler | 1,277 | 1,090 | 0.394 |
+| C0 | Lead Scoring Playmaker | 1,812 | 1,607 | 0.466 |
+| C1 | High-Usage Frontcourt Creator | 1,633 | 1,473 | 0.355 |
+| C2 | Skilled Stretch Forward | 1,277 | 1,090 | 0.394 |
 | C3 | Post Scoring Big | 2,013 | 1,592 | 0.446 |
 | C4 | Perimeter Scoring Guard | 2,555 | 2,294 | 0.418 |
 | C5 | Pressure Connector Guard | 2,258 | 1,917 | 0.406 |
-| C6 | Defensive Rim Protector | 2,403 | 1,957 | 0.342 |
-| C7 | Interior Connector | 3,189 | 2,646 | 0.441 |
-| C8 | Stretch Big | 1,629 | 1,452 | 0.410 |
+| C6 | Defensive Connector Forward | 2,403 | 1,957 | 0.342 |
+| C7 | Movement Spacing Wing | 3,189 | 2,646 | 0.441 |
+| C8 | Interior Star Big | 1,629 | 1,452 | 0.410 |
 
 ### Known Follow-Ups
 
-- **Review labels:** New labels are auto-generated from the tuned centroids (not yet basketball-reviewed) — confirm C0 (Slashing Connector) vs C7 (Interior Connector) read as genuinely distinct.
+- **Review labels:** Final pass-one labels are grounded in centroid summaries and representative players; teammates should still basketball-review C1/C6 wording before product copy is frozen.
 - **Monitor membership usefulness:** The notebook now stores top-three distance-derived archetype memberships; downstream consumers should decide whether to expose the confidence/top-three values directly.
 - **Silhouette not comparable to prior run:** clustering objective changed (31-dim weighted vs 22-dim unweighted) — do not compare silhouette across the two-scaler and tuned-weight architectures directly.
 - **Candidate v3 features:** HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference from `pnr_passer_pct` vs `big_cut_roll_pct`.
