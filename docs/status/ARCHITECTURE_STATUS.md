@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 18, 2026  
+**Last updated:** June 19, 2026  
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -111,6 +111,9 @@ Applied migration chain:
 | `f2a9c3d7e841` | HE `pos_confidence_*` (player) + `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` (team) |
 | `d3b7e2a1c498` | `player_season_stats.min_pct` — barttorvik team minutes % (replaces broken `minutes_per_game` as MPG filter) |
 | `b5d2e9f4` | `player_team_fit_scores.season` — enables multi-season fit score storage; `uq_fit_score` rebuilt on `(player_id, school_id, season)` |
+| `9c8b7a6d5e4f` | Adds `archetype_memberships` (player_archetypes) + `offense_memberships`/`defense_memberships`/`system_memberships` (team_system_profiles) — all JSONB, top-three soft cluster memberships |
+| `2f6a1c9d8b30` | Adds `off_ast_rim/mid/threep` + `def_ast_rim/mid/threep` to `hoop_explorer_team_stats` — **migration only adds columns; must re-run `ingest_hoop_explorer.py --all-seasons` to populate them** (confirmed: columns were 100% NULL until ingest was rerun) |
+| `7a3e2d1c9b44` | Expands `team_system_profiles.system_label` from VARCHAR(50) to VARCHAR(100) — needed for M2's new combined `"{offense} / {defense}"` label format (max observed: 63 chars) |
 
 Important tables:
 
@@ -124,8 +127,8 @@ Important tables:
 | `hoop_explorer_team_stats` | HE team exports — ~2,170 rows (6 seasons 2021-2026); includes 12 off/def play-type pcts, `off/def_trans_pct/ppp`, `off/def_scramble_pct/ppp` |
 | `hoopr_team_season_stats` | ESPN PBP-derived team features |
 | `hoopr_player_season_stats` | ESPN PBP-derived player features (87-92% crosswalk per season, 2021-2026) |
-| `player_archetypes` | M1 cluster assignments |
-| `team_system_profiles` | M2 cluster assignments |
+| `player_archetypes` | M1 cluster assignments; `archetype_memberships` JSONB (top-3 soft memberships) |
+| `team_system_profiles` | M2 cluster assignments; two-layer (`offense_cluster_id`/`defense_cluster_id`) plus `offense_memberships`/`defense_memberships`/`system_memberships` JSONB |
 | `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores; multi-season (`season` col, 1.34M rows 2021-2026); `scheme_fit`+`gap_match` real, `role_fit`/`program_fit` stubbed |
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Future team impact outputs |
@@ -133,6 +136,8 @@ Important tables:
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
 
 **Known data gaps:** `transfers` and `player_school_seasons` are both empty (0 rows) — no VerbalCommits ingest yet. Gap Matching currently treats every player in `player_season_stats` as roster-resident (no departure filter) rather than scoping to actual portal entrants. Populating `transfers` is required before Gap Matching can distinguish "still on roster" from "departed/portal."
+
+**Critical gotcha — `players.id` is not portable across environments (discovered 2026-06-19).** It's a local Postgres auto-increment surrogate key, not a stable identifier. Committed `data/features/*.parquet` files embed raw `player_id` integers — if they were built against a *different* local DB's `players` table (e.g. a teammate's machine, even running identical ingest code), those integers mean nothing on your machine. Confirmed in practice: a committed `player_features.parquet` had 4,781 of 8,696 distinct `player_id`s (55%) missing from a different machine's `players` table, causing a `ForeignKeyViolation` on `player_archetypes` insert. **Fix:** regenerate `data/features/*.parquet` locally via `feature_eng_m1_m2_m3.ipynb` (it queries the live DB directly — `JOIN players p ON p.id = pss.player_id` — so regenerated output always matches your local `players` table) before running M1/M2 after pulling someone else's parquet commit. Do not trust a pulled parquet file's `player_id`s without regenerating.
 
 ---
 
@@ -170,10 +175,10 @@ Policy/ops notes:
 | Stage | Script / notebook | Status | Output |
 |---|---|---|---|
 | BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
-| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026 | `hoop_explorer_team_stats` (~2,170 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble cols populated; raw files in S3 |
+| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026, including the `off_ast_*`/`def_ast_*` assist-split backfill (2026-06-19) | `hoop_explorer_team_stats` (~2,151 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble + assist-split cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
-| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons | Re-run with 6-season HE/hoopR data; feeds M1/M2/M3 |
-| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete | DB outputs and model artifacts; `gap_matching.ipynb` added |
+| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19 after the assist-split backfill | Re-run with 6-season HE/hoopR data; feeds M1/M2/M3; `he_team_cluster_available` now True for 2,079/2,158 (96.3%) team-seasons |
+| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete; M1/M2 re-run 2026-06-19 with bugfixes | DB outputs and model artifacts; `gap_matching.ipynb` added |
 
 Suggested rebuild order from a fresh DB:
 
@@ -188,6 +193,8 @@ Suggested rebuild order from a fresh DB:
 8. scheme_fit_scorer.ipynb
 9. gap_matching.ipynb
 ```
+
+**After pulling a migration that adds new source columns** (e.g. `2f6a1c9d8b30`'s HE assist-split columns): the migration only adds the column — it does NOT backfill data. You must re-run the relevant ingest script (`ingest_hoop_explorer.py --all-seasons` in that case) before the new columns have any data, and re-run `feature_eng_m1_m2_m3.ipynb` afterward so the parquet picks up the populated values. Confirmed: skipping the ingest rerun left `off_ast_*`/`def_ast_*` 100% NULL, which silently zeroed out `he_team_cluster_available` for every team and crashed `team_clustering.ipynb`'s scaler fit with "0 samples."
 
 Gitignored local data:
 
@@ -239,7 +246,7 @@ uv pip install mlflow
 ## Architecture Open Questions
 
 1. When should Supabase replace or supplement local Docker Postgres for shared development?
-2. When should Redis caching be enabled in `fit_scores.py`?
+2. ✅ Resolved — Redis caching is enabled in `fit_scores.py` (cache-aside, 30min TTL, fails open on Redis errors; see `src/portalpoint/db/redis_client.py`).
 3. Is GitHub Actions cron sufficient for scheduled ingest, or do we need Airflow near beta?
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?
 5. What is the minimum deployment target for beta: one VM, container platform, or managed app service?
