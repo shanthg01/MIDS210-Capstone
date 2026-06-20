@@ -382,7 +382,8 @@ MIDS210-Capstone/
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
 | `docs/models/player_projection_state_space_plan.md` | State-space player projection system plan |
-| `docs/models/playing_time_rotation_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
+| `docs/models/role_fit_playing_time_model_plan.md` | Roster-aware playing time, usage role, and Role Fit plan |
+| `docs/models/program_fit_model_plan.md` | Manual/proxy Program Fit scoring contract and implementation plan |
 | `docs/models/team_rating_projection_roster_tool_plan.md` | Roster-based team rating projection plan |
 | `docs/diagram_1_three_layer_architecture.md` | Fit scoring methodology detail |
 | `docs/diagram_2_solution_architecture.md` | Full AWS infrastructure design |

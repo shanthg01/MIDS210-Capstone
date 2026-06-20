@@ -5,7 +5,7 @@
 **Model family:** Game-level state-space model + hybrid basketball rate model  
 **Primary output table:** `predictions` initially, with a future dedicated `player_projections` table  
 **Downstream consumers:** Playing Time / Rotation model, Role Fit score, Team Rating Projection, Recommendations, player profile UI  
-**Related plan:** `docs/models/playing_time_rotation_model_plan.md`
+**Related plan:** `docs/models/role_fit_playing_time_model_plan.md`
 
 ---
 
