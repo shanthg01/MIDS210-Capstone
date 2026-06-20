@@ -5,7 +5,7 @@
 **Model family:** Game-level state-space model + hybrid basketball rate model  
 **Primary output table:** `predictions` initially, with a future dedicated `player_projections` table  
 **Downstream consumers:** Playing Time / Rotation model, Role Fit score, Team Rating Projection, Recommendations, player profile UI  
-**Related plan:** `docs/models/playing_time_rotation_model_plan.md`
+**Related plan:** `docs/models/role_fit_playing_time_model_plan.md`
 
 ---
 
@@ -30,6 +30,15 @@ Player value target
 ```
 
 For team and roster tools, that neutral value becomes destination-adjusted value after expected minutes, usage, and role are applied.
+
+Key dependency decision:
+
+```text
+Neutral Player Projection does NOT depend on Role Fit.
+Destination-adjusted Player Projection DOES depend on Role Fit / Playing Time.
+```
+
+The first implementation can and should build the neutral player projection before Role Fit is complete. Role Fit then consumes that neutral projection to estimate opportunity. After Role Fit exists, a destination adapter converts neutral talent into school-specific projected production.
 
 ---
 
@@ -77,7 +86,19 @@ This is analogous to a baseball stack where hidden skills feed a multinomial mod
 
 ## 3. Projection Modes
 
-The system should produce two related outputs.
+The system should produce two related outputs. Treat these as two pipeline stages, not one model that always requires a destination school.
+
+```text
+Stage A: Neutral player projection
+    player only
+    context-neutral rate/value outputs
+    can run before Role Fit
+
+Stage B: Destination-adjusted projection
+    player + school + roster snapshot
+    consumes Role Fit / Playing Time outputs
+    runs after expected minutes and role are known
+```
 
 ### Neutral Talent Projection
 
@@ -94,6 +115,8 @@ It should include:
 - Skill percentiles.
 - Generic points-per-100 player value.
 - Comparable historical players.
+
+It should not include a destination-specific minutes projection. If a display surface needs a temporary minutes value before Role Fit exists, label it as a fallback estimate rather than as neutral player talent.
 
 ### Destination-Adjusted Projection
 
@@ -113,6 +136,15 @@ It should additionally include:
 - Destination-adjusted player value and uncertainty.
 
 The neutral talent model should not own playing-time projection. Playing time remains a separate model, but the destination-adjusted projection depends on it.
+
+Canonical flow:
+
+```text
+Neutral Player Projection
+    -> Role Fit / Playing Time
+        -> expected minutes, expected usage, usage role, displacement
+            -> Destination-adjusted Player Projection
+```
 
 ---
 
@@ -664,6 +696,17 @@ projection_confidence
 model_version
 ```
 
+Neutral output basis:
+
+```text
+per 100 possessions
+per 40 minutes
+usage-normalized rates
+context-neutral value
+```
+
+No destination school is required for this mode.
+
 ### Destination-adjusted projection
 
 ```text
@@ -682,6 +725,18 @@ explanation
 model_version
 ```
 
+Destination output basis:
+
+```text
+neutral projection
++ Role Fit expected minutes
++ Role Fit usage role / expected usage
++ team pace
++ competition/tier adjustment
++ scheme/roster context
+= school-specific projected stats and value
+```
+
 ### Current API compatibility
 
 The current `predictions` table can hold an MVP projection:
@@ -689,8 +744,8 @@ The current `predictions` table can hold an MVP projection:
 | Existing column | New interpretation |
 |---|---|
 | `predicted_per_change` | Compatibility field; derive from value/PER bridge until API evolves |
-| `predicted_minutes` | From Playing Time / Rotation model |
-| `predicted_role` | starter/rotation/bench/reserve |
+| `predicted_minutes` | From Playing Time / Rotation model for destination mode; fallback-only before Role Fit exists |
+| `predicted_role` | From Role Fit usage/minutes outputs for destination mode; fallback-only before Role Fit exists |
 | `confidence` | Projection confidence from data quality and interval width |
 | `shap_explanations` | Projection decomposition JSON, not necessarily SHAP |
 
