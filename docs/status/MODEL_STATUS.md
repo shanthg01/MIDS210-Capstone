@@ -34,7 +34,9 @@ Immediate modeling order:
 ✅ M3 scheme_fit_scorer          (scheme-cos-v2; all 6 seasons; 1,343,050 rows; migration b5d2e9f4 applied)
 ✅ Gap Matching                  (gap-cos-v1; all 6 seasons; 1,343,050 rows updated; soft positions via HE)
 ✅ fit_scores.py partial real scoring (scheme + gap, dynamic current-season resolution)
+→  Neutral Player Projection
 →  Role Fit / Playing Time
+→  Destination-Adjusted Player Projection
 →  Program Fit
 →  fit_scores.py full scoring
 →  Recommendation Engine
@@ -344,7 +346,9 @@ Range remains narrow until role_fit and program_fit are real. Do not surface ove
 
 | # | Model / Calculator | Status | Depends on | Output |
 |---|---|---|---|---|
-| 4 | Playing Time / Rotation -> Role Fit | Not started | roster state, M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4a | Neutral Player Projection | Not started | player game logs or season-level fallback, HE impact labels | `player_projections` / projection artifacts |
+| 4b | Playing Time / Rotation -> Role Fit | Not started | roster state, neutral player projection, M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4c | Destination-Adjusted Player Projection | Not started | neutral player projection + role/minutes outputs | destination projection rows/artifacts |
 | - | Program Fit Calculator | Not started | user preferences, NIL/location/academic proxies | `player_team_fit_scores.program_fit` |
 | 5 | Transfer Success Predictor | Not started | historical transfers/outcomes | `predictions` |
 | 6 | Team Rating Projection | Not started | player projection + role/minutes | `team_rating_projections` |
@@ -358,7 +362,9 @@ Critical path:
 ✅ M3 script rerun
 ✅ Gap Matching script rerun
 ✅ fit_scores.py partial real scoring
+  -> Neutral Player Projection
   -> Role Fit / Playing Time
+  -> Destination-Adjusted Player Projection
   -> Program Fit
   -> fit_scores.py full scoring
   -> Recommendation Engine
