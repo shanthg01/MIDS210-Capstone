@@ -55,3 +55,4 @@ Thumbs.db
 data/hoopr/
 notebooks/data/
 data/features/
+data/models/*.pkl
