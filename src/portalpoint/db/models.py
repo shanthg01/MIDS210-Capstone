@@ -614,6 +614,142 @@ class HoopRPlayerSeasonStats(Base):
     school: Mapped[Optional[School]] = relationship()
 
 
+class HoopRGame(Base):
+    """
+    One row per ESPN game, from sportsdataverse-data's mbb_schedule_{season}.parquet
+    (same hoopR/ESPN lineage as hoopr_team_season_stats — different release tag,
+    game-level grain instead of season-aggregate).
+    home/away_school_id nullable until matched via ESPN_TEAM_ALIASES/fuzzy match;
+    raw espn_team_id kept for manual backfill if unmatched.
+    """
+
+    __tablename__ = "hoopr_games"
+    __table_args__ = (
+        UniqueConstraint("espn_game_id", name="uq_hoopr_games_espn_game_id"),
+        Index("ix_hoopr_games_season", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    espn_game_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    game_date: Mapped[Optional[date]] = mapped_column(Date)
+    home_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    away_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    home_espn_team_id: Mapped[Optional[str]] = mapped_column(String(20))
+    away_espn_team_id: Mapped[Optional[str]] = mapped_column(String(20))
+    home_score: Mapped[Optional[int]] = mapped_column(Integer)
+    away_score: Mapped[Optional[int]] = mapped_column(Integer)
+    neutral_site: Mapped[Optional[bool]] = mapped_column(Boolean)
+    venue: Mapped[Optional[str]] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    home_school: Mapped[Optional[School]] = relationship(foreign_keys=[home_school_id])
+    away_school: Mapped[Optional[School]] = relationship(foreign_keys=[away_school_id])
+
+
+class HoopRTeamGameLog(Base):
+    """
+    One row per team per game, from team_box_{season}.parquet.
+    FKs to hoopr_games.espn_game_id (game-level grain). school_id nullable
+    until matched, same crosswalk as hoopr_team_season_stats.
+    """
+
+    __tablename__ = "hoopr_team_game_logs"
+    __table_args__ = (
+        UniqueConstraint("espn_game_id", "espn_team_id", name="uq_hoopr_team_game_log"),
+        Index("ix_hoopr_team_game_logs_school_season", "school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    espn_game_id: Mapped[str] = mapped_column(ForeignKey("hoopr_games.espn_game_id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    game_date: Mapped[Optional[date]] = mapped_column(Date)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    espn_team_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    opponent_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    home_away: Mapped[Optional[str]] = mapped_column(String(10))
+    points: Mapped[Optional[int]] = mapped_column(Integer)
+    opponent_points: Mapped[Optional[int]] = mapped_column(Integer)
+    field_goals_made: Mapped[Optional[int]] = mapped_column(Integer)
+    field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    three_point_field_goals_made: Mapped[Optional[int]] = mapped_column(Integer)
+    three_point_field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    free_throws_made: Mapped[Optional[int]] = mapped_column(Integer)
+    free_throws_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    offensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    defensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    total_rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    assists: Mapped[Optional[int]] = mapped_column(Integer)
+    steals: Mapped[Optional[int]] = mapped_column(Integer)
+    blocks: Mapped[Optional[int]] = mapped_column(Integer)
+    turnovers: Mapped[Optional[int]] = mapped_column(Integer)
+    fouls: Mapped[Optional[int]] = mapped_column(Integer)
+    points_in_paint: Mapped[Optional[int]] = mapped_column(Integer)
+    fast_break_points: Mapped[Optional[int]] = mapped_column(Integer)
+    turnover_points: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    game: Mapped[HoopRGame] = relationship()
+    school: Mapped[Optional[School]] = relationship(foreign_keys=[school_id])
+    opponent_school: Mapped[Optional[School]] = relationship(foreign_keys=[opponent_school_id])
+
+
+class HoopRPlayerGameLog(Base):
+    """
+    One row per player per game, from player_box_{season}.parquet.
+    player_id resolved via players.espn_id first (already ~90% backfilled by
+    hoopr_player_season_stats ingest), fuzzy name+roster match second —
+    same fallback order as hoopr_player_season_stats. match_status records
+    which path resolved the row (or that none did).
+    """
+
+    __tablename__ = "hoopr_player_game_logs"
+    __table_args__ = (
+        UniqueConstraint("espn_game_id", "espn_athlete_id", name="uq_hoopr_player_game_log"),
+        Index("ix_hoopr_player_game_logs_player_season", "player_id", "season"),
+        Index("ix_hoopr_player_game_logs_school_season", "school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    espn_game_id: Mapped[str] = mapped_column(ForeignKey("hoopr_games.espn_game_id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    game_date: Mapped[Optional[date]] = mapped_column(Date)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    espn_athlete_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    raw_display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    opponent_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    home_away: Mapped[Optional[str]] = mapped_column(String(10))
+    starter: Mapped[Optional[bool]] = mapped_column(Boolean)
+    minutes: Mapped[Optional[float]] = mapped_column(Float)
+    field_goals_made: Mapped[Optional[int]] = mapped_column(Integer)
+    field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    three_point_field_goals_made: Mapped[Optional[int]] = mapped_column(Integer)
+    three_point_field_goals_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    free_throws_made: Mapped[Optional[int]] = mapped_column(Integer)
+    free_throws_attempted: Mapped[Optional[int]] = mapped_column(Integer)
+    offensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    defensive_rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    rebounds: Mapped[Optional[int]] = mapped_column(Integer)
+    assists: Mapped[Optional[int]] = mapped_column(Integer)
+    steals: Mapped[Optional[int]] = mapped_column(Integer)
+    blocks: Mapped[Optional[int]] = mapped_column(Integer)
+    turnovers: Mapped[Optional[int]] = mapped_column(Integer)
+    fouls: Mapped[Optional[int]] = mapped_column(Integer)
+    points: Mapped[Optional[int]] = mapped_column(Integer)
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    match_status: Mapped[str] = mapped_column(String(20), nullable=False)  # matched/unmatched/ambiguous/no_school
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    game: Mapped[HoopRGame] = relationship()
+    player: Mapped[Optional[Player]] = relationship()
+    school: Mapped[Optional[School]] = relationship(foreign_keys=[school_id])
+    opponent_school: Mapped[Optional[School]] = relationship(foreign_keys=[opponent_school_id])
+
+
 class CoachingTendency(Base):
     __tablename__ = "coaching_tendencies"
     __table_args__ = (
