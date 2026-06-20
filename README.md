@@ -12,13 +12,13 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Layer | Status |
 |---|---|
 | Backend API (FastAPI) | All endpoints live — protected routes require JWT; auth/players/users hit real DB |
-| Database (PostgreSQL + Alembic) | 6 migrations applied; ~4,083 players + 365 schools + HE + hoopR data loaded |
-| Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP ✅ (raw parquet → S3) |
-| MLflow + S3 artifacts | Wired — `mlruns.db` + `s3://portalpoint-data/mlflow/`; M1–M3 logged |
-| ML Models 1–3 | ✅ Complete — player clustering, team clustering, scheme fit (`scheme-cos-v2`) |
-| Gap Matching (next) | ❌ Not started — next on critical path; no new data needed |
-| Role Fit, Program Fit | ❌ Not started — routers return deterministic stubs |
-| Recommendation Engine (Model 7) | ❌ Blocked on remaining fit components |
+| Database (PostgreSQL + Alembic) | Current migration head applied; 2021-2026 barttorvik, Hoop Explorer, and hoopR data loaded locally |
+| Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP ✅ (raw/local cache + S3 upload where configured) |
+| Feature + model pipeline | Script-backed reruns for M1, M2, M3, and Gap Matching; feature parquet/model artifacts are gitignored and regenerated locally |
+| MLflow + S3 artifacts | Wired — local `mlruns.db`, S3 model uploads, and script/notebook MLflow runs |
+| Fit components | ✅ Player clustering, team clustering, scheme fit, and gap matching complete; API serves real `scheme_fit` + `gap_match` |
+| Role Fit, Program Fit | ❌ Not started — API keeps deterministic 50.0 stubs for these components |
+| Recommendation Engine (Model 7) | ❌ Blocked on Role Fit + Program Fit |
 | Frontend (React + Vite) | 8 pages implemented against live API |
 
 See [`docs/status/STATUS.md`](docs/status/STATUS.md) for the status index, or jump directly to
@@ -71,24 +71,33 @@ uv sync
 uv run alembic upgrade head
 ```
 
-### 4. Load data (run in order)
+### 4. Load data and refresh local model outputs
 
 ```bash
-uv run python scripts/ingest_barttorvik.py        # ~4,083 players, 365 schools (2–3 min)
-uv run python scripts/ingest_hoop_explorer.py     # 356 HE-covered teams + player play-types
-uv run python scripts/ingest_hoopr.py --season 2026   # ESPN PBP → 365-row team features + S3
+uv run python scripts/ingest_barttorvik.py --seasons 2021 2022 2023 2024 2025 2026
+uv run python scripts/ingest_hoop_explorer.py --all-seasons
+uv run python scripts/ingest_hoopr.py --season 2021 --season 2022 --season 2023 --season 2024 --season 2025 --season 2026
 ```
 
-`--season` is repeatable: `--season 2024 --season 2025 --season 2026` for backfill.
 Raw PBP parquets (~120MB/season) land in `data/hoopr/` (gitignored) and `s3://portalpoint-data/raw/hoopr/`.
 
 AWS keys required for S3 upload — see [Team S3 access](#team-s3-access-aws). Ingest writes to DB regardless of S3 availability (upload failure is logged, not fatal).
 
-Then run notebooks in order:
-1. `notebooks/features/feature_eng_m1_m2_m3.ipynb`
-2. `notebooks/models/team_clustering.ipynb`
-3. `notebooks/models/player_clustering.ipynb`
-4. `notebooks/models/scheme_fit_scorer.ipynb`
+Feature parquet and most model artifacts are intentionally not tracked in git. Regenerate them against your local DB before running the model scripts:
+
+```bash
+uv run jupyter nbconvert --to notebook --execute notebooks/features/feature_eng_m1_m2_m3.ipynb \
+  --output /tmp/feature_eng_m1_m2_m3.executed.ipynb \
+  --ExecutePreprocessor.kernel_name=portalpoint \
+  --ExecutePreprocessor.timeout=1800
+
+uv run python scripts/run_player_clustering.py
+uv run python scripts/run_team_clustering.py
+uv run python scripts/run_scheme_fit.py
+uv run python scripts/run_gap_matching.py
+```
+
+Use the notebooks in `notebooks/models/` for retuning, visual review, and validation plots. Use the scripts above for repeatable local refreshes that keep Postgres, local artifacts, MLflow, and S3 model uploads in sync.
 
 ### 5. Start the backend
 
@@ -168,16 +177,11 @@ aws s3 ls s3://portalpoint-data/    # smoke test
 
 ## ML Model Tracking (MLflow)
 
-MLflow tracks all model runs, parameters, metrics, and artifacts for Models 1–3. It is a **notebook-only dependency** — not in `pyproject.toml` because mlflow's metadata pins `pandas<3`, which conflicts with `uv sync` resolution against pandas 3. Install it separately:
-
-```bash
-# Install once from repo root (uv pip is lenient; does NOT downgrade pandas)
-uv pip install mlflow
-```
+MLflow tracks model runs, parameters, metrics, and artifacts for player clustering, team clustering, scheme fit, and gap matching. It is included in the project dependencies and used by both notebooks and the non-interactive model scripts.
 
 ### Tracking backend
 
-All runs write to `mlruns.db` (SQLite) at the repo root. The path is resolved automatically by `notebooks/utils/mlflow_helpers.py` — no CWD dependency. If `MLFLOW_TRACKING_URI` is set in `.env`, that URI is used instead (must be `sqlite:///` or an MLflow server URL — **not** `s3://`; `file:` paths are rejected by mlflow 3.x).
+All runs write to `mlruns.db` (SQLite) at the repo root by default. The path is resolved automatically by `src/portalpoint/modeling/mlflow_helpers.py` — no CWD dependency. If `MLFLOW_TRACKING_URI` is set in `.env`, that URI is used instead (must be `sqlite:///` or an MLflow server URL — **not** `s3://`; `file:` paths are rejected by mlflow 3.x).
 
 MLflow artifacts (`.pkl`, plots) can be stored in `s3://portalpoint-data/mlflow/` when wired; deploy bundles live under `s3://portalpoint-data/models/<model>/`. See [`docs/aws_s3_setup.md`](docs/aws_s3_setup.md).
 
@@ -188,19 +192,20 @@ MLflow artifacts (`.pkl`, plots) can be stored in `s3://portalpoint-data/mlflow/
 mlflow ui --backend-store-uri sqlite:///mlruns.db
 ```
 
-Open http://127.0.0.1:5000. Three experiments are visible:
+Open http://127.0.0.1:5000. Current experiments include:
 
 | Experiment | Model | Key metric | Registry name |
 |---|---|---|---|
-| `player-clustering` | K-Means player archetypes (k=8) | `silhouette_score` | `player-clustering` |
-| `team-clustering` | K-Means team system profiles | `silhouette_score` | `team-clustering` |
+| `player-clustering` | K-Means player archetypes (k=9) | `silhouette_score` | `player-clustering` |
+| `team-clustering` | Two-layer K-Means team system profiles | `silhouette_score` | `team-clustering` |
 | `scheme-fit-scorer` | Cosine similarity `scheme-cos-v2` | `n_records_written` | `scheme-fit-scorer` |
+| `gap-matching` | Cosine gap matching `gap-cos-v1` | `std_gap_match` | `gap-matching-scorer` |
 
 Artifacts (pkl files) in `s3://portalpoint-data/models/`; MLflow artifact store in `s3://portalpoint-data/mlflow/`.
 
 ### Auto-promotion logic
 
-Each notebook run registers a new model version. `maybe_promote()` in `mlflow_helpers.py` compares the new run's key metric against the current Production version:
+Each notebook/script run registers a new model version. `maybe_promote()` in `mlflow_helpers.py` compares the new run's key metric against the current Production version:
 
 - **First run ever** → automatically promoted to `Production`
 - **Improvement > 5%** → promoted to `Production`
@@ -208,7 +213,7 @@ Each notebook run registers a new model version. `maybe_promote()` in `mlflow_he
 
 ### Shared helper
 
-`notebooks/utils/mlflow_helpers.py` provides three functions used by all model notebooks:
+`src/portalpoint/modeling/mlflow_helpers.py` provides three functions used by model notebooks and scripts:
 
 | Function | Purpose |
 |---|---|
@@ -266,7 +271,7 @@ All endpoints under `/api`. Public endpoints require no auth; protected endpoint
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/recommendations?user_id=` | Top-10 portal players ranked for program (stub → Model 7) |
-| GET | `/api/fit-scores?player_id=&school_id=` | 4-component fit score breakdown (scheme real, others stub) |
+| GET | `/api/fit-scores?player_id=&school_id=` | 4-component fit score breakdown (scheme + gap real; role/program stubbed) |
 | GET | `/api/predictions?player_id=&school_id=` | Transfer outcome prediction + SHAP explanations (stub → Model 5) |
 | GET | `/api/projections/team-rating?player_id=&school_id=` | Delta-AdjEM projection with 80% CI (stub → Model 6) |
 | POST | `/api/compare` | Side-by-side comparison for 2–4 players |
@@ -327,21 +332,24 @@ MIDS210-Capstone/
 ├── scripts/
 │   ├── ingest_barttorvik.py     # barttorvik ETL — loads players/schools/stats
 │   ├── ingest_hoop_explorer.py  # Hoop Explorer ETL — team + player play-type stats
-│   └── ingest_hoopr.py          # hoopR ESPN PBP — 5 spatial zones → hoopr_team_season_stats
+│   ├── ingest_hoopr.py          # hoopR ESPN PBP — 5 spatial zones → hoopr_team_season_stats
+│   ├── run_player_clustering.py # Script rerun for M1 player archetypes
+│   ├── run_team_clustering.py   # Script rerun for M2 team systems
+│   ├── run_scheme_fit.py        # Script rerun for M3 scheme fit
+│   └── run_gap_matching.py      # Script rerun for gap matching
 ├── notebooks/
 │   ├── eda/
 │   │   └── eda_hoopr.ipynb            # ESPN coordinate system validation (source of truth)
 │   ├── features/
 │   │   └── feature_eng_m1_m2_m3.ipynb # BART + HE + hoopR → player_features + team_style_vectors
 │   ├── models/
-│   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=8)
-│   │   ├── team_clustering.ipynb      # Model 2 ✅ — K-Means team system profiles (two-scaler)
-│   │   └── scheme_fit_scorer.ipynb    # Model 3 ✅ — cosine similarity scheme-cos-v2
-│   ├── utils/
-│   │   └── mlflow_helpers.py          # Shared MLflow helpers (setup, ensure_aws_env, auto-promote)
+│   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=9)
+│   │   ├── team_clustering.ipynb      # Model 2 ✅ — two-layer K-Means team system profiles
+│   │   ├── scheme_fit_scorer.ipynb    # Model 3 ✅ — cosine similarity scheme-cos-v2
+│   │   └── gap_matching.ipynb         # Gap Matching ✅ — cosine gap-cos-v1
 │   └── requirements-notebooks.txt     # Notebook-only deps — install via uv pip
 ├── mlruns.db                          # MLflow SQLite tracking store (created on first run)
-├── alembic/                     # 6 database migrations (latest: c1e8f4a2b5d3 hoopr table)
+├── alembic/                     # Database migrations
 ├── tests/                       # 111 pytest tests across 9 modules
 ├── .env.example                 # Environment variable template
 ├── docker-compose.yml           # PostgreSQL 15 + Redis 7
@@ -368,7 +376,7 @@ MIDS210-Capstone/
 | `docs/status/ARCHITECTURE_STATUS.md` | Local/cloud infrastructure, database, S3, ingest, MLflow |
 | `docs/status/APPLICATION_STATUS.md` | Product direction, API routers, frontend pages, tests, app blockers |
 | `docs/dataflow_diagram.mmd` | Mermaid: sources → ingest → DB → features → models (all 3 sources) |
-| `docs/models/gap_matching_plan.md` | Gap Matching model plan — next critical-path fit component |
+| `docs/models/gap_matching_plan.md` | Gap Matching model plan and implementation handoff |
 | `docs/models/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
 | `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |

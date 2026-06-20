@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 19, 2026  
+**Last updated:** June 20, 2026
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -19,7 +19,7 @@ PortalPoint is local-first until beta.
 | API | Local FastAPI via `uvicorn` | EC2/ECS deferred |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
 | MLflow tracking metadata | Local `mlruns.db` SQLite | Could move to hosted DB or MLflow server later |
-| MLflow artifacts | Local/S3 depending notebook setup | `s3://portalpoint-data/mlflow/` |
+| MLflow artifacts | Local/S3 depending script/notebook setup | `s3://portalpoint-data/mlflow/` |
 
 No EC2/ECS container deployment is planned before beta. GitHub Actions cron is preferred before Airflow; Airflow remains a later option if orchestration complexity justifies it.
 
@@ -95,7 +95,7 @@ S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 | ORM | SQLAlchemy |
 | Migrations | Alembic |
 | Async app access | `postgresql+asyncpg://...` |
-| Notebook sync access | notebooks often replace `+asyncpg` with sync driver URL where needed |
+| Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL for scripts/notebooks |
 
 Applied migration chain:
 
@@ -177,8 +177,9 @@ Policy/ops notes:
 | BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
 | Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026, including the `off_ast_*`/`def_ast_*` assist-split backfill (2026-06-19) | `hoop_explorer_team_stats` (~2,151 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble + assist-split cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
-| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19 after the assist-split backfill | Re-run with 6-season HE/hoopR data; feeds M1/M2/M3; `he_team_cluster_available` now True for 2,079/2,158 (96.3%) team-seasons |
-| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete; M1/M2 re-run 2026-06-19 with bugfixes | DB outputs and model artifacts; `gap_matching.ipynb` added |
+| Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19/20 for local sync | Produces gitignored `data/features/player_features.parquet` and `data/features/team_style_vectors.parquet`; must be regenerated against each local DB because surrogate `players.id` values are not portable |
+| Model scripts | `scripts/run_player_clustering.py`, `scripts/run_team_clustering.py`, `scripts/run_scheme_fit.py`, `scripts/run_gap_matching.py` | ✅ Complete baseline — M1/M2/M3/Gap refresh locally and log to MLflow | Preferred non-interactive rerun path; writes DB outputs, local artifacts, MLflow runs, and S3 model uploads when credentials are configured |
+| Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete | Use for retuning, validation plots, and basketball review; scripts should be used for ordinary local refresh |
 
 Suggested rebuild order from a fresh DB:
 
@@ -187,11 +188,11 @@ Suggested rebuild order from a fresh DB:
 2. ingest_barttorvik.py --seasons 2021 2022 2023 2024 2025 2026   # --seasons required to populate min_pct across all years
 3. ingest_hoop_explorer.py --all-seasons          # picks up all ??_?? season pairs incl 20_21
 4. ingest_hoopr.py --season <year>  (repeat per season or iterate 2021-2026)
-5. feature_eng_m1_m2_m3.ipynb
-6. team_clustering.ipynb
-7. player_clustering.ipynb
-8. scheme_fit_scorer.ipynb
-9. gap_matching.ipynb
+5. feature_eng_m1_m2_m3.ipynb                     # execute with the portalpoint kernel
+6. run_player_clustering.py
+7. run_team_clustering.py
+8. run_scheme_fit.py
+9. run_gap_matching.py
 ```
 
 **After pulling a migration that adds new source columns** (e.g. `2f6a1c9d8b30`'s HE assist-split columns): the migration only adds the column — it does NOT backfill data. You must re-run the relevant ingest script (`ingest_hoop_explorer.py --all-seasons` in that case) before the new columns have any data, and re-run `feature_eng_m1_m2_m3.ipynb` afterward so the parquet picks up the populated values. Confirmed: skipping the ingest rerun left `off_ast_*`/`def_ast_*` 100% NULL, which silently zeroed out `he_team_cluster_available` for every team and crashed `team_clustering.ipynb`'s scaler fit with "0 samples."
@@ -202,6 +203,7 @@ Gitignored local data:
 data/hoopr/
 notebooks/data/
 data/features/
+data/models/*.pkl
 mlruns/
 mlruns.db
 ```
@@ -210,23 +212,17 @@ mlruns.db
 
 ## MLflow Architecture
 
-MLflow is notebook-only right now.
+MLflow is used by both the model notebooks and the non-interactive scripts.
 
 | Store | Current state |
 |---|---|
 | Tracking metadata | `mlruns.db` SQLite at repo root |
-| Artifacts | S3 `s3://portalpoint-data/mlflow/` when configured |
-| Helper | `notebooks/utils/mlflow_helpers.py` |
+| Artifacts | S3 `s3://portalpoint-data/mlflow/` when configured; deployable model artifacts also upload under `s3://portalpoint-data/models/<model>/` |
+| Helper | `src/portalpoint/modeling/mlflow_helpers.py` |
 
 Do not set `MLFLOW_TRACKING_URI` to S3. S3 is for artifacts, not tracking metadata.
 
-Known issue:
-
-- `mlflow` is not part of the main uv dependency set because of dependency conflicts. Install it as a notebook-only dependency when needed:
-
-```bash
-uv pip install mlflow
-```
+`mlflow` is part of the project dependency set in `pyproject.toml`. The local SQLite tracking DB is intentionally gitignored; teammates should share important artifacts through S3, not by committing `mlruns.db`.
 
 ---
 

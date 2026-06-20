@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** June 18, 2026  
+**Last updated:** June 20, 2026
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
