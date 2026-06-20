@@ -75,6 +75,7 @@ Useful docs:
 
 | Doc | Purpose |
 |---|---|
+| [`../models/model_dependency_graph.md`](../models/model_dependency_graph.md) | Model dependency DAG, input/output contracts, run order, and downstream consumer map. |
 | [`../models/gap_matching_plan.md`](../models/gap_matching_plan.md) | Gap Matching model plan and implementation notes. |
 | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) | Role fit / opportunity model design. |
 | [`../models/player_projection_state_space_plan.md`](../models/player_projection_state_space_plan.md) | Player talent projection plan. |
