@@ -305,8 +305,8 @@ Next model to build. No new external data required; derivable from existing DB.
 
 ## Open Design Questions
 
-1. **Player archetype labels (M1):** Reviewed pass-1 labels are in the notebook/artifacts; continue checking edge cases such as C0 vs C7.
-2. **Team system labels (M2):** Reviewed pass-1 offense/defense labels are in the notebook/artifacts; continue checking representative teams and centroid summaries.
+1. **Player archetype labels (M1):** Current labels are accepted for MVP and written to notebook/artifacts/DB; future changes are product-copy refinement, not a modeling blocker.
+2. **Team system labels (M2):** Current offense/defense labels are accepted for MVP and written to notebook/artifacts/DB; future changes are product-copy refinement, not a modeling blocker.
 4. **Program Fit data gaps:** `nil_valuations` and `schools.nil_estimated_budget_usd` are not populated from barttorvik (no public NIL data). NIL fit score will require either manual data entry, third-party source, or a proxy (conference tier, market size). Decide before building Program Fit calculator.
 5. **NCAA/FERPA compliance:** Legal review required before public launch. Use only public data; document data sources clearly.
 6. **hoopR spatial zones in M3 v3:** hoopR 5-zone data now in `team_style_vectors.parquet`. Adding to scheme vector increases cosine dim from 3→8 — validate discrimination before wiring.

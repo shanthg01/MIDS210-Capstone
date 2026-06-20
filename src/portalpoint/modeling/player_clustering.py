@@ -1,8 +1,8 @@
 """Model 1 — Player Clustering (K-Means).
 
 Pure fit/score/write functions lifted from notebooks/models/player_clustering.ipynb.
-K-selection sweeps, visualizations, and manual archetype-label review stay in the
-notebook; this module holds the logic that's done changing.
+K-selection sweeps, visualizations, and label diagnostics stay in the notebook;
+this module holds the accepted MVP labeling logic.
 """
 from __future__ import annotations
 

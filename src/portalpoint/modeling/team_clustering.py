@@ -1,8 +1,8 @@
 """Model 2 — Team System Clustering (Two-Layer K-Means).
 
 Pure fit/score/write functions lifted from notebooks/models/team_clustering.ipynb.
-Weight-search invocation, visual checks, and label review stay in the notebook;
-this module holds the logic that's done changing.
+Weight-search invocation, visual checks, and label diagnostics stay in the notebook;
+this module holds the accepted MVP labeling logic.
 """
 from __future__ import annotations
 

@@ -15,8 +15,8 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 
 | Model | Current state | MVP remaining work | v2 / improvement backlog | Primary references |
 |---|---|---|---|---|
-| M1 Player Clustering | ✅ Complete baseline — script-backed tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.4% HE-covered in latest local run. **Critical bugfix:** added semantic cluster reordering (was silently scrambling all 9 labels on every rerun — see Known Follow-Ups). 3 labels renamed based on `def_adj_rapm` DB validation (C4, C6, C7). | Human basketball review of remaining pass-one labels before product copy is frozen. | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference. | [`../../scripts/run_player_clustering.py`](../../scripts/run_player_clustering.py); [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
-| M2 Team System Clustering | ✅ Complete baseline — script-backed two-layer tuned group-weighted `team-v4-2026`; 2,158 team-seasons. Offense/defense memberships populated. Confidence (~0.2 avg) confirmed structural via 2 ruled-out experiments, not a tuning bug — see Known Follow-Ups. | Continue basketball review of offense/defense names using centroid summaries and representative teams. | Later evaluate hoopR spatial zones and defensive PPP/four-factor quality overlays. | [`../../scripts/run_team_clustering.py`](../../scripts/run_team_clustering.py); [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
+| M1 Player Clustering | ✅ Complete baseline — script-backed tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.4% HE-covered in latest local run. **Critical bugfix:** added semantic cluster reordering (was silently scrambling all 9 labels on every rerun — see Known Follow-Ups). Current archetype labels are accepted for MVP. | None for MVP beyond keeping local artifacts/DB refreshed from the script. | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference; optional product-copy refinement if coaches prefer different wording. | [`../../scripts/run_player_clustering.py`](../../scripts/run_player_clustering.py); [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
+| M2 Team System Clustering | ✅ Complete baseline — script-backed two-layer tuned group-weighted `team-v4-2026`; 2,158 team-seasons. Offense/defense memberships populated. Current offense/defense labels are accepted for MVP. Confidence (~0.2 avg) confirmed structural via 2 ruled-out experiments, not a tuning bug — see Known Follow-Ups. | None for MVP beyond keeping local artifacts/DB refreshed from the script. | Later evaluate hoopR spatial zones and defensive PPP/four-factor quality overlays; optional product-copy refinement if coaches prefer different wording. | [`../../scripts/run_team_clustering.py`](../../scripts/run_team_clustering.py); [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
 | M3 Scheme Fit | ✅ Complete baseline — script-backed `scheme-cos-v2`; all 6 seasons (2021-2026); 1,343,050 records in latest local run. `player_team_fit_scores` has `season` column and API reads current-season rows. | Score compression noted (mean ~85.7; overall_fit remains narrow while role/program are stubbed). | M3 v3 with hoopR spatial zones; normalization/rescaling of scheme_fit for UI display. | [`../../scripts/run_scheme_fit.py`](../../scripts/run_scheme_fit.py); [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
 | Gap Matching | ✅ Complete baseline — script-backed `gap-cos-v1`; all 6 seasons; 1,343,050 records updated in latest local run. Sparse distribution expected — correct behavior. | Populate transfers table for departure-aware gaps. | Add roster snapshots, portal departure confidence, coach-adjustable needs, hoopR play-type gap features. | [`../../scripts/run_gap_matching.py`](../../scripts/run_gap_matching.py); [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
 | M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; decide whether MVP only writes score or also stores opportunity details. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) |
@@ -128,25 +128,25 @@ Weight search: 120 candidates, log-normal jitter on a 5,000-player HE-covered sa
 | Davies-Bouldin — base-all weighted | 2.0272 |
 | Avg confidence | 0.427 (median 0.429, p10 0.284) |
 
-### Current Labels (from actual run; renamed labels marked)
+### Current Labels (accepted for MVP; latest local DB refresh)
 
 | Cluster | Label | n (pooled, 6 seasons) | HE two-way | Avg confidence |
 |---:|---|---:|---:|---:|
-| C0 | Lead Scoring Playmaker | 1,873 | 1,663 | 0.476 |
-| C1 | High-Usage Frontcourt Creator | 1,843 | 1,412 | 0.413 |
-| C2 | Skilled Stretch Forward | 1,268 | 1,041 | 0.394 |
-| C3 | Post Scoring Big | 949 | 782 | 0.470 |
-| C4 | **Two-Way Perimeter Guard** (was `Perimeter Scoring Guard`) | 2,623 | 2,385 | 0.444 |
-| C5 | Pressure Connector Guard | 2,519 | 2,125 | 0.442 |
-| C6 | **Active Connector Forward** (was `Defensive Connector Forward`) | 2,922 | 2,586 | 0.351 |
-| C7 | **Two-Way Spacing Wing** (was `Movement Spacing Wing`) | 3,579 | 2,963 | 0.459 |
-| C8 | Interior Star Big | 1,193 | 1,063 | 0.392 |
+| C0 | Lead Scoring Playmaker | 1,792 | 1,595 | 0.449 |
+| C1 | High-Usage Frontcourt Creator | 1,697 | 1,546 | 0.346 |
+| C2 | Skilled Stretch Forward | 1,261 | 1,074 | 0.389 |
+| C3 | Post Scoring Big | 1,986 | 1,576 | 0.445 |
+| C4 | Two-Way Perimeter Guard | 2,399 | 2,183 | 0.416 |
+| C5 | Pressure Connector Guard | 2,531 | 2,064 | 0.390 |
+| C6 | Active Connector Forward | 2,314 | 1,886 | 0.334 |
+| C7 | Two-Way Spacing Wing | 3,119 | 2,618 | 0.432 |
+| C8 | Interior Star Big | 1,673 | 1,489 | 0.400 |
 
 ### Known Follow-Ups
 
 - **Critical bugfix — semantic cluster reordering (2026-06-19):** raw K-Means cluster indices are arbitrary and NOT stable across reruns — refitting on slightly different data silently swapped which index corresponded to which archetype, leaving the old hardcoded `ARCHETYPE_LABELS` dict pointing at the wrong clusters with no error. Confirmed empirically: a rerun after a feature/data refresh scrambled all labels except one that happened to land in the same slot by chance. Fixed by porting `team_clustering.ipynb`'s `_semantic_offense_mapping` pattern into `player_clustering.ipynb` (`_semantic_player_mapping`) — reorders centroids into 9 fixed semantic slots based on distinctive feature combinations (most-distinctive-first, each pick removed from the pool) before labels are applied. Verified bijective (no collisions/gaps) and end-to-end via DB write + test suite. **One residual imperfection:** slots 1 (`High-Usage Frontcourt Creator`) and 8 (`Interior Star Big`) both target "tall + high usage" without a fully clean separating signal in the criteria order — mechanically correct (each cluster placed exactly once) but C1's basketball-sense fit is weaker than the other 8 slots. Candidate follow-up: tighten slot 1's criterion to require above-median usage specifically.
 - **Label renames validated against `def_adj_rapm` (2026-06-19):** C4, C6, C7 renamed after a multi-query DB validation (distribution spread, HE coverage %, cross-validation against raw steal/block rates, 6-season stability, representative-player eyeball check). C7 and C4 had consistently positive `def_adj_rapm` across all 6 seasons despite the old labels implying pure offense. C6 had the *highest* steal_pct and 2nd-highest block_pct of any cluster but near-zero/negative `def_adj_rapm` in 5 of 6 seasons — renamed to drop the unearned "Defensive" framing without implying weak defense (event rate ≠ defensive value).
-- **Review labels:** Remaining labels (C0, C1, C2, C3, C5, C8) are grounded in centroid summaries; still candidate for basketball review before product copy is frozen.
+- **Labels accepted for MVP:** Current archetype names are grounded in centroid summaries, representative players, and the 2026-06-19 DB validation pass. Future changes should be treated as product-copy refinement rather than a modeling blocker.
 - **Monitor membership usefulness:** The notebook stores top-three distance-derived archetype memberships; downstream consumers should decide whether to expose the confidence/top-three values directly.
 - **Silhouette not comparable to prior (two-scaler) run:** clustering objective changed (31-dim weighted vs 22-dim unweighted) — do not compare silhouette across architectures directly.
 - **Candidate v3 features:** HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference from `pnr_passer_pct` vs `big_cut_roll_pct`.
@@ -185,7 +185,7 @@ The definitive `system_label` is `{offense_label} / {defense_label}`. `cluster_i
 
 Fallback teams receive an offense projection from shot shape + pace. Defense is marked `Defense Unavailable` rather than inferred from unrelated offense-only data.
 
-Reviewed labels written to artifacts/DB:
+Accepted labels written to artifacts/DB:
 
 | Layer | Cluster labels |
 |---|---|
@@ -196,25 +196,26 @@ Reviewed labels written to artifacts/DB:
 
 - **Degenerate C7 (v2/v3):** prior one-layer runs produced undersized/offense-only clusters. v4 separates offense/defense and keeps fallback offense-only to avoid defense labels from sparse data. Current run: offense clusters n=252-365 (12-18% each), defense n=397-460 (18-22% each) — no collapse.
 
-### Validation (actual run, 2026-06-19)
+### Validation (latest local DB refresh)
 
-| Offense | n | avg_adj_o | avg_adj_em | avg_confidence |
-|---|---:|---:|---:|---:|
-| O0 Perimeter Creation Offense | 328 | 104.4 | -1.51 | 0.215 |
-| O1 Rim Pressure Offense | 259 | 108.8 | +2.25 | 0.234 |
-| O2 Transition Attack | 345 | 106.2 | +1.22 | 0.234 |
-| O3 Balanced Spread Attack | 365 | 104.0 | **-3.21** | 0.183 |
-| O4 Mid-Range Half-Court Offense | 288 | **101.8** (lowest) | **-3.50** (worst) | 0.272 |
-| O5 Deliberate Half-Court Offense | 321 | 107.7 | **+5.35** (best) | 0.177 |
-| O6 3PT Spacing Offense | 252 | 106.1 | -0.65 | 0.227 |
+| Offense | n | avg_adj_o | avg_adj_em |
+|---|---:|---:|---:|
+| O0 Perimeter Creation Offense | 386 | 103.5 | -1.89 |
+| O1 Rim Pressure Offense | 409 | 106.2 | +2.17 |
+| O2 Transition Attack | 236 | 108.4 | +2.01 |
+| O3 Balanced Spread Attack | 334 | 104.8 | -1.43 |
+| O4 Mid-Range Half-Court Offense | 242 | 101.8 | -2.28 |
+| O5 Deliberate Half-Court Offense | 315 | 105.1 | +1.76 |
+| O6 3PT Spacing Offense | 236 | 105.8 | -0.61 |
 
-| Defense | n | avg_adj_d | avg_def_efg | avg_confidence |
-|---|---:|---:|---:|---:|
-| D0 Scramble-Heavy Set Defense | 398 | 104.9 | 0.500 | 0.194 |
-| D1 Rim-Exposure Defense | 460 | 106.8 | 0.511 | 0.194 |
-| D2 Transition-Vulnerable Defense | 397 | 110.0 | 0.519 | 0.247 |
-| D3 Jump-Shot Funnel Defense | 420 | 103.7 | 0.504 | 0.185 |
-| D4 Controlled Half-Court Defense | 404 | 101.7 | 0.497 | 0.209 |
+| Defense | n | avg_adj_d |
+|---|---:|---:|
+| D0 Scramble-Heavy Set Defense | 352 | 106.1 |
+| D1 Rim-Exposure Defense | 466 | 105.3 |
+| D2 Transition-Vulnerable Defense | 431 | 108.9 |
+| D3 Jump-Shot Funnel Defense | 451 | 102.5 |
+| D4 Controlled Half-Court Defense | 379 | 101.5 |
+| Defense Unavailable | 79 | 109.1 |
 
 ### Known Follow-Ups
 
@@ -222,8 +223,8 @@ Reviewed labels written to artifacts/DB:
   - *Reweighted search objective* (silhouette 0.45→0.65, balance 0.30→0.15): selected weights came back **identical to many decimal places** — one candidate Pareto-dominates on silhouette, Davies-Bouldin, and balance simultaneously, so reweighting the combination cannot change the winner.
   - *Reduced K_OFFENSE 7→5*: confidence range barely moved (0.186-0.232 vs 0.177-0.272).
   - Conclusion: team offensive styles genuinely overlap across D1 — this ceiling reflects the data, not a misconfigured search. Don't spend further time tuning weights/K to chase this metric. (Compare to M1's player-archetype confidence ~0.43 — team style space has fewer, more overlapping signal dimensions than player style space.)
-- **O3/O4 tracking the worst `avg_adj_em`/`avg_adj_o` is real signal, not feature leakage.** `adj_em`/`adj_o` are explicitly excluded from the clustering feature groups (overlay-only) — so this isn't leakage. It likely reflects a real basketball pattern: mid-range-heavy and no-clear-identity ("balanced") offenses correlating with worse efficiency outcomes is a well-established stathead finding. No code fix planned; documenting as expected.
-- **Continue label review:** current names are reviewed pass-1 labels grounded in centroids and representative 2026 teams.
+- **O4 tracking the lowest `avg_adj_o`/`avg_adj_em` is real signal, not feature leakage.** `adj_em`/`adj_o` are explicitly excluded from the clustering feature groups (overlay-only) — so this isn't leakage. It likely reflects a real basketball pattern: mid-range-heavy offenses correlating with worse efficiency outcomes is a well-established stathead finding. No code fix planned; documenting as expected.
+- **Labels accepted for MVP:** current names are grounded in centroids and representative 2026 teams. Future changes should be treated as product-copy refinement rather than a modeling blocker.
 - Keep `adj_em` as overlay/quality indicator, not style feature.
 
 ---
