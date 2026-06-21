@@ -122,7 +122,7 @@ If the UI needs a simpler label, derive it from the distribution instead of maki
 
 This model is only as good as the roster state it sees.
 
-The current repo has sample and historical data, but the real product needs live roster snapshots during the portal window. The model should assume we can add broader data sources and refresh them frequently.
+**Update (2026-06-21, Issue #17 items 3-4):** Live roster snapshots and transfer events are now real, not sample/historical-only. `scripts/ingest_roster_snapshots.py` scrapes barttorvik's `rostercast.php` per school (one school verified; full ~365-school run documented but not yet run) into `roster_snapshots`/`roster_snapshot_players`, with `returning_status` (`returning`/`transfer_in`/`new`) computed by diffing against `player_season_stats` — `departing`/`transfer_out` are intentionally not yet derivable from a single snapshot (needs day-over-day snapshot diffing, still open). `scripts/ingest_transfers_247sports.py` populates `transfers`/`transfer_portal_events` (season 2026 done; 2020-2026 backfill documented but not yet run) — see below, this supersedes the BartTorvik-as-primary-source assumption in §7.
 
 ### Required roster fields
 
@@ -193,7 +193,7 @@ player_name + transfer_source_school + transfer_season
 
 High-confidence matches can update roster snapshots automatically. Ambiguous matches should be flagged for review or excluded from model training.
 
-For historical modeling, BartTorvik transfer rows should be the primary transfer-event source. Inferred player-team-season changes should still be built as a backfill and validation layer, especially for rows with missing destinations, non-D1 moves, or ambiguous player names.
+**Superseded (2026-06-21):** BartTorvik's transfer-event JSON (`{season}_transfer_stats.json`) would have been the cleanest source — its `player_id` field matches `players.barttorvik_id` exactly, no fuzzy matching needed — but barttorvik's `robots.txt` disallows `/*.json` and `/playerstat.php` (the only two real transfer pages on that domain), and explicitly disallows `ClaudeBot`/`anthropic-ai` site-wide. **247Sports' transfer-portal pages are the actual primary transfer-event source** (`scripts/ingest_transfers_247sports.py`, not robots.txt-disallowed) — player resolution there is fuzzy name+roster matching against `player_season_stats` (~83% match rate verified for season 2026), not a clean ID join, so the inferred player-team-season backfill/validation layer below is still valuable as a cross-check, not just a fallback for missing destinations.
 
 ### Roster state features
 
@@ -634,8 +634,8 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 
 ## 14. Open Questions
 
-1. What is the best live roster source and refresh cadence during portal season?
-2. Can we reliably distinguish returning, departing, transfer-in, transfer-out, and unknown roster statuses?
+1. ~~What is the best live roster source and refresh cadence during portal season?~~ — Resolved: barttorvik `rostercast.php` via `ingest_roster_snapshots.py` (Issue #17 item 4). Refresh cadence (daily during portal window, per the original ask) not yet automated — manual `uv run` only so far.
+2. Can we reliably distinguish returning, departing, transfer-in, transfer-out, and unknown roster statuses? — Partially: `returning`/`transfer_in`/`new` are computed from a single snapshot (see §4 update above). `departing`/`transfer_out` need day-over-day snapshot diffing — still open, deferred to Issue #17 items 5-6.
 3. Should usage role be learned as labels or derived from projected usage/skill thresholds for MVP?
 4. Do we need starter probability in the product, or is expected minutes plus usage role enough?
 5. How should coach-entered roster overrides affect projections and cache invalidation?

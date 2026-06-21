@@ -144,17 +144,17 @@ The implementation should have a dedicated data-preparation layer, similar in sp
 | Data | Current status | Use |
 |---|---|---|
 | Player season stats | Exists in `player_season_stats` | Priors, historical baseline, and fallback only |
-| Player game logs | Available through hoopR loaders, not yet ingested locally | Full state-space observations |
-| Team game context | Available through hoopR loaders, not yet ingested locally | Pace, opponent, home/away, team role |
+| Player game logs | ✅ Ingested 2026 via `hoopr_player_game_logs` (`ingest_hoopr.py --game-logs`, Issue #17 item 1); 2020-2025 backfill not yet run | Full state-space observations |
+| Team game context | ✅ Ingested 2026 via `hoopr_games`/`hoopr_team_game_logs` (Issue #17 item 2); 2020-2025 backfill not yet run | Pace, opponent, home/away, team role |
 | Player identity | Exists in `players` | Position, class, height, priors |
 | Team strength | Exists in `team_season_stats` | Opponent and destination context |
 | Team system labels | Exists in `team_system_profiles` | Scheme/style context |
 | Player archetypes | Exists in `player_archetypes` | Prior grouping and explanations |
-| Current portal / committed transfers | BartTorvik transfer portal page; not yet ingested | Live portal candidates, source school, committed destination |
-| Historical transfer events | BartTorvik historical transfer portal pages; infer from player-team-season changes as backfill/cross-check | Transfer-specific effects and validation |
+| Current portal / committed transfers | ✅ Ingested 2026 via `transfer_portal_events`/`transfers` — **source is 247Sports, not BartTorvik** (BartTorvik's transfer JSON is `robots.txt`-disallowed; see §"BartTorvik transfer portal page" note below) | Live portal candidates, source school, committed destination |
+| Historical transfer events | ✅ Ingested 2026 via the same 247Sports pipeline; 2020-2025 backfill documented in `ARCHITECTURE_STATUS.md` but not yet run; infer from player-team-season changes as backfill/cross-check | Transfer-specific effects and validation |
 | Hoop Explorer player impact | Current repo has sample CSV; expand coverage | Primary RAPM-style value labels |
 
-Current repo reality: PortalPoint has mostly season-level barttorvik data today. The full game-level state-space model requires new player-game ingest before implementation. Season-level data should not be the target modeling grain; it should only support priors, bootstrapping, and temporary fallback checks.
+Current repo reality (updated 2026-06-21): game-level player/team data and transfer events now exist in Postgres for season 2026 (Issue #17 items 1-3); full multi-season backfills are documented (see `ARCHITECTURE_STATUS.md`) but not yet run. Season-level data should not be the target modeling grain; it should only support priors, bootstrapping, and temporary fallback checks.
 
 ### hoopR feasibility check
 
@@ -196,15 +196,17 @@ BartTorvik remains essential for features and priors: usage, efficiency, shot pr
 
 ### Transfer data strategy
 
+**Superseded (2026-06-21): BartTorvik is not the implemented source — robots.txt blocks it.** The probe described below (confirming a season-partitioned transfer array for 2020-2026) was accurate — BartTorvik's `{season}_transfer_stats.json` is real, and its `player_id` field matches `players.barttorvik_id` exactly, no fuzzy matching needed. But `robots.txt` disallows `/*.json` and `/playerstat.php` (the only two real transfer pages on that domain) and explicitly disallows `ClaudeBot`/`anthropic-ai` site-wide. **247Sports' transfer-portal pages are the actual implemented source** (`scripts/ingest_transfers_247sports.py` → `transfer_portal_events`/`transfers`, not robots.txt-disallowed; season 2026 done, 2020-2026 backfill documented in `ARCHITECTURE_STATUS.md` but not yet run). Player resolution there is fuzzy name+roster matching against `player_season_stats` (~83% match rate verified), not a clean ID join — so the backfill/cross-check path below is still valuable, not just a fallback. The rest of this section is kept for the data-shape reasoning, with "BartTorvik" read as "247Sports" for the actual source.
+
 Transfer data should come from three complementary paths:
 
 ```text
 Current portal / commitment status
-    -> BartTorvik transfer portal page
+    -> 247Sports transfer portal pages
     -> player name, source school, destination school nullable
 
 Historical transfer training data, primary path
-    -> BartTorvik transfer portal pages by season
+    -> 247Sports transfer portal pages by season
     -> player name, source school, destination school, status flag
 
 Historical transfer training data, backfill/cross-check
@@ -212,7 +214,7 @@ Historical transfer training data, backfill/cross-check
     -> player appears for School A in season Y and School B in season Y+1
 ```
 
-The BartTorvik transfer portal page embeds a transfer array with fields equivalent to:
+The transfer-portal page embeds a transfer array with fields equivalent to:
 
 ```text
 player_name
@@ -223,7 +225,7 @@ status_flag
 
 This is useful for live portal candidates and current roster updates. It should not be the only historical source because name-only rows still need ID resolution.
 
-Historical year pages appear available and should be ingested across seasons where coverage is strong. In a local probe, the transfer array changed by year and returned season-specific rows for 2020-2026. Example coverage checks:
+Historical year pages appear available and should be ingested across seasons where coverage is strong. In a local probe, the transfer array changed by year and returned season-specific rows for 2020-2026 (confirmed live on 247Sports too — 1,193 entries for 2021 vs. 2,739 for 2026). Example coverage checks:
 
 | Season | Rows | Destination populated |
 |---|---:|---:|
@@ -261,7 +263,7 @@ confidence
 evidence_type
 ```
 
-Confidence should be based on ID quality, source-school match, name ambiguity, roster presence, and pre/post playing time. BartTorvik transfer rows, Hoop Explorer `transfer_src` / `transfer_dest`, and inferred player-team histories should cross-check each other where possible.
+Confidence should be based on ID quality, source-school match, name ambiguity, roster presence, and pre/post playing time. 247Sports transfer events (`transfer_portal_events`), Hoop Explorer `transfer_src` / `transfer_dest`, and inferred player-team histories should cross-check each other where possible.
 
 ### Explicit tensor and table shapes
 
@@ -900,7 +902,7 @@ These questions are settled for the first version of the player projection plan.
 | Question | Decision |
 |---|---|
 | Modeling grain | Game-level is the target grain. Season-level data is only a fallback/prior source. |
-| Primary game-log source | hoopR is the planned source for player game logs and play-by-play, pending local coverage and ID-join audit. |
+| Primary game-log source | hoopR (`ingest_hoopr.py --game-logs`) — ✅ ingested for 2026 (Issue #17 item 1); 2020-2025 backfill not yet run. `player_id` resolved via `players.espn_id` first (~90% pre-backfilled by the season-level hoopR ingest), fuzzy roster match second. |
 | Stage 2 model shape | Use the hybrid basketball rate model: possession outcomes plus conditional contribution rates. |
 | Observed skills | Directly observe 3P, 2P, FT, usage, assists, turnovers, offensive/defensive rebounds, steals, blocks, and fouls where data supports it. |
 | Latent/proxy-heavy skills | Defensive impact, rim-protection quality, off-ball value, and spacing gravity remain latent/proxy-driven until richer data is available. |

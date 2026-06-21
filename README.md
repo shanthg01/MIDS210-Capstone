@@ -12,8 +12,8 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Layer | Status |
 |---|---|
 | Backend API (FastAPI) | All endpoints live — protected routes require JWT; auth/players/users hit real DB |
-| Database (PostgreSQL + Alembic) | Current migration head applied; 2021-2026 barttorvik, Hoop Explorer, and hoopR data loaded locally |
-| Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP ✅ (raw/local cache + S3 upload where configured) |
+| Database (PostgreSQL + Alembic) | Current migration head applied; 2021-2026 barttorvik, Hoop Explorer, and hoopR data loaded locally; hoopR game logs, 247Sports transfers, and barttorvik roster snapshots loaded for season 2026 (full backfills documented, not yet run — see below) |
+| Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP + game logs ✅, 247Sports transfer portal ✅, barttorvik roster snapshots ✅ (raw/local cache + S3 upload where configured) |
 | Feature + model pipeline | Script-backed reruns for M1, M2, M3, and Gap Matching; feature parquet/model artifacts are gitignored and regenerated locally |
 | MLflow + S3 artifacts | Wired — local `mlruns.db`, S3 model uploads, and script/notebook MLflow runs |
 | Fit components | ✅ Player clustering, team clustering, scheme fit, and gap matching complete; API serves real `scheme_fit` + `gap_match` |
@@ -82,6 +82,27 @@ uv run python scripts/ingest_hoopr.py --season 2021 --season 2022 --season 2023 
 Raw PBP parquets (~120MB/season) land in `data/hoopr/` (gitignored) and `s3://portalpoint-data/raw/hoopr/`.
 
 AWS keys required for S3 upload — see [Team S3 access](#team-s3-access-aws). Ingest writes to DB regardless of S3 availability (upload failure is logged, not fatal).
+
+**Game-level grain, transfers, and roster snapshots (Issue #17 items 1-4):**
+
+```bash
+# hoopR game logs — one season already loaded (2026); repeat per season for a full backfill
+uv run python scripts/ingest_hoopr.py --season 2026 --game-logs --skip-season-stats
+
+# 247Sports transfer-portal events — one season already loaded (2026)
+uv run python scripts/ingest_transfers_247sports.py --seasons 2026
+
+# Full transfer-portal backfill, 2020-2026 (not yet run — ~2 min/season scraped, ~15 min total)
+uv run python scripts/ingest_transfers_247sports.py --seasons 2020 2021 2022 2023 2024 2025 2026
+
+# barttorvik roster snapshots — verified on one school (Duke) only so far
+uv run python scripts/ingest_roster_snapshots.py --schools Duke
+
+# Full roster snapshot run, all ~365 D1 schools (not yet run — ~3 min, 0.5s delay/request)
+uv run python scripts/ingest_roster_snapshots.py
+```
+
+Idempotent — safe to re-run any of the above. `--dry-run` is available on all three for a no-write match-rate check first.
 
 Feature parquet and most model artifacts are intentionally not tracked in git. Regenerate them against your local DB before running the model scripts:
 
@@ -332,7 +353,9 @@ MIDS210-Capstone/
 ├── scripts/
 │   ├── ingest_barttorvik.py     # barttorvik ETL — loads players/schools/stats
 │   ├── ingest_hoop_explorer.py  # Hoop Explorer ETL — team + player play-type stats
-│   ├── ingest_hoopr.py          # hoopR ESPN PBP — 5 spatial zones → hoopr_team_season_stats
+│   ├── ingest_hoopr.py          # hoopR ESPN PBP — 5 spatial zones → hoopr_team_season_stats; --game-logs → hoopr_games/team/player_game_logs
+│   ├── ingest_transfers_247sports.py  # 247Sports transfer portal → transfer_portal_events (raw) + transfers (promoted)
+│   ├── ingest_roster_snapshots.py     # barttorvik rostercast.php → roster_snapshots + roster_snapshot_players
 │   ├── run_player_clustering.py # Script rerun for M1 player archetypes
 │   ├── run_team_clustering.py   # Script rerun for M2 team systems
 │   ├── run_scheme_fit.py        # Script rerun for M3 scheme fit
@@ -375,7 +398,8 @@ MIDS210-Capstone/
 | `docs/status/MODEL_STATUS.md` | Model notebooks, feature contracts, artifacts, critical path, open model questions |
 | `docs/status/ARCHITECTURE_STATUS.md` | Local/cloud infrastructure, database, S3, ingest, MLflow |
 | `docs/status/APPLICATION_STATUS.md` | Product direction, API routers, frontend pages, tests, app blockers |
-| `docs/dataflow_diagram.mmd` | Mermaid: sources → ingest → DB → features → models (all 3 sources) |
+| `docs/dataflow_diagram.mmd` | Mermaid: sources → ingest → DB → features → models (all 5 sources) |
+| `docs/models/model_dependency_graph.md` | Model input/output contracts, dependency DAG, and Issue #17-28 dependency map |
 | `docs/models/gap_matching_plan.md` | Gap Matching model plan and implementation handoff |
 | `docs/models/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
 | `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |

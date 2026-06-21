@@ -1,5 +1,7 @@
 # hoopR Integration Plan
 
+> **Scope note (2026-06-21):** This plan covers the season-aggregate PBP integration only (`hoopr_team_season_stats`/`hoopr_player_season_stats`). Game-level grain (`hoopr_games`/`hoopr_team_game_logs`/`hoopr_player_game_logs`, via `ingest_hoopr.py --game-logs`) was added later as Issue #17 items 1-2, using the same sportsdataverse-data host but different release tags (schedule/team-box/player-box parquet instead of play-by-play) — see `ARCHITECTURE_STATUS.md` and `model_dependency_graph.md` for that work; it isn't covered here.
+
 ## What hoopR Provides
 
 ESPN play-by-play data via [sportsdataverse](https://github.com/sportsdataverse/sportsdataverse-data/releases).

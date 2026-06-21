@@ -814,6 +814,7 @@ class Transfer(Base):
     __tablename__ = "transfers"
     __table_args__ = (
         Index("ix_transfers_player_season", "player_id", "season"),
+        UniqueConstraint("player_id", "season", name="uq_transfers_player_season"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -842,6 +843,103 @@ class Transfer(Base):
     player: Mapped[Player] = relationship(foreign_keys=[player_id], back_populates="transfers")
     from_school: Mapped[Optional[School]] = relationship(foreign_keys=[from_school_id])
     to_school: Mapped[Optional[School]] = relationship(foreign_keys=[to_school_id])
+
+
+class TransferPortalEvent(Base):
+    """
+    Raw staging for every scraped 247Sports transfer-portal row, matched or
+    not — same "keep raw rows, don't silently drop unmatched" pattern as
+    hoopr_player_game_logs. Matched rows get promoted into `transfers`
+    (which keeps its existing NOT NULL player_id contract untouched).
+
+    portal_entry_date/commitment_date fill in incrementally across repeated
+    scrapes: a single scrape only exposes a player's *current* status and its
+    timestamp, so a player scraped while status=Entered records
+    portal_entry_date, and a later scrape after they commit fills
+    commitment_date without erasing the already-stored portal_entry_date.
+    """
+
+    __tablename__ = "transfer_portal_events"
+    __table_args__ = (
+        UniqueConstraint("source", "source_player_key", "season", name="uq_transfer_portal_event"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # "247sports"
+    source_player_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    raw_player_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    match_status: Mapped[str] = mapped_column(String(20), nullable=False)  # matched/unmatched/ambiguous/no_school
+    from_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    to_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    from_institution_raw: Mapped[Optional[str]] = mapped_column(String(200))
+    to_institution_raw: Mapped[Optional[str]] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # Entered/Committed/...
+    portal_entry_date: Mapped[Optional[date]] = mapped_column(Date)
+    commitment_date: Mapped[Optional[date]] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    player: Mapped[Optional[Player]] = relationship()
+    from_school: Mapped[Optional[School]] = relationship(foreign_keys=[from_school_id])
+    to_school: Mapped[Optional[School]] = relationship(foreign_keys=[to_school_id])
+
+
+class RosterSnapshot(Base):
+    """One row per school per scrape date, from barttorvik rostercast.php."""
+
+    __tablename__ = "roster_snapshots"
+    __table_args__ = (
+        UniqueConstraint("school_id", "snapshot_date", name="uq_roster_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)  # "barttorvik_rostercast"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    school: Mapped[School] = relationship()
+
+
+class RosterSnapshotPlayer(Base):
+    """
+    One row per player on a roster_snapshots row. returning_status is
+    computed by us (not given by barttorvik — the base rostercast.php table
+    carries no departure/incoming markers): returning if this player_id was
+    on this same school last season per player_season_stats, transfer_in if
+    they were on a different school, new if unresolved/no prior stats row.
+    "departing" is intentionally not a value here — a departed player isn't
+    on the current snapshot at all, so detecting it requires diffing two
+    snapshots (or last season's roster), which is issue #17 items 5/6, not
+    this table.
+    """
+
+    __tablename__ = "roster_snapshot_players"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "raw_player_name", name="uq_roster_snapshot_player"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("roster_snapshots.id"), nullable=False)
+    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    raw_player_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    class_year: Mapped[Optional[str]] = mapped_column(String(10))
+    height: Mapped[Optional[str]] = mapped_column(String(10))
+    min_pct: Mapped[Optional[float]] = mapped_column(Float)
+    ortg: Mapped[Optional[float]] = mapped_column(Float)
+    usage_rate: Mapped[Optional[float]] = mapped_column(Float)
+    returning_status: Mapped[str] = mapped_column(String(20), nullable=False)  # returning/transfer_in/new/unknown
+    transfer_source_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    snapshot: Mapped[RosterSnapshot] = relationship()
+    player: Mapped[Optional[Player]] = relationship()
+    transfer_source_school: Mapped[Optional[School]] = relationship(foreign_keys=[transfer_source_school_id])
 
 
 class NILValuation(Base):

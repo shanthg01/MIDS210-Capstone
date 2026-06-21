@@ -1,5 +1,7 @@
 # PortalPoint — Project Status
 
+> **Superseded.** This is the original single status tracker, frozen at June 16, 2026 (K=10 player clustering, 8 migrations, the original Justin/Shanth role split). It has since been split into [`docs/status/STATUS.md`](status/STATUS.md), [`MODEL_STATUS.md`](status/MODEL_STATUS.md), [`ARCHITECTURE_STATUS.md`](status/ARCHITECTURE_STATUS.md), and [`APPLICATION_STATUS.md`](status/APPLICATION_STATUS.md) — those are current; this file is kept for historical context only and is not being updated further.
+
 **Date:** June 16, 2026  
 **Current branch:** `feature/integrate-sources` → PR #10 open to `main`  
 **Test suite:** 111 tests passing
