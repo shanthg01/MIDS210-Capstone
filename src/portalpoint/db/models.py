@@ -942,6 +942,46 @@ class RosterSnapshotPlayer(Base):
     transfer_source_school: Mapped[Optional[School]] = relationship(foreign_keys=[transfer_source_school_id])
 
 
+class RosterStateFeatures(Base):
+    """
+    Derived roster-composition facts for one roster_snapshots row — deliberately
+    facts (counts/sums), not gap scores: turning a count into a "gap" needs the
+    league-benchmark logic Gap Matching already owns (src/portalpoint/modeling/
+    gap_matching.py), so that interpretation stays there instead of forking.
+
+    "Departing" is computed by diffing player_season_stats[school, season]
+    (last completed season's roster) against this snapshot's actual players —
+    no day-over-day snapshot history needed, since player_season_stats already
+    gives a real prior-roster reference.
+    """
+
+    __tablename__ = "roster_state_features"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", name="uq_roster_state_features_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("roster_snapshots.id"), nullable=False)
+    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    returning_minutes_by_position: Mapped[Optional[dict]] = mapped_column(JSONB)
+    departing_minutes_by_position: Mapped[Optional[dict]] = mapped_column(JSONB)
+    incoming_transfer_minutes_by_position: Mapped[Optional[dict]] = mapped_column(JSONB)
+    open_minutes_by_position: Mapped[Optional[dict]] = mapped_column(JSONB)
+    open_usage_by_position: Mapped[Optional[dict]] = mapped_column(JSONB)
+    returning_production: Mapped[Optional[float]] = mapped_column(Float)
+    returning_player_impact: Mapped[Optional[float]] = mapped_column(Float)
+    class_balance: Mapped[Optional[dict]] = mapped_column(JSONB)
+    returning_archetype_counts: Mapped[Optional[dict]] = mapped_column(JSONB)
+    departing_archetype_counts: Mapped[Optional[dict]] = mapped_column(JSONB)
+    incoming_archetype_counts: Mapped[Optional[dict]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    snapshot: Mapped[RosterSnapshot] = relationship()
+    school: Mapped[School] = relationship()
+
+
 class NILValuation(Base):
     __tablename__ = "nil_valuations"
     __table_args__ = (
