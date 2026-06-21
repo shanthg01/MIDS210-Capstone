@@ -21,6 +21,7 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | Gap Matching | ✅ Complete baseline — script-backed `gap-cos-v1`; all 6 seasons; 1,343,050 records updated in latest local run. Sparse distribution expected — correct behavior. | `transfers` (season 2026, 1,251 rows) and `roster_snapshots` data dependencies are now populated (Issue #17 items 3-4) — wiring departure-aware logic into `gap_matching.py` itself (Issue #26) is the remaining work, not the data. | Add portal departure confidence, coach-adjustable needs, hoopR play-type gap features. | [`../../scripts/run_gap_matching.py`](../../scripts/run_gap_matching.py); [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
 | M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; decide whether MVP only writes score or also stores opportunity details. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) |
 | Program Fit | Not started. | Define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities. | `APPLICATION_STATUS.md`; future program-fit plan needed |
+| Replace proxies with better public/partner data; expose configurable program priorities and learn from feedback. | [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md); `APPLICATION_STATUS.md` |
 | M5 Transfer Success | Not started. | Define outcome label and historical transfer training set; build first predictor writing to `predictions`. | Add confidence/risk explanations and calibration monitoring. | `notebooks/models/` future notebook |
 | M6 Team Rating Projection | Planned, not started. | Wait for player projection + role/minutes outputs; define MVP baseline/candidate roster delta. | Use posterior samples, lineup interactions, and coach scenario overrides. | [`../models/team_rating_projection_roster_tool_plan.md`](../models/team_rating_projection_roster_tool_plan.md) |
 | M7 Recommendation Engine | Not started; blocked by full fit stack. | Build once scheme/gap/role/program components are real; rank players per program into `recommendations`. | Add collaborative signals, shortlist feedback loops, and explanation-aware ranking. | `APPLICATION_STATUS.md`; future recommendation plan needed |
@@ -34,7 +35,9 @@ Immediate modeling order:
 ✅ M3 scheme_fit_scorer          (scheme-cos-v2; all 6 seasons; 1,343,050 rows; migration b5d2e9f4 applied)
 ✅ Gap Matching                  (gap-cos-v1; all 6 seasons; 1,343,050 rows updated; soft positions via HE)
 ✅ fit_scores.py partial real scoring (scheme + gap, dynamic current-season resolution)
+→  Neutral Player Projection
 →  Role Fit / Playing Time
+→  Destination-Adjusted Player Projection
 →  Program Fit
 →  fit_scores.py full scoring
 →  Recommendation Engine
@@ -77,7 +80,8 @@ Useful docs:
 |---|---|
 | [`../models/model_dependency_graph.md`](../models/model_dependency_graph.md) | Model dependency DAG, input/output contracts, run order, and downstream consumer map. |
 | [`../models/gap_matching_plan.md`](../models/gap_matching_plan.md) | Gap Matching model plan and implementation notes. |
-| [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md) | Role fit / opportunity model design. |
+| [`../models/role_fit_playing_time_model_plan.md`](../models/role_fit_playing_time_model_plan.md) | Role fit / opportunity model design. |
+| [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md) | Program Fit manual/proxy scoring contract and implementation plan. |
 | [`../models/player_projection_state_space_plan.md`](../models/player_projection_state_space_plan.md) | Player talent projection plan. |
 | [`../models/team_rating_projection_roster_tool_plan.md`](../models/team_rating_projection_roster_tool_plan.md) | Team rating impact / roster scenario model plan. |
 | [`../models/hoopr_integration_plan.md`](../models/hoopr_integration_plan.md) | hoopR spatial feature integration notes. |
@@ -344,6 +348,9 @@ Range remains narrow until role_fit and program_fit are real. Do not surface ove
 | # | Model / Calculator | Status | Depends on | Output |
 |---|---|---|---|---|
 | 4 | Playing Time / Rotation -> Role Fit | Not started | roster state (`roster_snapshots` now populated, one school verified — full run pending), M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4a | Neutral Player Projection | Not started | player game logs or season-level fallback, HE impact labels | `player_projections` / projection artifacts |
+| 4b | Playing Time / Rotation -> Role Fit | Not started | roster state, neutral player projection, M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4c | Destination-Adjusted Player Projection | Not started | neutral player projection + role/minutes outputs | destination projection rows/artifacts |
 | - | Program Fit Calculator | Not started | user preferences, NIL/location/academic proxies | `player_team_fit_scores.program_fit` |
 | 5 | Transfer Success Predictor | Not started | historical transfers/outcomes (`transfers` now populated for season 2026 — full 2020-2026 backfill pending) | `predictions` |
 | 6 | Team Rating Projection | Not started | player projection + role/minutes | `team_rating_projections` |
@@ -357,7 +364,9 @@ Critical path:
 ✅ M3 script rerun
 ✅ Gap Matching script rerun
 ✅ fit_scores.py partial real scoring
+  -> Neutral Player Projection
   -> Role Fit / Playing Time
+  -> Destination-Adjusted Player Projection
   -> Program Fit
   -> fit_scores.py full scoring
   -> Recommendation Engine

@@ -52,13 +52,18 @@ Feature Engineering
 Player Game Logs + Game Context + HE Impact Labels        |
     |                                                     |
     v                                                     |
-Player Projection <---------------------------------------+
-    writes: player_projections or prediction artifacts
+Neutral Player Projection <------------------------------+
+    writes: neutral player_projections or prediction artifacts
     |
     v
 Role Fit / Playing Time <------ Roster Snapshots + Transfers
     writes: player_team_fit_scores.role_fit
     writes: playing_time_projections
+    |
+    v
+Destination-Adjusted Player Projection
+    consumes: neutral projection + role/minutes
+    writes: destination player projections or predictions
     |
     v
 Team Rating Projection
@@ -90,8 +95,9 @@ API + Frontend
 | M2 Team System Clustering | Team style parquet | `team_system_profiles`, model artifacts | Scheme Fit breakdown, Role Fit context, Team Rating Projection, Recommendations |
 | M3 Scheme Fit | Player/team shot and style vectors; M2 labels for explanation | `player_team_fit_scores.scheme_fit` and scheme breakdown | Fit Score, Role Fit context, Recommendations |
 | Gap Matching | Player stat vectors, roster state, positions, archetypes | `player_team_fit_scores.gap_match` and gap breakdown | Fit Score, Role Fit, Recommendations |
-| Player Projection | Player game logs, season stats, opponent context, HE impact labels, archetypes | Neutral player projection: impact, usage, box rates, uncertainty | Role Fit, Team Rating Projection, Transfer Success, Recommendations |
+| Neutral Player Projection | Player game logs, season stats, opponent context, HE impact labels, archetypes | Context-neutral player projection: impact, usage capacity, box rates, uncertainty | Role Fit, Transfer Success, Recommendations, destination-adjusted projection |
 | Role Fit / Playing Time | Roster snapshots, transfers, player projections, scheme/gap context, archetypes | `role_fit`, expected minutes, usage role, displaced minutes | Fit Score, Team Rating Projection, Recommendations |
+| Destination-Adjusted Player Projection | Neutral player projection, Role Fit minutes/usage/displacement, team pace, competition context | School-specific projected stats and value | Team Rating Projection, Predictions API, Player Profile, Compare |
 | Team Rating Projection | Player projections, role/minutes, roster state, team ratings | `team_rating_projections` | Fit page, Compare page, Recommendations |
 | Program Fit | User preferences, school/player metadata, NIL/geography/academic proxies | `player_team_fit_scores.program_fit` | Fit Score, Recommendations |
 | Fit Score Calibration | Scheme, gap, role, program, confidence flags | Calibrated `overall_fit`, component confidence metadata | Recommendations, Fit page, Compare page |
@@ -112,6 +118,8 @@ Hard dependencies must exist before the downstream model can run meaningfully.
 | Gap Matching v2 | Transfers (✅ season 2026 populated, full 2020-2026 backfill pending), roster snapshots (✅ table populated, full ~365-school run pending), derived roster-state features (not yet built — Issue #17 items 5-6) |
 | Player Projection | Player game logs (✅ `hoopr_player_game_logs` populated for 2026) or season-level fallback; player ID joins; opponent/team context for full scope |
 | Role Fit / Playing Time | Roster snapshots (✅ populated), transfers/departures (✅ populated), player projections (not yet built), roster-state features (not yet built) |
+| Neutral Player Projection | Player game logs or season-level fallback; player ID joins; opponent/team context for full scope |
+| Destination-Adjusted Player Projection | Neutral Player Projection plus Role Fit / Playing Time outputs |
 | Team Rating Projection | Player projections, expected minutes/displacement from Role Fit, roster state |
 | Program Fit | User/program preferences and agreed MVP proxy/manual-input contract |
 | Fit Score Calibration | Real scheme, gap, role, and program component scores |
@@ -125,8 +133,9 @@ always block an MVP run.
 
 | Model | Soft dependencies |
 |---|---|
-| Player Projection | M1 archetype priors; HE impact labels; transfer history; team system context |
+| Neutral Player Projection | M1 archetype priors; HE impact labels; transfer history; team system context |
 | Role Fit | Scheme Fit, Gap Matching, M1 archetypes, M2 team systems, coach/rotation tendencies |
+| Destination-Adjusted Player Projection | Scheme/system context, confidence flags, player/team comparable cohorts |
 | Team Rating Projection | M2 team systems, Hoop Explorer adjusted team labels, posterior projection samples |
 | Program Fit | NIL proxies, academic proxies, geography, user-entered constraints |
 | Transfer Success | Player Projection outputs, Role Fit outputs, similar-player cohorts |
@@ -149,13 +158,14 @@ same local-first pattern.
 8.  Run M2 Team System Clustering
 9.  Run M3 Scheme Fit
 10. Run Gap Matching baseline or v2
-11. Run Player Projection
+11. Run Neutral Player Projection
 12. Run Role Fit / Playing Time
-13. Run Team Rating Projection
-14. Run Program Fit
-15. Run Fit Score Calibration / Overall Fit refresh
-16. Run Recommendation Engine
-17. Verify API + frontend outputs
+13. Run Destination-Adjusted Player Projection
+14. Run Team Rating Projection
+15. Run Program Fit
+16. Run Fit Score Calibration / Overall Fit refresh
+17. Run Recommendation Engine
+18. Verify API + frontend outputs
 ```
 
 ## Current vs Planned Outputs
