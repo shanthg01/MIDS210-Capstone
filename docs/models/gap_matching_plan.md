@@ -39,11 +39,12 @@ Print mode chosen. Rest of notebook branches on this flag.
 
 Cell 2 — Load Departures
 
-Data dependency now satisfied (Issue #17 items 3-4, 2026-06-21): `transfers` has real
-rows for season 2026 (1,251, via `ingest_transfers_247sports.py`) and `roster_snapshots`
-exists (via `ingest_roster_snapshots.py`) as a second cross-check source. Wiring this
-cell into `gap_matching.py` itself (departure-aware filtering, Issue #26) is still open —
-the query below has always been correct, it just had nothing to filter against before.
+**Done (Issue #26, 2026-06-21) — in both `scripts/run_gap_matching.py` and
+`notebooks/models/gap_matching.ipynb` (its actual Cell 1b — numbered differently than
+this plan doc's Cell 2 since it landed between the existing Cell 1/Cell 2).** This exact
+query is `gap_matching.filter_departed()`'s `departed_pairs` load, `gap-cos-v2`. Both
+re-executed end to end and verified to produce identical numbers (1,280,700 rows, same
+per-season mean/std, same MLflow Δ).
 
 SELECT player_id, from_school_id
 FROM transfers

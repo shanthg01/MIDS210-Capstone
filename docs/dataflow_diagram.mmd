@@ -50,7 +50,7 @@ flowchart TD
         M1["Model 1: Player Clustering ✅\nK-Means k=9, tuned grouped features"]
         M2["Model 2: Team Clustering ✅\nTwo-layer offense/defense K-Means"]
         M3["Model 3: Scheme Fit Scorer ✅\nCosine similarity, scheme-cos-v2"]
-        GM["Gap Matching ✅\nCosine similarity, gap-cos-v1"]
+        GM["Gap Matching ✅\nCosine similarity, gap-cos-v2 (departure-aware)"]
         M4["Model 4: Playing Time Predictor\n⏳ not yet built"]
         M5["Model 5: Transfer Success\n⏳ not yet built"]
         M6["Model 6: Team Rating Projection\n⏳ not yet built"]
@@ -115,7 +115,8 @@ flowchart TD
     M3 -->|pyfunc artifact| S3MLF
 
     GM -->|upsert gap_match| PTFS
-    TRF & RSP -.->|Issue #26, not yet wired| GM
+    TRF -->|Issue #26, wired — current season only| GM
+    RSP -.->|broader roster_state_features not wired into Gap Matching| GM
 
     PA & TSP --> M4 & M7
     PSS & PTFS --> M5
