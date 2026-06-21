@@ -1,17 +1,28 @@
 """
 scripts/ingest_hoopr.py
 
-Ingests hoopR ESPN play-by-play data into PostgreSQL.
+Ingests hoopR ESPN play-by-play and game-log data into PostgreSQL.
 
-Data source: sportsdataverse GitHub releases
-  https://github.com/sportsdataverse/sportsdataverse-data/releases/download/
+Data source: sportsdataverse GitHub releases (same hoopR/ESPN scrape, different
+release tag per table grain) — https://github.com/sportsdataverse/sportsdataverse-data/releases/download/
   espn_mens_college_basketball_pbp/play_by_play_{season}.parquet
+  espn_mens_college_basketball_schedules/mbb_schedule_{season}.parquet
+  espn_mens_college_basketball_team_boxscores/team_box_{season}.parquet
+  espn_mens_college_basketball_player_boxscores/player_box_{season}.parquet
 
-Populates:
+Populates (always, from PBP):
   - hoopr_team_season_stats    (~365 D1 teams, 11 PBP-derived features per season)
   - hoopr_player_season_stats  (~5-8K ESPN athletes/season, name+team+season fuzzy
                                  crosswalk to players.id, ~90% hit rate; unmatched
                                  rows kept with player_id=NULL for manual backfill)
+
+Populates (with --game-logs, from schedule + box score parquet):
+  - hoopr_games             (one row per ESPN game)
+  - hoopr_team_game_logs    (one row per team per game)
+  - hoopr_player_game_logs  (one row per player per game; player_id resolved via
+                              players.espn_id direct lookup first — already ~90%
+                              backfilled by the season-level ingest above — then the
+                              same fuzzy name+roster fallback used for season stats)
 
 Raw PBP is NOT stored in PostgreSQL (2.9M rows/season — no row-level query use case).
 Aggregated features only. Raw parquet uploaded to s3://portalpoint-data/raw/hoopr/
@@ -59,7 +70,16 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from portalpoint.db.models import HoopRPlayerSeasonStats, HoopRTeamSeasonStats, Player, PlayerSeasonStats, School
+from portalpoint.db.models import (
+    HoopRGame,
+    HoopRPlayerGameLog,
+    HoopRPlayerSeasonStats,
+    HoopRTeamGameLog,
+    HoopRTeamSeasonStats,
+    Player,
+    PlayerSeasonStats,
+    School,
+)
 from portalpoint.db.session import AsyncSessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -67,10 +87,13 @@ log = logging.getLogger(__name__)
 
 DATA_DIR = Path("data/hoopr")
 
-PBP_URL = (
-    "https://github.com/sportsdataverse/sportsdataverse-data/releases/download/"
-    "espn_mens_college_basketball_pbp/play_by_play_{season}.parquet"
-)
+SPORTSDATAVERSE_RELEASES = "https://github.com/sportsdataverse/sportsdataverse-data/releases/download"
+
+# (release_tag, filename_template) — same hoopR/ESPN scrape, different release per table grain
+PBP_RELEASE = ("espn_mens_college_basketball_pbp", "play_by_play_{season}.parquet")
+SCHEDULE_RELEASE = ("espn_mens_college_basketball_schedules", "mbb_schedule_{season}.parquet")
+TEAM_BOX_RELEASE = ("espn_mens_college_basketball_team_boxscores", "team_box_{season}.parquet")
+PLAYER_BOX_RELEASE = ("espn_mens_college_basketball_player_boxscores", "player_box_{season}.parquet")
 
 # ---------------------------------------------------------------------------
 # Court geometry — ESPN center-origin coordinate system
@@ -246,6 +269,21 @@ def _safe_float(val) -> float | None:
         return None
 
 
+def _safe_int(val) -> int | None:
+    try:
+        f = float(val)
+        return None if (f != f) else int(f)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_date(val):
+    if val is None or (isinstance(val, float) and val != val):
+        return None
+    ts = pd.Timestamp(val)
+    return None if pd.isna(ts) else ts.date()
+
+
 def _normalize_espn_name(name: str | None) -> str:
     if not name:
         return ""
@@ -255,6 +293,18 @@ def _normalize_espn_name(name: str | None) -> str:
 def _fuzzy_match(name: str, candidates: list[str], threshold: float = 0.82) -> str | None:
     matches = difflib.get_close_matches(name, candidates, n=1, cutoff=threshold)
     return matches[0] if matches else None
+
+
+def _resolve_school(raw_location: str, school_map: dict[str, int]) -> int | None:
+    """Box score / schedule parquet uses team_location ('UConn', 'Pittsburgh') —
+    already closer to canonical DB names than PBP's home_team_name ('Connecticut',
+    'Pitt'), but same alias-then-fuzzy fallback applies for the names that don't
+    match directly."""
+    canonical = _normalize_espn_name(raw_location)
+    if canonical in school_map:
+        return school_map[canonical]
+    fuzzy = _fuzzy_match(canonical, list(school_map.keys()))
+    return school_map.get(fuzzy) if fuzzy else None
 
 
 def _build_team_name_map(pbp: pd.DataFrame) -> dict[str, str]:
@@ -284,9 +334,11 @@ def _build_team_name_map(pbp: pd.DataFrame) -> dict[str, str]:
 # Download
 # ---------------------------------------------------------------------------
 
-def download_parquet(season: int, dest_dir: Path) -> Path:
-    url = PBP_URL.format(season=season)
-    dest = dest_dir / f"play_by_play_{season}.parquet"
+def download_parquet(season: int, dest_dir: Path, release: tuple[str, str] = PBP_RELEASE) -> Path:
+    release_tag, filename_template = release
+    filename = filename_template.format(season=season)
+    url = f"{SPORTSDATAVERSE_RELEASES}/{release_tag}/{filename}"
+    dest = dest_dir / filename
     log.info("downloading %s", url)
     dest_dir.mkdir(parents=True, exist_ok=True)
     resp = requests.get(url, timeout=600, stream=True)
@@ -296,6 +348,15 @@ def download_parquet(season: int, dest_dir: Path) -> Path:
             fh.write(chunk)
     log.info("saved %s (%d MB)", dest.name, dest.stat().st_size // (1024 * 1024))
     return dest
+
+
+def _get_or_download(season: int, dest_dir: Path, release: tuple[str, str], force_download: bool) -> Path:
+    filename = release[1].format(season=season)
+    cached = dest_dir / filename
+    if cached.exists() and not force_download:
+        log.info("using cached parquet: %s", cached)
+        return cached
+    return download_parquet(season, dest_dir, release)
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +763,14 @@ async def _build_school_map(session) -> dict[str, int]:
     return {row.name: row.id for row in result}
 
 
+async def _build_espn_id_map(session) -> dict[str, int]:
+    """players.espn_id -> players.id, for players already backfilled by the
+    season-level hoopr ingest (~90% per docstring above) — game-log ingest
+    tries this direct lookup before falling back to fuzzy roster matching."""
+    result = await session.execute(select(Player.id, Player.espn_id).where(Player.espn_id.isnot(None)))
+    return {row.espn_id: row.id for row in result}
+
+
 async def _upsert(session, rows: list[dict]) -> int:
     if not rows:
         return 0
@@ -939,6 +1008,243 @@ async def ingest_player_features(
     return await _upsert_players(session, records)
 
 
+# ---------------------------------------------------------------------------
+# Game logs (--game-logs) — schedule + box score parquet, game-level grain
+# ---------------------------------------------------------------------------
+
+def _d1_only(df: pd.DataFrame, team_id_col: str, opponent_id_col: str) -> pd.DataFrame:
+    """Same both-sides-D1 filter the season-aggregate PBP ingest already applies."""
+    df = df.copy()
+    df["_team_id_num"] = pd.to_numeric(df[team_id_col], errors="coerce")
+    df["_opp_id_num"] = pd.to_numeric(df[opponent_id_col], errors="coerce")
+    return df[df["_team_id_num"].isin(D1_TEAM_IDS) & df["_opp_id_num"].isin(D1_TEAM_IDS)]
+
+
+def _chunked(rows: list[dict], size: int = 1000):
+    for i in range(0, len(rows), size):
+        yield rows[i:i + size]
+
+
+async def _bulk_upsert(session, model, rows: list[dict], conflict_cols: list[str], chunk_size: int = 1000) -> int:
+    """Multi-row INSERT ... ON CONFLICT DO UPDATE per chunk, instead of one
+    execute() round-trip per row — the per-row loop pattern the season-level
+    ingest functions use (_upsert/_upsert_players above) doesn't scale past a
+    few thousand rows; hoopr_player_game_logs is ~180K rows/season."""
+    if not rows:
+        return 0
+    exclude = set(conflict_cols) | {"id"}
+    for chunk in _chunked(rows, chunk_size):
+        stmt = pg_insert(model).values(chunk)
+        set_cols = {k: stmt.excluded[k] for k in chunk[0] if k not in exclude}
+        stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=set_cols)
+        await session.execute(stmt)
+    await session.commit()
+    return len(rows)
+
+
+async def ingest_games(
+    session,
+    schedule: pd.DataFrame,
+    school_map: dict[str, int],
+    season: int,
+    dry_run: bool = False,
+) -> int:
+    df = _d1_only(schedule, "home_id", "away_id")
+
+    records: list[dict] = []
+    unmatched: list[str] = []
+    for _, row in df.iterrows():
+        home_school_id = _resolve_school(str(row.get("home_location") or ""), school_map)
+        away_school_id = _resolve_school(str(row.get("away_location") or ""), school_map)
+        if home_school_id is None:
+            unmatched.append(str(row.get("home_location")))
+        if away_school_id is None:
+            unmatched.append(str(row.get("away_location")))
+
+        records.append({
+            "espn_game_id": str(row["game_id"]),
+            "season": season,
+            "game_date": _safe_date(row.get("game_date")),
+            "home_school_id": home_school_id,
+            "away_school_id": away_school_id,
+            "home_espn_team_id": str(row["home_id"]) if pd.notna(row.get("home_id")) else None,
+            "away_espn_team_id": str(row["away_id"]) if pd.notna(row.get("away_id")) else None,
+            "home_score": _safe_int(row.get("home_score")),
+            "away_score": _safe_int(row.get("away_score")),
+            "neutral_site": bool(row["neutral_site"]) if pd.notna(row.get("neutral_site")) else None,
+            "venue": str(row["venue_full_name"]) if pd.notna(row.get("venue_full_name")) else None,
+        })
+
+    total = len(records)
+    log.info(
+        "games: %d D1-vs-D1 rows | %d unmatched school-location lookups",
+        total, len(unmatched),
+    )
+    if unmatched:
+        log.warning(
+            "unmatched school locations (add to ESPN_TEAM_ALIASES):\n  %s",
+            "\n  ".join(sorted(set(unmatched))[:30]),
+        )
+    if dry_run:
+        return total
+    return await _bulk_upsert(session, HoopRGame, records, ["espn_game_id"])
+
+
+async def ingest_team_game_logs(
+    session,
+    team_box: pd.DataFrame,
+    school_map: dict[str, int],
+    season: int,
+    dry_run: bool = False,
+) -> int:
+    df = _d1_only(team_box, "team_id", "opponent_team_id")
+
+    records: list[dict] = []
+    unmatched: list[str] = []
+    for _, row in df.iterrows():
+        school_id = _resolve_school(str(row.get("team_location") or ""), school_map)
+        opponent_school_id = _resolve_school(str(row.get("opponent_team_location") or ""), school_map)
+        if school_id is None:
+            unmatched.append(str(row.get("team_location")))
+
+        records.append({
+            "espn_game_id": str(row["game_id"]),
+            "season": season,
+            "game_date": _safe_date(row.get("game_date")),
+            "school_id": school_id,
+            "espn_team_id": str(row["team_id"]),
+            "opponent_school_id": opponent_school_id,
+            "home_away": row.get("team_home_away"),
+            "points": _safe_int(row.get("team_score")),
+            "opponent_points": _safe_int(row.get("opponent_team_score")),
+            "field_goals_made": _safe_int(row.get("field_goals_made")),
+            "field_goals_attempted": _safe_int(row.get("field_goals_attempted")),
+            "three_point_field_goals_made": _safe_int(row.get("three_point_field_goals_made")),
+            "three_point_field_goals_attempted": _safe_int(row.get("three_point_field_goals_attempted")),
+            "free_throws_made": _safe_int(row.get("free_throws_made")),
+            "free_throws_attempted": _safe_int(row.get("free_throws_attempted")),
+            "offensive_rebounds": _safe_int(row.get("offensive_rebounds")),
+            "defensive_rebounds": _safe_int(row.get("defensive_rebounds")),
+            "total_rebounds": _safe_int(row.get("total_rebounds")),
+            # ESPN box schema has turnovers/team_turnovers/total_turnovers — "turnovers"
+            # is the standard per-possession box stat; team_turnovers separately tracks
+            # shot-clock/team-only violations not attributable to a player.
+            "assists": _safe_int(row.get("assists")),
+            "steals": _safe_int(row.get("steals")),
+            "blocks": _safe_int(row.get("blocks")),
+            "turnovers": _safe_int(row.get("turnovers")),
+            "fouls": _safe_int(row.get("fouls")),
+            "points_in_paint": _safe_int(row.get("points_in_paint")),
+            "fast_break_points": _safe_int(row.get("fast_break_points")),
+            "turnover_points": _safe_int(row.get("turnover_points")),
+        })
+
+    total = len(records)
+    matched = total - len(unmatched)
+    log.info(
+        "team game logs: %d D1-vs-D1 rows, %d matched (%.0f%%), %d unmatched",
+        total, matched, 100 * matched / max(total, 1), len(unmatched),
+    )
+    if unmatched:
+        log.warning("unmatched team locations:\n  %s", "\n  ".join(sorted(set(unmatched))[:30]))
+    if dry_run:
+        return total
+    return await _bulk_upsert(session, HoopRTeamGameLog, records, ["espn_game_id", "espn_team_id"])
+
+
+async def ingest_player_game_logs(
+    session,
+    player_box: pd.DataFrame,
+    school_map: dict[str, int],
+    espn_id_map: dict[str, int],
+    season: int,
+    dry_run: bool = False,
+) -> int:
+    """player_id resolution: direct players.espn_id lookup first (covers the
+    ~90% already backfilled by the season-level ingest), then the same fuzzy
+    name+roster fallback (_match_player_rosters/_build_roster) the season-level
+    ingest uses for its own unmatched remainder."""
+    df = _d1_only(player_box, "team_id", "opponent_team_id").copy()
+    df["espn_athlete_id"] = df["athlete_id"].astype(float).astype("int64").astype(str)
+    df["raw_display_name"] = df["athlete_display_name"]
+    df["school_id"] = df["team_location"].map(lambda loc: _resolve_school(str(loc or ""), school_map))
+    df["opponent_school_id"] = df["opponent_team_location"].map(
+        lambda loc: _resolve_school(str(loc or ""), school_map)
+    )
+
+    direct_mask = df["espn_athlete_id"].isin(espn_id_map)
+    direct = df[direct_mask].copy()
+    direct["matched_player_id"] = direct["espn_athlete_id"].map(espn_id_map)
+    direct["status"] = "matched"
+    direct["confidence"] = 1.0
+
+    remainder = df[~direct_mask].copy()
+    if remainder.empty:
+        fuzzy = remainder.assign(status=[], matched_player_id=[], confidence=[])
+    else:
+        roster = await _build_roster(session, season)
+        fuzzy = _match_player_rosters(remainder, roster)
+
+    matched = pd.concat([direct, fuzzy], ignore_index=True)
+
+    counts = matched["status"].value_counts()
+    total = len(matched)
+    log.info(
+        "player game logs: %d D1-vs-D1 rows | matched %d (%.1f%%) | ambiguous %d | unmatched %d | no_school %d",
+        total,
+        int(counts.get("matched", 0)), 100 * counts.get("matched", 0) / max(total, 1),
+        int(counts.get("ambiguous", 0)), int(counts.get("unmatched", 0)), int(counts.get("no_school", 0)),
+    )
+
+    if dry_run:
+        return total
+
+    newly_matched = fuzzy[fuzzy["status"] == "matched"] if not remainder.empty else remainder
+    n_backfilled = await _backfill_espn_ids(session, newly_matched)
+    log.info("players.espn_id backfilled from game logs: %d (idempotent)", n_backfilled)
+
+    records: list[dict] = []
+    for row in matched.itertuples():
+        school_id = row.school_id if not (isinstance(row.school_id, float) and pd.isna(row.school_id)) else None
+        opponent_school_id = (
+            row.opponent_school_id
+            if not (isinstance(row.opponent_school_id, float) and pd.isna(row.opponent_school_id))
+            else None
+        )
+        records.append({
+            "espn_game_id": str(row.game_id),
+            "season": season,
+            "game_date": _safe_date(row.game_date),
+            "player_id": row.matched_player_id if row.status == "matched" else None,
+            "espn_athlete_id": row.espn_athlete_id,
+            "raw_display_name": row.raw_display_name,
+            "school_id": school_id,
+            "opponent_school_id": opponent_school_id,
+            "home_away": getattr(row, "home_away", None),
+            "starter": bool(row.starter) if pd.notna(getattr(row, "starter", None)) else None,
+            "minutes": _safe_float(getattr(row, "minutes", None)),
+            "field_goals_made": _safe_int(getattr(row, "field_goals_made", None)),
+            "field_goals_attempted": _safe_int(getattr(row, "field_goals_attempted", None)),
+            "three_point_field_goals_made": _safe_int(getattr(row, "three_point_field_goals_made", None)),
+            "three_point_field_goals_attempted": _safe_int(getattr(row, "three_point_field_goals_attempted", None)),
+            "free_throws_made": _safe_int(getattr(row, "free_throws_made", None)),
+            "free_throws_attempted": _safe_int(getattr(row, "free_throws_attempted", None)),
+            "offensive_rebounds": _safe_int(getattr(row, "offensive_rebounds", None)),
+            "defensive_rebounds": _safe_int(getattr(row, "defensive_rebounds", None)),
+            "rebounds": _safe_int(getattr(row, "rebounds", None)),
+            "assists": _safe_int(getattr(row, "assists", None)),
+            "steals": _safe_int(getattr(row, "steals", None)),
+            "blocks": _safe_int(getattr(row, "blocks", None)),
+            "turnovers": _safe_int(getattr(row, "turnovers", None)),
+            "fouls": _safe_int(getattr(row, "fouls", None)),
+            "points": _safe_int(getattr(row, "points", None)),
+            "match_confidence": _safe_float(row.confidence),
+            "match_status": row.status,
+        })
+
+    return await _bulk_upsert(session, HoopRPlayerGameLog, records, ["espn_game_id", "espn_athlete_id"])
+
+
 def _try_s3_upload(local_path: Path, s3_key: str) -> None:
     try:
         _script_dir = Path(__file__).resolve().parent
@@ -964,62 +1270,99 @@ async def run(args: argparse.Namespace) -> None:
     for season in args.season:
         log.info("=== season %d ===", season)
 
-        if args.local_parquet:
-            parquet_path = Path(args.local_parquet)
-            if not parquet_path.exists():
-                log.error("local parquet not found: %s", parquet_path)
-                log.error("re-run EDA notebook to regenerate, or omit --local-parquet to download")
-                sys.exit(1)
-        else:
-            cached = DATA_DIR / f"play_by_play_{season}.parquet"
-            alt_cache = Path("notebooks/data") / f"mbb_pbp_{season}.parquet"
-            if alt_cache.exists() and not args.force_download:
-                log.info("using EDA cache: %s", alt_cache)
-                parquet_path = alt_cache
-            elif cached.exists() and not args.force_download:
-                log.info("using cached parquet: %s", cached)
-                parquet_path = cached
+        if not args.skip_season_stats:
+            if args.local_parquet:
+                parquet_path = Path(args.local_parquet)
+                if not parquet_path.exists():
+                    log.error("local parquet not found: %s", parquet_path)
+                    log.error("re-run EDA notebook to regenerate, or omit --local-parquet to download")
+                    sys.exit(1)
             else:
-                parquet_path = download_parquet(season, DATA_DIR)
+                cached = DATA_DIR / f"play_by_play_{season}.parquet"
+                alt_cache = Path("notebooks/data") / f"mbb_pbp_{season}.parquet"
+                if alt_cache.exists() and not args.force_download:
+                    log.info("using EDA cache: %s", alt_cache)
+                    parquet_path = alt_cache
+                elif cached.exists() and not args.force_download:
+                    log.info("using cached parquet: %s", cached)
+                    parquet_path = cached
+                else:
+                    parquet_path = download_parquet(season, DATA_DIR)
 
-        log.info("loading %s", parquet_path)
-        pbp = pd.read_parquet(parquet_path)
-        log.info("loaded %d rows, %d cols", len(pbp), len(pbp.columns))
+            log.info("loading %s", parquet_path)
+            pbp = pd.read_parquet(parquet_path)
+            log.info("loaded %d rows, %d cols", len(pbp), len(pbp.columns))
 
-        features = compute_team_features(pbp)
-        player_features = compute_player_features(pbp)
+            features = compute_team_features(pbp)
+            player_features = compute_player_features(pbp)
 
-        if args.dry_run:
-            log.info("[dry-run] features computed — no DB writes")
-            show_cols = [
-                "espn_team_name", "pbp_possession_sec", "pbp_rim_pct",
-                "pbp_three_pct", "pbp_zone1_restricted_pct",
-                "pbp_zone3_corner3_pct", "games_tracked",
-            ]
-            print(features[[c for c in show_cols if c in features.columns]].head(30).to_string(index=False))
-            show_player_cols = [
-                "raw_display_name", "espn_team_name", "pbp_rim_pct", "pbp_three_pct",
-                "pbp_clutch_ts_pct", "pbp_assist_rate", "shot_attempts_tracked", "games_tracked",
-            ]
-            print(player_features[[c for c in show_player_cols if c in player_features.columns]].head(30).to_string(index=False))
-            continue
+            if args.dry_run:
+                log.info("[dry-run] features computed — no DB writes")
+                show_cols = [
+                    "espn_team_name", "pbp_possession_sec", "pbp_rim_pct",
+                    "pbp_three_pct", "pbp_zone1_restricted_pct",
+                    "pbp_zone3_corner3_pct", "games_tracked",
+                ]
+                print(features[[c for c in show_cols if c in features.columns]].head(30).to_string(index=False))
+                show_player_cols = [
+                    "raw_display_name", "espn_team_name", "pbp_rim_pct", "pbp_three_pct",
+                    "pbp_clutch_ts_pct", "pbp_assist_rate", "shot_attempts_tracked", "games_tracked",
+                ]
+                print(player_features[[c for c in show_player_cols if c in player_features.columns]].head(30).to_string(index=False))
+            else:
+                async with AsyncSessionLocal() as session:
+                    school_map = await _build_school_map(session)
+                    n = await ingest_features(session, features, school_map, season)
+                    log.info("hoopr_team_season_stats upserted: %d rows", n)
 
-        async with AsyncSessionLocal() as session:
-            school_map = await _build_school_map(session)
-            n = await ingest_features(session, features, school_map, season)
-            log.info("hoopr_team_season_stats upserted: %d rows", n)
+                    n_players = await ingest_player_features(session, player_features, school_map, season)
+                    log.info("hoopr_player_season_stats upserted: %d rows", n_players)
 
-            n_players = await ingest_player_features(session, player_features, school_map, season)
-            log.info("hoopr_player_season_stats upserted: %d rows", n_players)
+                _date = datetime.now().strftime("%Y-%m-%d")
+                _try_s3_upload(parquet_path, f"raw/hoopr/{_date}/play_by_play_{season}.parquet")
 
-        _date = datetime.now().strftime("%Y-%m-%d")
-        _try_s3_upload(parquet_path, f"raw/hoopr/{_date}/play_by_play_{season}.parquet")
+        if args.game_logs:
+            log.info("--- game logs (season %d) ---", season)
+            schedule_path = _get_or_download(season, DATA_DIR, SCHEDULE_RELEASE, args.force_download)
+            team_box_path = _get_or_download(season, DATA_DIR, TEAM_BOX_RELEASE, args.force_download)
+            player_box_path = _get_or_download(season, DATA_DIR, PLAYER_BOX_RELEASE, args.force_download)
+
+            schedule_df = pd.read_parquet(schedule_path)
+            team_box_df = pd.read_parquet(team_box_path)
+            player_box_df = pd.read_parquet(player_box_path)
+            log.info(
+                "loaded schedule=%d team_box=%d player_box=%d rows",
+                len(schedule_df), len(team_box_df), len(player_box_df),
+            )
+
+            _verb = "[dry-run] computed" if args.dry_run else "upserted"
+            async with AsyncSessionLocal() as session:
+                school_map = await _build_school_map(session)
+
+                n_games = await ingest_games(session, schedule_df, school_map, season, dry_run=args.dry_run)
+                log.info("hoopr_games %s: %d rows", _verb, n_games)
+
+                n_team_logs = await ingest_team_game_logs(
+                    session, team_box_df, school_map, season, dry_run=args.dry_run
+                )
+                log.info("hoopr_team_game_logs %s: %d rows", _verb, n_team_logs)
+
+                espn_id_map = await _build_espn_id_map(session)
+                n_player_logs = await ingest_player_game_logs(
+                    session, player_box_df, school_map, espn_id_map, season, dry_run=args.dry_run
+                )
+                log.info("hoopr_player_game_logs %s: %d rows", _verb, n_player_logs)
+
+            if not args.dry_run:
+                _date = datetime.now().strftime("%Y-%m-%d")
+                for p in (schedule_path, team_box_path, player_box_path):
+                    _try_s3_upload(p, f"raw/hoopr/game_logs/{_date}/{p.name}")
 
     log.info("done")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Ingest hoopR ESPN PBP data into PostgreSQL")
+    p = argparse.ArgumentParser(description="Ingest hoopR ESPN PBP and game-log data into PostgreSQL")
     p.add_argument(
         "--season",
         type=int,
@@ -1034,13 +1377,26 @@ def main() -> None:
         help=(
             "Path to local .parquet file (skips download). "
             "EDA cache is at notebooks/data/mbb_pbp_2026.parquet. "
-            "Single season only."
+            "Single season only. Applies to the season-aggregate PBP step only."
         ),
     )
     p.add_argument(
         "--force-download",
         action="store_true",
         help="Re-download even if a cached parquet already exists.",
+    )
+    p.add_argument(
+        "--game-logs",
+        action="store_true",
+        help=(
+            "Also ingest hoopr_games / hoopr_team_game_logs / hoopr_player_game_logs "
+            "from schedule + box score parquet (game-level grain) for each --season."
+        ),
+    )
+    p.add_argument(
+        "--skip-season-stats",
+        action="store_true",
+        help="Skip the season-aggregate PBP step (hoopr_team/player_season_stats). Use with --game-logs for a game-logs-only run.",
     )
     p.add_argument(
         "--dry-run",

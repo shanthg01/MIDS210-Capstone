@@ -39,6 +39,11 @@ Print mode chosen. Rest of notebook branches on this flag.
 
 Cell 2 — Load Departures
 
+Data dependency now satisfied (Issue #17 items 3-4, 2026-06-21): `transfers` has real
+rows for season 2026 (1,251, via `ingest_transfers_247sports.py`) and `roster_snapshots`
+exists (via `ingest_roster_snapshots.py`) as a second cross-check source. Wiring this
+cell into `gap_matching.py` itself (departure-aware filtering, Issue #26) is still open —
+the query below has always been correct, it just had nothing to filter against before.
 
 SELECT player_id, from_school_id
 FROM transfers

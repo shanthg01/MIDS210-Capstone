@@ -1,6 +1,6 @@
 # PortalPoint Model Dependency Graph
 
-**Last updated:** June 20, 2026  
+**Last updated:** June 21, 2026  
 **Scope:** Model inputs, outputs, downstream consumers, and execution order.
 
 This document is the dependency contract for PortalPoint's data science stack. It
@@ -115,9 +115,10 @@ Hard dependencies must exist before the downstream model can run meaningfully.
 | M2 Team System Clustering | Feature parquet with team style vectors |
 | M3 Scheme Fit | Player features, team style vectors, current team/player IDs |
 | Gap Matching baseline | Player season stats, positions or HE soft positions, fit-score pairs from M3 |
-| Gap Matching v2 | Transfers, roster snapshots, derived roster-state features |
+| Gap Matching v2 | Transfers (✅ season 2026 populated, full 2020-2026 backfill pending), roster snapshots (✅ table populated, full ~365-school run pending), derived roster-state features (not yet built — Issue #17 items 5-6) |
+| Player Projection | Player game logs (✅ `hoopr_player_game_logs` populated for 2026) or season-level fallback; player ID joins; opponent/team context for full scope |
+| Role Fit / Playing Time | Roster snapshots (✅ populated), transfers/departures (✅ populated), player projections (not yet built), roster-state features (not yet built) |
 | Neutral Player Projection | Player game logs or season-level fallback; player ID joins; opponent/team context for full scope |
-| Role Fit / Playing Time | Roster snapshots, transfers/departures, player projections, roster-state features |
 | Destination-Adjusted Player Projection | Neutral Player Projection plus Role Fit / Playing Time outputs |
 | Team Rating Projection | Player projections, expected minutes/displacement from Role Fit, roster state |
 | Program Fit | User/program preferences and agreed MVP proxy/manual-input contract |
@@ -150,7 +151,8 @@ same local-first pattern.
 2.  Ingest BartTorvik
 3.  Ingest Hoop Explorer
 4.  Ingest hoopR season aggregates
-5.  Ingest remaining data: game logs, game context, transfers, rosters
+5.  Ingest remaining data: game logs, game context (✅ done, 2026), transfers (✅ done, 2026 — 2020-2026 backfill pending), rosters (✅ table populated, one school verified — full ~365-school run pending)
+    — see ARCHITECTURE_STATUS.md "Ingest And Feature Pipeline" for the exact commands, including the full transfer backfill and full roster run
 6.  Generate feature parquet
 7.  Run M1 Player Clustering
 8.  Run M2 Team System Clustering
@@ -173,7 +175,9 @@ same local-first pattern.
 | `player_archetypes` | Real, accepted for MVP | M1 |
 | `team_system_profiles` | Real, accepted for MVP | M2 |
 | `player_team_fit_scores.scheme_fit` | Real | M3 |
-| `player_team_fit_scores.gap_match` | Real baseline; v2 needs roster/departure data | Gap Matching |
+| `player_team_fit_scores.gap_match` | Real baseline; v2 data dependency now satisfied (`transfers`/`roster_snapshots` populated for 2026) but the model itself (Issue #26) isn't wired yet | Gap Matching |
+| `transfers` / `transfer_portal_events` | Real for season 2026 (1,251 promoted); 2020-2026 backfill pending | Issue #17 item 3 |
+| `roster_snapshots` / `roster_snapshot_players` | Real, one school verified (Duke); full ~365-school run pending | Issue #17 item 4 |
 | `player_team_fit_scores.role_fit` | Placeholder `50.0` | Role Fit |
 | `player_team_fit_scores.program_fit` | Placeholder `50.0` | Program Fit |
 | `player_team_fit_scores.overall_fit` | Partial; compressed until all components are real | Fit Score Calibration |
@@ -266,7 +270,7 @@ Who is the player?
 
 | Issue | Dependency role |
 |---|---|
-| #17 Remaining Data Loading | Removes source-data blockers for all downstream models |
+| #17 Remaining Data Loading | Removes source-data blockers for all downstream models. Items 1-2 (hoopR game logs/context) and 3-4 (transfers, roster snapshots) done for 2026/one school; full backfills documented but not run. Items 5-8 (derived `player_team_seasons`, roster-state features, projection tables, Program Fit proxy) open. |
 | #18 Player Projection Model | Foundational player-talent model |
 | #19 Team Rating Projection Model | Roster counterfactual model |
 | #20 Program Fit Model Decision | Decides MVP program-fit feasibility and proxy contract |

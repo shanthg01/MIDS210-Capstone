@@ -377,7 +377,7 @@ player primary team in season Y
 != player primary team in season Y+1
 ```
 
-Use BartTorvik transfer portal rows for current portal candidates, committed destinations, and historical source/destination pairs. Use inferred player-team histories as a backfill and validation layer. Where Hoop Explorer `transfer_src` / `transfer_dest` exists, use it as an enrichment and cross-check.
+**Superseded (2026-06-21):** BartTorvik's transfer JSON would have been the cleanest source (exact `barttorvik_id` join, no fuzzy matching) but its `robots.txt` disallows `/*.json` and `/playerstat.php` — see `playing_time_rotation_model_plan.md` §4/§7 for the full finding. **247Sports is the actual current/historical transfer-event source** (`scripts/ingest_transfers_247sports.py` → `transfers`/`transfer_portal_events`, season 2026 done, 2020-2026 backfill documented in `ARCHITECTURE_STATUS.md` but not yet run). Use inferred player-team histories as a backfill and validation layer. Where Hoop Explorer `transfer_src` / `transfer_dest` exists, use it as an enrichment and cross-check.
 
 ---
 

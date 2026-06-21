@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** June 20, 2026
+**Last updated:** June 21, 2026
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -32,7 +32,7 @@ User-facing fit should eventually expose four components:
 |---|---|---|
 | Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
 | Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v1`); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
-| Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
+| Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. Roster-state data dependency (`roster_snapshots`) now exists — see `ARCHITECTURE_STATUS.md` — model itself still not built. |
 | Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
 Current state:
