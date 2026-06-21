@@ -220,7 +220,7 @@ Open http://127.0.0.1:5000. Current experiments include:
 | `player-clustering` | K-Means player archetypes (k=9) | `silhouette_score` | `player-clustering` |
 | `team-clustering` | Two-layer K-Means team system profiles | `silhouette_score` | `team-clustering` |
 | `scheme-fit-scorer` | Cosine similarity `scheme-cos-v2` | `n_records_written` | `scheme-fit-scorer` |
-| `gap-matching` | Cosine gap matching `gap-cos-v1` | `std_gap_match` | `gap-matching-scorer` |
+| `gap-matching` | Cosine gap matching `gap-cos-v2` (departure-aware) | `std_gap_match` | `gap-matching-scorer` |
 
 Artifacts (pkl files) in `s3://portalpoint-data/models/`; MLflow artifact store in `s3://portalpoint-data/mlflow/`.
 
@@ -369,7 +369,7 @@ MIDS210-Capstone/
 │   │   ├── player_clustering.ipynb    # Model 1 ✅ — K-Means player archetypes (k=9)
 │   │   ├── team_clustering.ipynb      # Model 2 ✅ — two-layer K-Means team system profiles
 │   │   ├── scheme_fit_scorer.ipynb    # Model 3 ✅ — cosine similarity scheme-cos-v2
-│   │   └── gap_matching.ipynb         # Gap Matching ✅ — cosine gap-cos-v1
+│   │   └── gap_matching.ipynb         # Gap Matching ✅ — cosine gap-cos-v2, departure-aware
 │   └── requirements-notebooks.txt     # Notebook-only deps — install via uv pip
 ├── mlruns.db                          # MLflow SQLite tracking store (created on first run)
 ├── alembic/                     # Database migrations

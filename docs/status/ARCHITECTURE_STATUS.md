@@ -116,6 +116,7 @@ Applied migration chain:
 | `7a3e2d1c9b44` | Expands `team_system_profiles.system_label` from VARCHAR(50) to VARCHAR(100) — needed for M2's new combined `"{offense} / {defense}"` label format (max observed: 63 chars) |
 | `d8e5c2a9f163` | Adds `hoopr_games`, `hoopr_team_game_logs`, `hoopr_player_game_logs` (game-level grain — Issue #17 items 1-2) |
 | `f4a7c1e9b026` | Adds `transfer_portal_events`, `roster_snapshots`, `roster_snapshot_players` (Issue #17 items 3-4); adds `uq_transfers_player_season` unique constraint to `transfers` (enables upsert) |
+| `b9c3f7a2d514` | Adds `roster_state_features` (Issue #17 item 6) |
 
 Important tables:
 
@@ -138,12 +139,15 @@ Important tables:
 | `transfer_portal_events` | Raw 247Sports scrape staging — every scraped row, matched or not; `player_id` nullable; `portal_entry_date`/`commitment_date` fill in incrementally across repeated scrapes |
 | `transfers` | Promoted transfer records (matched rows only) — `(player_id, season)` unique, supports upsert; backfills `pre_per`/`pre_minutes_per_game`/`pre_usage_rate` from `player_season_stats` |
 | `roster_snapshots` / `roster_snapshot_players` | Point-in-time roster composition per school per scrape date (barttorvik `rostercast.php`); `returning_status` (`returning`/`transfer_in`/`new`) computed by diffing against `player_season_stats`, not given by the source |
+| `roster_state_features` | One row per `roster_snapshots` row — derived facts (counts/sums, not gap scores): returning/departing/incoming minutes+usage by position (as min_pct share — see note below), returning production/impact, class balance, archetype counts. Built by `scripts/build_roster_state_features.py` (plain script, not a model — no MLflow) |
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Future team impact outputs |
 | `recommendations` | Future ranked player recommendations |
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
 
-**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` is no longer empty — `ingest_transfers_247sports.py` has populated season 2026 (1,251 rows); full 2020-2026 backfill not yet run (command below). Gap Matching currently treats every player in `player_season_stats` as roster-resident (no departure filter); it can now query `transfers`/`transfer_portal_events` to distinguish "still on roster" from "departed/portal" once Issue #17 #26 (Departure-Aware Gap Matching v2) wires it in — the data dependency is satisfied, the model change isn't done yet.
+**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` is no longer empty — `ingest_transfers_247sports.py` has populated season 2026 (1,251 rows); full 2020-2026 backfill not yet run (command below).
+
+**Gap Matching is now `gap-cos-v2` (Issue #26, 2026-06-21):** both `scripts/run_gap_matching.py` and `notebooks/models/gap_matching.ipynb` filter out players who transferred out of a school (per `transfers`, current season only) before computing that school's gap vectors — `gap_matching.filter_departed()`, notebook Cell 1b. Scoped to *portal* departures specifically (`transfers.from_school_id`/`to_school_id`) — not graduations or draft entries, which `roster_state_features.open_minutes_by_position` (broader: anyone not returning, any reason) covers separately but isn't wired into Gap Matching. Both re-executed end to end and produce identical numbers (1,280,700 rows, same per-season mean/std) — verified, not just claimed.
 
 **Critical gotcha — `players.id` is not portable across environments (discovered 2026-06-19).** It's a local Postgres auto-increment surrogate key, not a stable identifier. Committed `data/features/*.parquet` files embed raw `player_id` integers — if they were built against a *different* local DB's `players` table (e.g. a teammate's machine, even running identical ingest code), those integers mean nothing on your machine. Confirmed in practice: a committed `player_features.parquet` had 4,781 of 8,696 distinct `player_id`s (55%) missing from a different machine's `players` table, causing a `ForeignKeyViolation` on `player_archetypes` insert. **Fix:** regenerate `data/features/*.parquet` locally via `feature_eng_m1_m2_m3.ipynb` (it queries the live DB directly — `JOIN players p ON p.id = pss.player_id` — so regenerated output always matches your local `players` table) before running M1/M2 after pulling someone else's parquet commit. Do not trust a pulled parquet file's `player_id`s without regenerating.
 
@@ -189,8 +193,9 @@ Policy/ops notes:
 | hoopR game logs | `scripts/ingest_hoopr.py --game-logs` | Complete for 2026 — same sportsdataverse-data host as PBP, different release tag (schedule + team/player box score parquet) | `hoopr_games` + `hoopr_team_game_logs` + `hoopr_player_game_logs` |
 | 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for season 2026 (1,251 promoted) — full 2020-2026 backfill not yet run | `transfer_portal_events` (raw) + `transfers` (promoted) |
 | barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Verified on one school (Duke) — full ~365-school run not yet done | `roster_snapshots` + `roster_snapshot_players` |
+| Roster-state features | `scripts/build_roster_state_features.py` | Verified on one school (Duke) — plain script, not a model (no MLflow); depends on a roster snapshot existing | `roster_state_features` |
 | Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19/20 for local sync | Produces gitignored `data/features/player_features.parquet` and `data/features/team_style_vectors.parquet`; must be regenerated against each local DB because surrogate `players.id` values are not portable |
-| Model scripts | `scripts/run_player_clustering.py`, `scripts/run_team_clustering.py`, `scripts/run_scheme_fit.py`, `scripts/run_gap_matching.py` | ✅ Complete baseline — M1/M2/M3/Gap refresh locally and log to MLflow | Preferred non-interactive rerun path; writes DB outputs, local artifacts, MLflow runs, and S3 model uploads when credentials are configured |
+| Model scripts | `scripts/run_player_clustering.py`, `scripts/run_team_clustering.py`, `scripts/run_scheme_fit.py`, `scripts/run_gap_matching.py` | ✅ Complete baseline — M1/M2/M3 refresh locally and log to MLflow; Gap Matching now `gap-cos-v2` (departure-aware, see above) | Preferred non-interactive rerun path; writes DB outputs, local artifacts, MLflow runs, and S3 model uploads when credentials are configured |
 | Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete | Use for retuning, validation plots, and product-copy refinement; scripts should be used for ordinary local refresh |
 
 Suggested rebuild order from a fresh DB:
@@ -203,11 +208,12 @@ Suggested rebuild order from a fresh DB:
 5. ingest_hoopr.py --season <year> --game-logs --skip-season-stats  (repeat per season — game-level grain, separate from step 4's season-aggregate)
 6. ingest_transfers_247sports.py --seasons <year>  (repeat per season — see full backfill command below)
 7. ingest_roster_snapshots.py                     # current-state snapshot only, not season-backfillable (rostercast.php has no historical view)
-8. feature_eng_m1_m2_m3.ipynb                     # execute with the portalpoint kernel
-9. run_player_clustering.py
-10. run_team_clustering.py
-11. run_scheme_fit.py
-12. run_gap_matching.py
+8. build_roster_state_features.py                 # derived from step 7's snapshot(s) + transfers + player_season_stats — not a model, no MLflow
+9. feature_eng_m1_m2_m3.ipynb                     # execute with the portalpoint kernel
+10. run_player_clustering.py
+11. run_team_clustering.py
+12. run_scheme_fit.py
+13. run_gap_matching.py                            # gap-cos-v2 — departure-aware via transfers, current season only
 ```
 
 **Full transfer-portal backfill (2020-2026, Issue #17 item 3):**

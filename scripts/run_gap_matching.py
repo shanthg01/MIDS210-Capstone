@@ -67,6 +67,16 @@ WHERE pss.games_played           >= {gm.MIN_GAMES}
 
 ARCH_SQL = "SELECT player_id, season, archetype_id, archetype_label FROM player_archetypes"
 
+# gap-cos-v2: departure filter for the current season only (see gap_matching.filter_departed).
+# Exact query from docs/models/gap_matching_plan.md Cell 2.
+DEPARTED_SQL = """
+SELECT player_id, from_school_id
+FROM transfers
+WHERE from_school_id IS NOT NULL
+  AND portal_entry_date IS NOT NULL
+  AND season = %s
+"""
+
 EXISTING_SQL = """
 SELECT player_id, school_id, season, scheme_fit, breakdown
 FROM player_team_fit_scores
@@ -88,6 +98,14 @@ def main() -> None:
         .reset_index(drop=True)
     )
     log.info("Loaded %s player-season rows", f"{len(df):,}")
+
+    current_season = max(SEASONS_IN_DATA)
+    with conn.cursor() as cur:
+        cur.execute(DEPARTED_SQL, (current_season,))
+        departed_pairs = {(r[0], r[1]) for r in cur.fetchall()}
+    log.info("Departed pairs loaded for season %d: %s", current_season, f"{len(departed_pairs):,}")
+    df = gm.filter_departed(df, departed_pairs, current_season)
+    log.info("Rows after departure filter: %s", f"{len(df):,}")
 
     df = gm.assign_soft_positions(df)
 

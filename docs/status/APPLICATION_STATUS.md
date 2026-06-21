@@ -31,7 +31,7 @@ User-facing fit should eventually expose four components:
 | Component | Status | App implication |
 |---|---|---|
 | Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
-| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v1`); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
+| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v2`, departure-aware for the current season — Issue #26); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
 | Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. Roster-state data dependency (`roster_snapshots`) now exists — see `ARCHITECTURE_STATUS.md` — model itself still not built. |
 | Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
@@ -131,7 +131,7 @@ Watch-outs:
 - Default JWT expiry is one hour; set `JWT_EXPIRY_SECONDS=86400` locally if helpful.
 - Any page that assumes complete fit scores must communicate partial/stub state until all components are real.
 - `fit_scores.py` hardcodes `CURRENT_SEASON = 2026` — no season config exists yet. Add a `season` query param override if the frontend needs historical seasons.
-- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v1`.
+- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v2`.
 
 ---
 
