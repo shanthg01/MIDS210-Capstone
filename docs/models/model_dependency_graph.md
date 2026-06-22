@@ -94,11 +94,12 @@ API + Frontend
 | M1 Player Clustering | Player feature parquet | `player_archetypes`, model artifacts | Gap Matching, Player Projection, Role Fit, Recommendations, UI explanations |
 | M2 Team System Clustering | Team style parquet | `team_system_profiles`, model artifacts | Scheme Fit breakdown, Role Fit context, Team Rating Projection, Recommendations |
 | M3 Scheme Fit | Player/team shot and style vectors; M2 labels for explanation | `player_team_fit_scores.scheme_fit` and scheme breakdown | Fit Score, Role Fit context, Recommendations |
-| Gap Matching | Player stat vectors, roster state, positions, archetypes | `player_team_fit_scores.gap_match` and gap breakdown | Fit Score, Role Fit, Recommendations |
+| Roster Baseline | `player_season_stats`, latest `roster_snapshots`, `transfers`, HE `transfer_dest` | shared roster-outlook frame (code module, not persisted yet) | Gap Matching, Role Fit, Team Rating Projection |
+| Gap Matching | Player stat vectors, shared roster baseline, positions, archetypes | `player_team_fit_scores.gap_match` and gap breakdown | Fit Score, Role Fit, Recommendations |
 | Neutral Player Projection | Player game logs, season stats, opponent context, HE impact labels, archetypes | Context-neutral player projection: impact, usage capacity, box rates, uncertainty | Role Fit, Transfer Success, Recommendations, destination-adjusted projection |
-| Role Fit / Playing Time | Roster snapshots, transfers, player projections, scheme/gap context, archetypes | `role_fit`, expected minutes, usage role, displaced minutes | Fit Score, Team Rating Projection, Recommendations |
+| Role Fit / Playing Time | Shared roster baseline, player projections, scheme/gap context, archetypes | `role_fit`, expected minutes, usage role, displaced minutes | Fit Score, Team Rating Projection, Recommendations |
 | Destination-Adjusted Player Projection | Neutral player projection, Role Fit minutes/usage/displacement, team pace, competition context | School-specific projected stats and value | Team Rating Projection, Predictions API, Player Profile, Compare |
-| Team Rating Projection | Player projections, role/minutes, roster state, team ratings | `team_rating_projections` | Fit page, Compare page, Recommendations |
+| Team Rating Projection | Shared roster baseline, player projections, role/minutes, team ratings | `team_rating_projections` | Fit page, Compare page, Recommendations |
 | Program Fit | User preferences, school/player metadata, NIL/geography/academic proxies | `player_team_fit_scores.program_fit` | Fit Score, Recommendations |
 | Fit Score Calibration | Scheme, gap, role, program, confidence flags | Calibrated `overall_fit`, component confidence metadata | Recommendations, Fit page, Compare page |
 | Transfer Success / Outcome | Historical transfers, pre/post stats, projections | Prediction/risk outputs | Predictions API, Player profile, Compare, Recommendations risk context |
@@ -114,13 +115,13 @@ Hard dependencies must exist before the downstream model can run meaningfully.
 | M1 Player Clustering | Feature parquet with player features |
 | M2 Team System Clustering | Feature parquet with team style vectors |
 | M3 Scheme Fit | Player features, team style vectors, current team/player IDs |
-| Gap Matching baseline | Player season stats, positions or HE soft positions. **No longer depends on M3's fit-score pairs** — `gap-cos-v3` (2026-06-22) scores every eligible player×school×season pair independently, same all-pairs scope Scheme Fit moved to the same day. Still must run *after* Scheme Fit, though: Scheme Fit's full-season delete+rebuild would wipe Gap Matching's output if run second. |
-| Gap Matching v2 | ✅ Done (2026-06-21) — `gap-cos-v2` filters confirmed portal departures (`transfers`, season 2026 populated, full 2020-2026 backfill pending) out of a school's own roster pool, current season only. `roster_state_features` (Issue #17 item 6, ✅ built) covers the broader "anyone not returning, any reason" case but isn't wired into Gap Matching itself — narrower scope was sufficient for v2. Departure-filter scope unchanged by the v3 all-pairs rewrite. |
+| Roster Baseline | `player_season_stats` for historical S/S+1 inference; latest `roster_snapshots` when no S+1 exists; expected-departure fallback (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) for schools without a usable latest snapshot. This is the canonical roster-membership layer for roster-aware models. |
+| Gap Matching baseline | Player season stats, positions or HE soft positions, and shared roster baseline. **No longer depends on M3's fit-score pairs** — `gap-cos-v4` scores every eligible player×school×season pair independently, same all-pairs scope Scheme Fit moved to. Still must run *after* Scheme Fit, though: Scheme Fit's full-season delete+rebuild would wipe Gap Matching's output if run second. |
 | Player Projection | Player game logs (✅ `hoopr_player_game_logs` populated for 2026) or season-level fallback; player ID joins; opponent/team context for full scope |
-| Role Fit / Playing Time | Roster snapshots (✅ populated, one school verified), transfers/departures (✅ populated), player projections (not yet built), roster-state features (✅ built — `roster_state_features`, Issue #17 item 6) |
+| Role Fit / Playing Time | Shared roster baseline, player projections (not yet built), roster-state features (optional explanations) |
 | Neutral Player Projection | Player game logs or season-level fallback; player ID joins; opponent/team context for full scope |
 | Destination-Adjusted Player Projection | Neutral Player Projection plus Role Fit / Playing Time outputs |
-| Team Rating Projection | Player projections, expected minutes/displacement from Role Fit, roster state |
+| Team Rating Projection | Shared roster baseline, player projections, expected minutes/displacement from Role Fit |
 | Program Fit | User/program preferences and agreed MVP proxy/manual-input contract |
 | Fit Score Calibration | Real scheme, gap, role, and program component scores |
 | Recommendation Engine | Candidate availability, calibrated fit scores, user preferences |
@@ -175,7 +176,7 @@ same local-first pattern.
 | `player_archetypes` | Real, accepted for MVP | M1 |
 | `team_system_profiles` | Real, accepted for MVP | M2 |
 | `player_team_fit_scores.scheme_fit` | Real | M3 |
-| `player_team_fit_scores.gap_match` | Real — `gap-cos-v3`, all-pairs (departure-aware for 2026, narrow scope: confirmed portal transfers only) | Gap Matching |
+| `player_team_fit_scores.gap_match` | Real code path — `gap-cos-v4`, all-pairs with shared roster baseline (stored DB rows need rerun after merge) | Gap Matching |
 | `transfers` / `transfer_portal_events` | Real for season 2026 (1,251 promoted); 2020-2026 backfill pending | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, one school verified (Duke); full ~365-school run pending | Issue #17 item 4 |
 | `roster_state_features` | Real, one school verified (Duke); full ~365-school run pending (depends on roster_snapshots above) | Issue #17 item 6 |
@@ -284,6 +285,7 @@ Who is the player?
 | #27 Model Pipeline Orchestration And Runbook | Turns this dependency graph into runnable local process |
 | #28 API / Frontend Integration For Real Model Outputs | Replaces stubs with real model outputs in product surfaces |
 | PR #33 Gap Matching Coverage + Portal Scope | ✅ Done (2026-06-22) — Gap Matching and Scheme Fit both moved to all-pairs (`gap-cos-v3`/`scheme-cos-v3`); `player_team_fit_scores.is_portal_candidate` added as the recommendation-surface scope flag (kept in sync by `portalpoint.modeling.availability`); `fit_scores.py`/`players.py` API surface updated accordingly — see CLAUDE.md Process Improvement TODO #5 |
+| Roster Baseline Follow-up | ✅ Code path on `roster-baseline` branch — `gap-cos-v4` consumes `portalpoint.modeling.roster_baseline`; Role Fit and Team Rating Projection should use the same module instead of re-deriving roster membership |
 
 ## Notes For Future Model Work
 

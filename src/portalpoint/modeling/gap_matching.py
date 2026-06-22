@@ -17,7 +17,7 @@ from sklearn.preprocessing import StandardScaler
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
 
-MODEL_VERSION = "gap-cos-v3"
+MODEL_VERSION = "gap-cos-v4"
 MIN_GAMES = 5
 BASELINE_GAP_MATCH = 15.0
 

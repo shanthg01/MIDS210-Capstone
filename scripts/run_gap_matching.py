@@ -19,8 +19,12 @@ import numpy as np
 import pandas as pd
 
 from portalpoint.modeling import gap_matching as gm
-from portalpoint.modeling.availability import apply_portal_candidate_override, sync_portal_candidate_flags
-from portalpoint.modeling.io import find_repo_root, get_sync_engine
+from portalpoint.modeling import roster_baseline as rb
+from portalpoint.modeling.availability import (
+    apply_portal_candidate_override,
+    sync_portal_candidate_flags,
+)
+from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -72,16 +76,6 @@ WHERE pss.games_played           >= {gm.MIN_GAMES}
 
 ARCH_SQL = "SELECT player_id, season, archetype_id, archetype_label FROM player_archetypes"
 
-# gap-cos-v2: departure filter for the current season only (see gap_matching.filter_departed).
-# Exact query from docs/models/gap_matching_plan.md Cell 2.
-DEPARTED_SQL = """
-SELECT player_id, from_school_id
-FROM transfers
-WHERE from_school_id IS NOT NULL
-  AND portal_entry_date IS NOT NULL
-  AND season = %s
-"""
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Non-interactive rerun of Gap Matching")
     p.add_argument(
@@ -118,13 +112,21 @@ def main() -> None:
     df = gm.prepare_gap_features(df)
 
     current_season = max(SEASONS_IN_DATA)
-    with conn.cursor() as cur:
-        cur.execute(DEPARTED_SQL, (current_season,))
-        departed_pairs = {(r[0], r[1]) for r in cur.fetchall()}
-    log.info("Departed pairs loaded for season %d: %s", current_season, f"{len(departed_pairs):,}")
-    roster_df = gm.filter_departed(df, departed_pairs, current_season)
+    roster_df, baseline_summary = rb.build_roster_baseline_frame(
+        df, engine, SEASONS_IN_DATA, current_season
+    )
     candidate_df = df.copy()
-    log.info("Roster rows after departure filter: %s", f"{len(roster_df):,}")
+    log.info(
+        "Roster baseline rows: %s "
+        "(historical_members=%s, latest_snapshot_members=%s across %d schools, "
+        "fallback_members=%s across %d schools)",
+        f"{baseline_summary.rows:,}",
+        f"{baseline_summary.historical_rows:,}",
+        f"{baseline_summary.snapshot_rows:,}",
+        baseline_summary.snapshot_schools,
+        f"{baseline_summary.fallback_rows:,}",
+        baseline_summary.fallback_schools,
+    )
     log.info("Candidate rows retained for scoring: %s", f"{len(candidate_df):,}")
 
     roster_df = gm.add_gap_reliability(gm.assign_soft_positions(roster_df))
@@ -132,7 +134,10 @@ def main() -> None:
 
     with conn.cursor() as cur:
         cur.execute(ARCH_SQL)
-        arch_df = pd.DataFrame(cur.fetchall(), columns=["player_id", "season", "archetype_id", "archetype_label"])
+        arch_df = pd.DataFrame(
+            cur.fetchall(),
+            columns=["player_id", "season", "archetype_id", "archetype_label"],
+        )
     roster_df = roster_df.merge(arch_df, on=["player_id", "season"], how="left")
     candidate_df = candidate_df.merge(arch_df, on=["player_id", "season"], how="left")
 
@@ -185,7 +190,11 @@ def main() -> None:
                 f"{upserted:,}",
             )
         flagged = sync_portal_candidate_flags(engine, [season])
-        log.info("Season %d: is_portal_candidate flagged on %d rows", season, flagged.get(season, 0))
+        log.info(
+            "Season %d: is_portal_candidate flagged on %d rows",
+            season,
+            flagged.get(season, 0),
+        )
         log.info(
             "Season %d complete: scored=%s upserted=%s",
             season,
@@ -197,7 +206,9 @@ def main() -> None:
     conn.close()
 
     if args.include_player_ids:
-        overridden = apply_portal_candidate_override(engine, args.include_player_ids, current_season)
+        overridden = apply_portal_candidate_override(
+            engine, args.include_player_ids, current_season
+        )
         log.info(
             "Season %d: is_portal_candidate override applied to %d rows for player_ids %s",
             current_season, overridden, args.include_player_ids,

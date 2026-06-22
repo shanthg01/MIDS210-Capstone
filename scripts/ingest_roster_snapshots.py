@@ -58,7 +58,13 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from portalpoint.db.models import Player, PlayerSeasonStats, RosterSnapshot, RosterSnapshotPlayer, School
+from portalpoint.db.models import (
+    Player,
+    PlayerSeasonStats,
+    RosterSnapshot,
+    RosterSnapshotPlayer,
+    School,
+)
 from portalpoint.db.session import AsyncSessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -67,6 +73,19 @@ log = logging.getLogger(__name__)
 REQUEST_DELAY = 0.5  # seconds between requests — matches existing ingest_barttorvik.py convention
 ROSTERCAST_URL = "https://barttorvik.com/rostercast.php"
 CURRENT_SEASON = 2026
+ROSTERCAST_TEAM_ALIASES = {
+    # DB schools.name -> barttorvik rostercast.php team parameter. The core
+    # barttorvik stats ingest normalizes these names into DB-friendly labels;
+    # rostercast.php still expects the source-site spelling.
+    "Cal State Fullerton": "Cal St. Fullerton",
+    "Cal State Northridge": "Cal St. Northridge",
+    "Florida International": "FIU",
+    "Miami": "Miami FL",
+    "Mississippi State": "Mississippi St.",
+    "Ole Miss": "Mississippi",
+    "St. Mary's": "Saint Mary's",
+    "UConn": "Connecticut",
+}
 
 ROW_RE = re.compile(
     r"<tr>\s*"
@@ -102,9 +121,13 @@ def _make_session() -> requests.Session:
     return session
 
 
+def rostercast_team_name(school_name: str) -> str:
+    return ROSTERCAST_TEAM_ALIASES.get(school_name, school_name)
+
+
 def fetch_roster(session: requests.Session, team: str) -> list[dict]:
     time.sleep(REQUEST_DELAY)
-    resp = session.get(ROSTERCAST_URL, params={"team": team}, timeout=30)
+    resp = session.get(ROSTERCAST_URL, params={"team": rostercast_team_name(team)}, timeout=30)
     resp.raise_for_status()
     return parse_roster(resp.text)
 
@@ -145,7 +168,11 @@ async def _build_roster_index(session, season: int) -> dict[int, list[tuple[int,
     return index
 
 
-def _match_player(raw_name: str, roster: list[tuple[int, str]], threshold: float = 0.82) -> tuple[int | None, float | None, str]:
+def _match_player(
+    raw_name: str,
+    roster: list[tuple[int, str]],
+    threshold: float = 0.82,
+) -> tuple[int | None, float | None, str]:
     if not roster:
         return None, None, "unmatched"
     names = [name for _, name in roster]
@@ -177,7 +204,13 @@ def _chunked(rows: list[dict], size: int = 1000):
         yield rows[i:i + size]
 
 
-async def _upsert_snapshot(session, school_id: int, season: int, snapshot_date: date, source: str) -> int:
+async def _upsert_snapshot(
+    session,
+    school_id: int,
+    season: int,
+    snapshot_date: date,
+    source: str,
+) -> int:
     stmt = pg_insert(RosterSnapshot).values(
         school_id=school_id, season=season, snapshot_date=snapshot_date, source=source,
     )
@@ -232,7 +265,10 @@ async def ingest_team(
         # risk — covers the common "returning player" case). A transfer-in
         # was, by definition, NOT on this school's prior roster, so only the
         # global fallback below can ever find them.
-        player_id, confidence, match_status = _match_player(row["raw_player_name"], this_school_roster)
+        player_id, confidence, match_status = _match_player(
+            row["raw_player_name"],
+            this_school_roster,
+        )
         if player_id is None:
             player_id, confidence, match_status = _match_player(row["raw_player_name"], all_players)
         counts[match_status] = counts.get(match_status, 0) + 1
@@ -265,15 +301,26 @@ async def ingest_team(
         })
 
     log.info(
-        "%s: %d players | matched %d | ambiguous %d | unmatched %d || returning %d | transfer_in %d | new %d",
-        school_name, len(roster), counts.get("matched", 0), counts.get("ambiguous", 0), counts.get("unmatched", 0),
+        "%s: %d players | matched %d | ambiguous %d | unmatched %d || "
+        "returning %d | transfer_in %d | new %d",
+        school_name,
+        len(roster),
+        counts.get("matched", 0),
+        counts.get("ambiguous", 0),
+        counts.get("unmatched", 0),
         status_counts["returning"], status_counts["transfer_in"], status_counts["new"],
     )
 
     if dry_run or not records:
         return {"players": len(records)}
 
-    snapshot_id = await _upsert_snapshot(db_session, school_id, season, snapshot_date, "barttorvik_rostercast")
+    snapshot_id = await _upsert_snapshot(
+        db_session,
+        school_id,
+        season,
+        snapshot_date,
+        "barttorvik_rostercast",
+    )
     for r in records:
         r["snapshot_id"] = snapshot_id
     n = await _bulk_upsert_players(db_session, records)
@@ -302,18 +349,33 @@ async def run(args: argparse.Namespace) -> None:
         total_players = 0
         for school_id, school_name in schools:
             result = await ingest_team(
-                http_session, db_session, school_id, school_name, CURRENT_SEASON,
-                snapshot_date, roster_index, player_to_school, all_players, dry_run=args.dry_run,
+                http_session,
+                db_session,
+                school_id,
+                school_name,
+                CURRENT_SEASON,
+                snapshot_date,
+                roster_index,
+                player_to_school,
+                all_players,
+                dry_run=args.dry_run,
             )
             total_players += result["players"]
 
     verb = "[dry-run] computed" if args.dry_run else "upserted"
-    log.info("%s %d roster_snapshot_players rows across %d schools", verb, total_players, len(schools))
+    log.info(
+        "%s %d roster_snapshot_players rows across %d schools",
+        verb,
+        total_players,
+        len(schools),
+    )
     log.info("done")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Ingest barttorvik rostercast.php roster snapshots into PostgreSQL")
+    p = argparse.ArgumentParser(
+        description="Ingest barttorvik rostercast.php roster snapshots into PostgreSQL"
+    )
     p.add_argument(
         "--schools",
         nargs="+",
