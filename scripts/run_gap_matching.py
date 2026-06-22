@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from portalpoint.modeling import gap_matching as gm
+from portalpoint.modeling.availability import sync_portal_candidate_flags
 from portalpoint.modeling.io import find_repo_root, get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 
@@ -175,6 +176,8 @@ def main() -> None:
                 f"{len(records):,}",
                 f"{upserted:,}",
             )
+        flagged = sync_portal_candidate_flags(engine, [season])
+        log.info("Season %d: is_portal_candidate flagged on %d rows", season, flagged.get(season, 0))
         log.info(
             "Season %d complete: scored=%s upserted=%s",
             season,
