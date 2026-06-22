@@ -109,14 +109,9 @@ def build_roster_state_features(
 
 
 def _fill_unweighted_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """assign_soft_positions' one-hot fallback only fires on an exact
-    PG/SG/SF/PF/C match against players.position — confirmed live that some
-    players (e.g. generic position="G") have neither HE data nor an exact
-    match, so they silently end up with all-zero weights after
-    renormalization and vanish from every weighted sum despite having a real
-    min_pct. Not fixing assign_soft_positions itself (shared, already used by
-    shipped Gap Matching scores) — give those specific rows a uniform 1/5
-    fallback here instead, scoped to this module only."""
+    """Defensive guard: assign_soft_positions should always emit positive
+    weights, but roster-state sums should not silently drop a player if a future
+    position source creates an all-zero row."""
     df = df.copy()
     row_sums = df[POS_COLS].sum(axis=1)
     unweighted = row_sums < 1e-6

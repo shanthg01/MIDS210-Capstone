@@ -46,6 +46,17 @@ query is `gap_matching.filter_departed()`'s `departed_pairs` load, `gap-cos-v2`.
 re-executed end to end and verified to produce identical numbers (1,280,700 rows, same
 per-season mean/std, same MLflow Δ).
 
+**Update (2026-06-22) — `gap-cos-v3`, all-pairs.** Gap Matching no longer scores only
+the pairs Scheme Fit pre-seeded (the "8 dims from player_season_stats" feature space
+above is also stale — see `gap_matching.GAP_FEATURES`, a 14-dim rate/style vector now).
+Scores every eligible player×school×season pair, matching Scheme Fit's own all-pairs
+rewrite the same day (`scheme-cos-v3`). 9,731,957 rows. `filter_departed()`'s departure
+query/scope is unchanged by this — still current-season-only, still `transfers`-sourced.
+See CLAUDE.md Process Improvement TODO #5 and `docs/status/MODEL_STATUS.md` for full
+detail, including two bugs found and fixed at this scale (role_fit/program_fit
+placeholder mismatch; the "preserve existing Scheme Fit context" step not scaling past
+~1.3M rows).
+
 SELECT player_id, from_school_id
 FROM transfers
 WHERE from_school_id IS NOT NULL

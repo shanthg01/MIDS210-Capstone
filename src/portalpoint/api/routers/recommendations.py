@@ -25,6 +25,13 @@ _PLAYER_STUBS = [
 @router.get("", response_model=RecommendationsResponse)
 async def get_recommendations(current_user: CurrentUser, user_id: int = Query(...)):
     # STUB — replace with Model 7 (30% SVD collab filter + 30% content-based + 40% fit scores)
+    #
+    # Contract once M7 ships (PR #33 follow-ups #1/#2/#5): default to
+    # WHERE is_portal_candidate = true on player_team_fit_scores — recommendations
+    # are "available players", not every player ever scored. Gap Matching/Scheme
+    # Fit stay all-pairs (clustering/projections/one-off scenarios need the full
+    # universe); this endpoint is the one that should narrow to it. Add an
+    # admin/debug query param to opt into all players rather than defaulting to it.
     items = [
         RecommendationItem(
             rank=i + 1,

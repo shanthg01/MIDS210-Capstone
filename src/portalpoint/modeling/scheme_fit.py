@@ -18,8 +18,7 @@ from sqlalchemy import Engine
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
 
-TOP_K = 50
-MODEL_VERSION = "scheme-cos-v2"
+MODEL_VERSION = "scheme-cos-v3"
 EXPIRES_DAYS = 30
 
 PLAYER_SHOT_FEATS = ["three_point_rate", "rim_rate", "mid_range_rate"]
@@ -144,13 +143,22 @@ def score_all_seasons(
     team_df: pd.DataFrame,
     seasons: list[int],
     tempo_default: float,
-    top_k: int = TOP_K,
+    school_ids: list[int] | None = None,
     model_version: str = MODEL_VERSION,
 ) -> tuple[list[tuple], dict[int, dict], int]:
-    """Score every player x team pair, season-matched, keep top-k schools per player.
+    """Score every eligible player x team pair, season-matched (scheme-cos-v3,
+    all-pairs — no top-k truncation). Matches Gap Matching's scope so both
+    models share the same player x school universe.
 
-    Returns (records, per_season_stats, n_he_records). Records are deduped to
-    one row per (player_id, school_id, season) before return.
+    ``school_ids``, if given, restricts scoring to that subset of schools for
+    this call — used by scripts/run_scheme_fit.py to chunk the write in
+    school-id batches (the same way run_gap_matching.py does), since the full
+    all-pairs grid (~4.5K players x ~365 schools x season) is too large to
+    hold as one in-memory records list across every season at once.
+
+    Returns (records, per_season_stats, n_he_records). per_season_stats is
+    scoped to whatever (season, school_ids) batch was passed in this call,
+    not the full season — callers chunking by school accumulate across calls.
     """
     expires_at = datetime.now(timezone.utc) + timedelta(days=EXPIRES_DAYS)
     computed_at = datetime.now(timezone.utc)
@@ -161,7 +169,11 @@ def score_all_seasons(
 
     for season in seasons:
         p_s = player_df[player_df["season"] == season].reset_index(drop=True)
-        t_s = team_df[team_df["season"] == season].reset_index(drop=True)
+        t_s = team_df[team_df["season"] == season]
+        if school_ids is not None:
+            allowed_sids = {int(s) for s in school_ids}
+            t_s = t_s[t_s["school_id"].isin(allowed_sids)]
+        t_s = t_s.reset_index(drop=True)
         if len(p_s) == 0 or len(t_s) == 0:
             continue
 
@@ -205,25 +217,31 @@ def score_all_seasons(
         school_ids_s = t_s["school_id"].values
         n_he_s = 0
 
+        # Vectorize the per-feature breakdown + overall_fit matrices up front —
+        # was previously a python-level scheme_breakdown() call per pair
+        # (~1.6M calls/season), the dominant cost once top-k was removed.
+        RANGE_arr = np.array([RANGE_s[f] for f in PLAYER_SHOT_FEATS])
+        diff = np.abs(P_s[:, None, :] - T_s[None, :, :])  # (n_p, n_t, 3)
+        MATCH = np.round(np.maximum(0.0, (1.0 - diff / RANGE_arr[None, None, :]) * 100.0), 1)
+        SIM_r = np.round(SIM_s, 2)
+        PACE_r = np.round(np.where(np.isnan(PACE_s), 50.0, PACE_s), 1)
+        CONST_PART = W_GAP * 50.0 + W_OPP * 50.0 + W_PERS * 50.0
+        OVERALL_r = np.round(W_SCHEME * SIM_r + CONST_PART, 2)
+
         for i, pid in enumerate(player_ids_s):
-            scores = SIM_s[i]
-            top_idx = np.argsort(scores)[::-1][:top_k]
-            p_vec = P_s[i]
             he_p = he_p_idx_s[i]
 
-            for j in top_idx:
-                sf = float(round(scores[j], 2))
+            for j in range(len(school_ids_s)):
+                sfv = float(SIM_r[i, j])
                 sid = int(school_ids_s[j])
                 he_t = he_t_idx_s[j]
 
-                sub = scheme_breakdown(p_vec, T_s[j], RANGE_s, PLAYER_SHOT_FEATS)
-                pm = float(PACE_s[i, j])
                 bd = {
-                    "three_point_match": round(sub["three_point_rate"], 1),
-                    "rim_attack_match": round(sub["rim_rate"], 1),
-                    "pace_match": round(50.0 if np.isnan(pm) else pm, 1),
+                    "three_point_match": float(MATCH[i, j, 0]),
+                    "rim_attack_match": float(MATCH[i, j, 1]),
+                    "pace_match": float(PACE_r[i, j]),
                     "usage_match": 50.0,
-                    "ball_movement_match": round(sub.get("mid_range_rate", 50.0), 1),
+                    "ball_movement_match": float(MATCH[i, j, 2]),
                 }
                 if he_p >= 0 and he_t >= 0 and HE_SIM_s.size > 0:
                     bd["he_scheme_fit"] = float(round(HE_SIM_s[he_p, he_t], 1))
@@ -231,8 +249,8 @@ def score_all_seasons(
 
                 records.append((
                     int(pid), sid, int(season),
-                    round(W_SCHEME * sf + W_GAP * 50.0 + W_OPP * 50.0 + W_PERS * 50.0, 2),
-                    50.0, sf, 50.0, 50.0,
+                    float(OVERALL_r[i, j]),
+                    50.0, sfv, 50.0, 50.0,
                     W_GAP, W_SCHEME, W_OPP, W_PERS,
                     json.dumps({"scheme": bd}),
                     model_version, computed_at, expires_at,
@@ -255,12 +273,31 @@ def score_all_seasons(
     return records_clean, season_stats, n_he_records
 
 
-def upsert_fit_scores(engine: Engine, records: list[tuple], seasons: list[int]) -> tuple[int, int]:
-    return upsert_with_season_replace(
-        engine,
-        UPSERT_SQL,
-        records,
-        delete_sql="DELETE FROM player_team_fit_scores WHERE season = ANY(%s)",
-        delete_params=(list(seasons),),
-        page_size=500,
-    )
+def delete_season_rows(engine: Engine, seasons: list[int]) -> int:
+    """Full-season wipe before a fresh all-pairs Scheme Fit rebuild.
+
+    Call once per run, before any chunked writes — Gap Matching then layers
+    its real gap_match/breakdown onto these fresh rows via its own
+    preserve-existing-context upsert (no delete), so Scheme Fit must run
+    first, exactly once, not per school-chunk.
+    """
+    raw_conn = engine.raw_connection()
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute("DELETE FROM player_team_fit_scores WHERE season = ANY(%s)", (list(seasons),))
+            deleted = cur.rowcount
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return deleted
+
+
+def upsert_fit_scores(engine: Engine, records: list[tuple]) -> int:
+    """Insert one school-chunk's worth of freshly-scored records.
+
+    No delete here — delete_season_rows already cleared the season once
+    up front, and each chunk covers a disjoint set of schools, so no
+    (player_id, school_id, season) pair can collide across chunks.
+    """
+    _, upserted = upsert_with_season_replace(engine, UPSERT_SQL, records, page_size=2000)
+    return upserted

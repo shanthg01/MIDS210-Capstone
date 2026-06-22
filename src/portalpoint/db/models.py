@@ -1009,6 +1009,7 @@ class PlayerTeamFitScore(Base):
     __table_args__ = (
         UniqueConstraint("player_id", "school_id", "season", name="uq_fit_score"),
         Index("ix_fit_scores_overall_fit", "overall_fit"),  # for ranking queries
+        Index("ix_fit_scores_school_season_candidate", "school_id", "season", "is_portal_candidate"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1027,6 +1028,10 @@ class PlayerTeamFitScore(Base):
     weight_program: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
     # Full component breakdown stored as JSONB for API response
     breakdown: Mapped[Optional[dict]] = mapped_column(JSONB)
+    # True if player_id had a matched transfer_portal_events row (Entered/Committed)
+    # for this season — see portalpoint.modeling.availability. Scoring stays
+    # all-pairs; this flag scopes the recommendation-facing query surface.
+    is_portal_candidate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

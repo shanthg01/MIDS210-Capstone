@@ -56,6 +56,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from portalpoint.db.models import Player, PlayerSeasonStats, School, Transfer, TransferPortalEvent
 from portalpoint.db.session import AsyncSessionLocal
+from portalpoint.modeling.availability import sync_portal_candidate_flags
+from portalpoint.modeling.io import get_sync_engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -442,6 +444,13 @@ async def run(args: argparse.Namespace) -> None:
                     "season %d: transfer_portal_events upserted=%d, transfers promoted=%d",
                     season, result["events"], result["promoted"],
                 )
+    if not args.dry_run:
+        # Keep player_team_fit_scores.is_portal_candidate fresh as soon as new
+        # portal events land, instead of waiting for the next gap-matching
+        # rerun or a manual backfill — see portalpoint.modeling.availability.
+        flagged = sync_portal_candidate_flags(get_sync_engine(), args.seasons)
+        for season, count in flagged.items():
+            log.info("season %d: is_portal_candidate flagged on %d existing fit-score rows", season, count)
     log.info("done")
 
 

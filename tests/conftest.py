@@ -3,8 +3,11 @@ from fastapi.testclient import TestClient
 
 from portalpoint.main import app
 
-PLAYER_ID = 101
-SCHOOL_ID = 301
+# Deliberately out of range of real ingested ids (~27k players, ~365 schools)
+# so tests exercise the stub-fallback path predictably instead of colliding
+# with real (and possibly data-incomplete) rows in player_team_fit_scores.
+PLAYER_ID = 9_900_001
+SCHOOL_ID = 9_900_101
 
 _TEST_EMAIL = "player@example.com"
 _TEST_PASS  = "testpass123"
