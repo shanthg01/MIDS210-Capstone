@@ -1032,6 +1032,10 @@ async def _bulk_upsert(session, model, rows: list[dict], conflict_cols: list[str
     few thousand rows; hoopr_player_game_logs is ~180K rows/season."""
     if not rows:
         return 0
+    deduped = {}
+    for row in rows:
+        deduped[tuple(row.get(col) for col in conflict_cols)] = row
+    rows = list(deduped.values())
     exclude = set(conflict_cols) | {"id"}
     for chunk in _chunked(rows, chunk_size):
         stmt = pg_insert(model).values(chunk)
@@ -1205,21 +1209,15 @@ async def ingest_player_game_logs(
 
     records: list[dict] = []
     for row in matched.itertuples():
-        school_id = row.school_id if not (isinstance(row.school_id, float) and pd.isna(row.school_id)) else None
-        opponent_school_id = (
-            row.opponent_school_id
-            if not (isinstance(row.opponent_school_id, float) and pd.isna(row.opponent_school_id))
-            else None
-        )
         records.append({
             "espn_game_id": str(row.game_id),
             "season": season,
             "game_date": _safe_date(row.game_date),
-            "player_id": row.matched_player_id if row.status == "matched" else None,
+            "player_id": _safe_int(row.matched_player_id) if row.status == "matched" else None,
             "espn_athlete_id": row.espn_athlete_id,
             "raw_display_name": row.raw_display_name,
-            "school_id": school_id,
-            "opponent_school_id": opponent_school_id,
+            "school_id": _safe_int(row.school_id),
+            "opponent_school_id": _safe_int(row.opponent_school_id),
             "home_away": getattr(row, "home_away", None),
             "starter": bool(row.starter) if pd.notna(getattr(row, "starter", None)) else None,
             "minutes": _safe_float(getattr(row, "minutes", None)),
