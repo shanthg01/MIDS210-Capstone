@@ -20,7 +20,7 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
-from portalpoint.db.models import PlayerTeamFitScore
+from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore
 
 
 def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
@@ -43,7 +43,7 @@ def stub_program_fit_breakdown(rng: random.Random) -> ProgramFitBreakdown:
     )
 
 
-def stub_fit_score(player_id: int, school_id: int) -> FitScoreResponse:
+def stub_fit_score(player_id: int, school_id: int, is_current_school: bool = False) -> FitScoreResponse:
     rng = random.Random(player_id * 1000 + school_id)
     gap = round(rng.uniform(55.0, 95.0), 1)
     scheme = round(rng.uniform(55.0, 95.0), 1)
@@ -83,10 +83,12 @@ def stub_fit_score(player_id: int, school_id: int) -> FitScoreResponse:
         computed_at=datetime.now(timezone.utc),
         model_version="fit_v1.0-stub",
         cache_hit=False,
+        is_portal_candidate=False,  # no real row to check — pair is outside model scope
+        is_current_school=is_current_school,
     )
 
 
-def real_fit_score(row: PlayerTeamFitScore) -> FitScoreResponse:
+def real_fit_score(row: PlayerTeamFitScore, is_current_school: bool = False) -> FitScoreResponse:
     # role_fit and program_fit are not yet computed (Models 4 + program calculator
     # pending) — their scalar values are the 50.0 stub written by M3/Gap Matching,
     # and their breakdowns are seeded random for plausible-looking UI fields.
@@ -130,6 +132,8 @@ def real_fit_score(row: PlayerTeamFitScore) -> FitScoreResponse:
         computed_at=row.computed_at,
         model_version=row.model_version,
         cache_hit=False,
+        is_portal_candidate=row.is_portal_candidate,
+        is_current_school=is_current_school,
     )
 
 
@@ -178,4 +182,20 @@ async def get_fit_score(
         )
     )
     row = result.scalar_one_or_none()
-    return real_fit_score(row) if row is not None else stub_fit_score(player_id, school_id)
+
+    # Player already on school_id's own roster this season — the gap_match
+    # row can exist and look unintuitive (player counted in their own
+    # school's roster gap calc). Surface it instead of hiding it (PR #33
+    # follow-up #3).
+    current_school_result = await db.execute(
+        select(PlayerSeasonStats.player_id).where(
+            PlayerSeasonStats.player_id == player_id,
+            PlayerSeasonStats.school_id == school_id,
+            PlayerSeasonStats.season == season,
+        )
+    )
+    is_current_school = current_school_result.scalar_one_or_none() is not None
+
+    if row is not None:
+        return real_fit_score(row, is_current_school=is_current_school)
+    return stub_fit_score(player_id, school_id, is_current_school=is_current_school)

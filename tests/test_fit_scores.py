@@ -99,3 +99,12 @@ def test_different_players_produce_different_scores(client, H):
     r1 = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()["overall_fit"]
     r2 = client.get(f"/api/fit-scores?player_id={PLAYER_B}&school_id={SCHOOL_A}", headers=H).json()["overall_fit"]
     assert r1 != r2
+
+
+def test_portal_candidate_and_current_school_flags_present(client, H):
+    # Stub-fallback pair (ids out of range of real data) — both flags should
+    # be present and False: no real row to check availability against, and
+    # the player isn't really on that school's roster.
+    data = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()
+    assert data["is_portal_candidate"] is False
+    assert data["is_current_school"] is False

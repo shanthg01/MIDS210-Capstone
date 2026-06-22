@@ -31,7 +31,7 @@ User-facing fit should eventually expose four components:
 | Component | Status | App implication |
 |---|---|---|
 | Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
-| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v2`, departure-aware for the current season — Issue #26); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
+| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v3`, all-pairs, departure-aware for the current season — Issue #26); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
 | Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. Roster-state data dependency (`roster_snapshots`) now exists — see `ARCHITECTURE_STATUS.md` — model itself still not built. |
 | Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
@@ -54,10 +54,10 @@ Interactive docs: `http://localhost:8000/docs`
 | Router | Status | Notes |
 |---|---|---|
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
-| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. |
+| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, default season 2026. Real `scheme_fit` + `gap_match`; `role_fit`/`program_fit` stubbed at 50.0. Falls back to full stub when no row exists for the triple (pair outside M3/Gap Matching scope). |
-| `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v3`); `role_fit`/`program_fit` stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season) and `is_current_school` (player already on school_id's own roster this season). Falls back to full stub only when the pair predates the all-pairs scoring (e.g. below the 5-game minimum). |
+| `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. Documented contract: default to `is_portal_candidate = true` once real. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub | Blocked on team rating projection model. |
 | `comparison.py` | Stub/partial | Side-by-side comparison shape exists; richer comparison blocked on full fit scores/projections. |

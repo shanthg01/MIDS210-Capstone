@@ -19,7 +19,9 @@ from portalpoint.db.models import (
     PlayerSeasonStats,
     School,
     Transfer,
+    TransferPortalEvent,
 )
+from portalpoint.modeling.availability import AVAILABLE_STATUSES
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -84,7 +86,15 @@ def _build_stats(s: PlayerSeasonStats) -> PlayerStats | None:
 
 # Static path must be registered before /{player_id}
 @router.get("/search", response_model=PlayerSearchResponse)
-async def search_players(db: DbSession, name: str = Query(..., min_length=2)):
+async def search_players(
+    db: DbSession,
+    name: str = Query(..., min_length=2),
+    available_only: bool = Query(
+        default=False,
+        description="Restrict to players with a matched Entered/Committed transfer_portal_events "
+        "row for their latest season — the 'browse the portal' view, not generic player search.",
+    ),
+):
     # Latest season subquery — avoids N+1 and multi-row joins
     latest_season_sq = (
         select(
@@ -108,6 +118,15 @@ async def search_players(db: DbSession, name: str = Query(..., min_length=2)):
         .order_by(Player.full_name)
         .limit(20)
     )
+
+    if available_only:
+        stmt = stmt.join(
+            TransferPortalEvent,
+            (TransferPortalEvent.player_id == Player.id)
+            & (TransferPortalEvent.season == latest_season_sq.c.max_season)
+            & (TransferPortalEvent.match_status == "matched")
+            & (TransferPortalEvent.status.in_(AVAILABLE_STATUSES)),
+        )
 
     rows = (await db.execute(stmt)).all()
     results = [

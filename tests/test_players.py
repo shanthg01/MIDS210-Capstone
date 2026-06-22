@@ -86,6 +86,16 @@ def test_search_requires_name_param(client):
     assert client.get("/api/players/search").status_code == 422
 
 
+def test_search_available_only_param_accepted(client):
+    assert client.get("/api/players/search?name=Marcus&available_only=true").status_code == 200
+
+
+def test_search_available_only_filters_to_subset(client):
+    all_count = client.get("/api/players/search?name=an").json()["total"]
+    available_count = client.get("/api/players/search?name=an&available_only=true").json()["total"]
+    assert available_count <= all_count
+
+
 def test_claim_requires_auth(client):
     assert client.post("/api/players/101/claim", json={"player_id": 101}).status_code == 401
 
