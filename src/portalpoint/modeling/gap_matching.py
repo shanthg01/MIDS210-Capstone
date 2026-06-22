@@ -209,6 +209,34 @@ def add_gap_reliability(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+EXISTING_CONTEXT_SQL = """
+SELECT player_id, school_id, scheme_fit, breakdown
+FROM player_team_fit_scores
+WHERE season = %s AND school_id = ANY(%s) AND scheme_fit > 0
+"""
+
+
+def load_existing_scheme_context(engine, season: int, school_ids: list[int]) -> dict[tuple[int, int, int], dict]:
+    """Scheme Fit context lookup scoped to (season, school_ids) — one school
+    chunk at a time, not the whole table.
+
+    Scheme Fit went all-pairs in scheme-cos-v3 (~9.6M rows). Preloading the
+    entire scheme_fit > 0 table into one python dict up front (the original
+    approach, fine at the old ~1.3M-row top-50 scope) took ~64 minutes at that
+    scale. Querying per chunk instead uses the
+    ix_fit_scores_school_season_candidate (school_id, season, ...) index and
+    only ever holds one chunk's rows (~ players x len(school_ids)) in memory.
+    """
+    raw_conn = engine.raw_connection()
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(EXISTING_CONTEXT_SQL, (season, list(school_ids)))
+            rows = cur.fetchall()
+    finally:
+        raw_conn.close()
+    return {(int(pid), int(sid), season): {"scheme_fit": sfv, "breakdown": bd} for pid, sid, sfv, bd in rows}
+
+
 def filter_departed(df: pd.DataFrame, departed_pairs: set[tuple[int, int]], current_season: int) -> pd.DataFrame:
     """gap-cos-v2: exclude (player_id, school_id) pairs that have since
     transferred out of school_id, for current_season only — historical

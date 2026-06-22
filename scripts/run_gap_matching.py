@@ -82,14 +82,6 @@ WHERE from_school_id IS NOT NULL
   AND season = %s
 """
 
-EXISTING_SQL = """
-SELECT player_id, school_id, season, scheme_fit, breakdown
-FROM player_team_fit_scores
-WHERE season = ANY(%s)
-  AND scheme_fit > 0
-"""
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Non-interactive rerun of Gap Matching")
     p.add_argument(
@@ -151,12 +143,6 @@ def main() -> None:
     scaler = gm.fit_gap_scaler(candidate_df)
     gap_scaled = gm.prescale_gap_tensors(gap_data, scaler, SEASONS_IN_DATA)
 
-    with conn.cursor() as cur:
-        cur.execute(EXISTING_SQL, (SEASONS_IN_DATA,))
-        existing_rows = cur.fetchall()
-    existing = {(r[0], r[1], r[2]): {"scheme_fit": r[3], "breakdown": r[4]} for r in existing_rows}
-    log.info("Existing Scheme Fit context rows loaded: %s", f"{len(existing):,}")
-
     total_records = 0
     total_upserted = 0
     gap_sum = 0.0
@@ -168,6 +154,7 @@ def main() -> None:
         season_upserted = 0
         for start in range(0, len(school_ids), SCHOOL_CHUNK_SIZE):
             school_batch = school_ids[start:start + SCHOOL_CHUNK_SIZE]
+            existing = gm.load_existing_scheme_context(engine, season, school_batch)
             records = gm.score_gap_matches(
                 candidate_df,
                 scaler,
