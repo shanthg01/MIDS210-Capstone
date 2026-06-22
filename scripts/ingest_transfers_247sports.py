@@ -50,7 +50,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-import requests
+from curl_cffi import requests
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -126,13 +126,19 @@ def _parse_date(val: str | None) -> date | None:
 # ---------------------------------------------------------------------------
 
 def fetch_page(season: int, page: int) -> dict:
+    """curl_cffi (libcurl/BoringSSL TLS stack, impersonate="chrome") instead of
+    plain requests/urllib3 — confirmed live that requests' default TLS
+    fingerprint gets 403'd by 247sports' WAF on some networks even with
+    identical headers/IP/delay, while curl (and curl_cffi, which mimics
+    curl's handshake) passes. requests' fingerprint is widely blocklisted
+    since so many scrapers default to it."""
     url = BASE_URL.format(season=season)
     log.debug("fetching season=%d page=%d", season, page)
     time.sleep(REQUEST_DELAY)
     resp = requests.get(
         url,
         params={"sport": "basketball", "page": page},
-        headers={"User-Agent": "Mozilla/5.0"},
+        impersonate="chrome",
         timeout=30,
     )
     resp.raise_for_status()
