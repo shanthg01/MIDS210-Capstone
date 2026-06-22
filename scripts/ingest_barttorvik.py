@@ -277,6 +277,38 @@ def _parse_height(ht) -> int | None:
     return _safe_int(s)
 
 
+def _infer_position(role, height_inches: int | None) -> str:
+    """Map BartTorvik's role label to the canonical player.position field.
+
+    BartTorvik does not expose a plain PG/SG/SF/PF/C column in getadvstats.php,
+    but its role labels are position-informative enough for display/defaults.
+    """
+    role_norm = str(role or "").strip().lower()
+    role_map = {
+        "pure pg": "PG",
+        "scoring pg": "PG",
+        "combo g": "SG",
+        "wing g": "SG",
+        "wing f": "SF",
+        "stretch 4": "PF",
+        "pf/c": "C",
+        "c": "C",
+    }
+    if role_norm in role_map:
+        return role_map[role_norm]
+    if height_inches is None:
+        return "SG"
+    if height_inches <= 73:
+        return "PG"
+    if height_inches <= 76:
+        return "SG"
+    if height_inches <= 79:
+        return "SF"
+    if height_inches <= 82:
+        return "PF"
+    return "C"
+
+
 def _shot_distribution(row: dict) -> tuple[float | None, float | None, float | None]:
     """Compute (three_point_rate, rim_rate, mid_range_rate) from attempt counts."""
     fg2a = _safe_float(row.get("fg2a")) or 0.0
@@ -464,10 +496,11 @@ async def ingest_players(
         name = str(r.get("player") or "").strip()
         if not name or not bart_pid:
             continue
+        height_inches = _parse_height(r.get("ht"))
         rows.append({
             "full_name": name,
-            "position": "G",  # barttorvik doesn't give position directly; update from cbbpy later
-            "height_inches": _parse_height(r.get("ht")),
+            "position": _infer_position(r.get("role"), height_inches),
+            "height_inches": height_inches,
             "class_year": CLASS_YEAR_MAP.get(str(r.get("yr") or "").strip(), "freshman"),
             "hometown": str(r.get("hometown") or "").strip() or None,
             "barttorvik_id": bart_pid,

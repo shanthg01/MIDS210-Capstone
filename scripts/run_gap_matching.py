@@ -1,9 +1,9 @@
 """
 scripts/run_gap_matching.py
 
-Non-interactive rerun of Gap Matching. Scores exactly the (player_id,
-school_id, season) pairs Scheme Fit already wrote to player_team_fit_scores —
-no new pairs added. Requires scripts/run_scheme_fit.py to have run first.
+Non-interactive rerun of Gap Matching. Scores every eligible player against
+every school with roster gap vectors, while preserving Scheme Fit context for
+rows that already have it.
 
 Usage:
   uv run python scripts/run_gap_matching.py
@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 SEASONS_IN_DATA = [2021, 2022, 2023, 2024, 2025, 2026]
+SCHOOL_CHUNK_SIZE = 50
 
 LOAD_SQL = f"""
 SELECT
@@ -36,15 +37,24 @@ SELECT
     pss.school_id,
     pss.season,
     pss.games_played,
+    pss.min_pct,
     p.position,
-    pss.points_per_game,
-    pss.rebounds_per_game,
-    pss.assists_per_game,
-    pss.steals_per_game,
-    pss.blocks_per_game,
+    p.height_inches,
+    pss.barttorvik_role,
     pss.true_shooting_pct,
     pss.usage_rate,
+    pss.assist_rate,
+    pss.tov_pct,
+    pss.off_reb_pct,
+    pss.def_reb_pct,
+    pss.block_pct,
+    pss.steal_pct,
+    pss.free_throw_rate,
     pss.three_point_rate,
+    pss.rim_rate,
+    pss.mid_range_rate,
+    pss.fg3_pct,
+    pss.rim_pct,
     hep.pos_confidence_pg,
     hep.pos_confidence_sg,
     hep.pos_confidence_sf,
@@ -55,14 +65,6 @@ JOIN players p ON p.id = pss.player_id
 LEFT JOIN hoop_explorer_player_stats hep
     ON hep.player_id = pss.player_id AND hep.season = pss.season
 WHERE pss.games_played           >= {gm.MIN_GAMES}
-  AND pss.points_per_game        IS NOT NULL
-  AND pss.rebounds_per_game      IS NOT NULL
-  AND pss.assists_per_game       IS NOT NULL
-  AND pss.steals_per_game        IS NOT NULL
-  AND pss.blocks_per_game        IS NOT NULL
-  AND pss.true_shooting_pct      IS NOT NULL
-  AND pss.usage_rate             IS NOT NULL
-  AND pss.three_point_rate       IS NOT NULL
 """
 
 ARCH_SQL = "SELECT player_id, season, archetype_id, archetype_label FROM player_archetypes"
@@ -81,6 +83,7 @@ EXISTING_SQL = """
 SELECT player_id, school_id, season, scheme_fit, breakdown
 FROM player_team_fit_scores
 WHERE season = ANY(%s)
+  AND scheme_fit > 0
 """
 
 
@@ -98,45 +101,94 @@ def main() -> None:
         .reset_index(drop=True)
     )
     log.info("Loaded %s player-season rows", f"{len(df):,}")
+    df = gm.prepare_gap_features(df)
 
     current_season = max(SEASONS_IN_DATA)
     with conn.cursor() as cur:
         cur.execute(DEPARTED_SQL, (current_season,))
         departed_pairs = {(r[0], r[1]) for r in cur.fetchall()}
     log.info("Departed pairs loaded for season %d: %s", current_season, f"{len(departed_pairs):,}")
-    df = gm.filter_departed(df, departed_pairs, current_season)
-    log.info("Rows after departure filter: %s", f"{len(df):,}")
+    roster_df = gm.filter_departed(df, departed_pairs, current_season)
+    candidate_df = df.copy()
+    log.info("Roster rows after departure filter: %s", f"{len(roster_df):,}")
+    log.info("Candidate rows retained for scoring: %s", f"{len(candidate_df):,}")
 
-    df = gm.assign_soft_positions(df)
+    roster_df = gm.add_gap_reliability(gm.assign_soft_positions(roster_df))
+    candidate_df = gm.add_gap_reliability(gm.assign_soft_positions(candidate_df))
 
     with conn.cursor() as cur:
         cur.execute(ARCH_SQL)
         arch_df = pd.DataFrame(cur.fetchall(), columns=["player_id", "season", "archetype_id", "archetype_label"])
-    df = df.merge(arch_df, on=["player_id", "season"], how="left")
+    roster_df = roster_df.merge(arch_df, on=["player_id", "season"], how="left")
+    candidate_df = candidate_df.merge(arch_df, on=["player_id", "season"], how="left")
 
-    benchmarks = gm.build_league_benchmarks(df, SEASONS_IN_DATA)
-    gap_data = gm.build_roster_gap_vectors(df, benchmarks, SEASONS_IN_DATA)
-    arch_deficit = gm.build_archetype_deficits(df, SEASONS_IN_DATA)
+    benchmarks = gm.build_league_benchmarks(roster_df, SEASONS_IN_DATA)
+    gap_data = gm.build_roster_gap_vectors(roster_df, benchmarks, SEASONS_IN_DATA)
+    arch_deficit = gm.build_archetype_deficits(roster_df, SEASONS_IN_DATA)
 
-    scaler = gm.fit_gap_scaler(df)
+    scaler = gm.fit_gap_scaler(candidate_df)
     gap_scaled = gm.prescale_gap_tensors(gap_data, scaler, SEASONS_IN_DATA)
 
     with conn.cursor() as cur:
         cur.execute(EXISTING_SQL, (SEASONS_IN_DATA,))
         existing_rows = cur.fetchall()
     existing = {(r[0], r[1], r[2]): {"scheme_fit": r[3], "breakdown": r[4]} for r in existing_rows}
-    log.info("Existing M3 pairs loaded: %s", f"{len(existing):,}")
+    log.info("Existing Scheme Fit context rows loaded: %s", f"{len(existing):,}")
 
-    records = gm.score_gap_matches(df, scaler, gap_scaled, gap_data, arch_deficit, existing, SEASONS_IN_DATA)
-    log.info("Total records to upsert: %s", f"{len(records):,}")
-
+    total_records = 0
+    total_upserted = 0
+    gap_sum = 0.0
+    gap_sq_sum = 0.0
     conn.rollback()
-    upserted = gm.upsert_gap_scores(engine, records)
-    log.info("Upserted %s rows to player_team_fit_scores", f"{upserted:,}")
+    for season in SEASONS_IN_DATA:
+        school_ids = sorted(gap_scaled[season].keys())
+        season_records = 0
+        season_upserted = 0
+        for start in range(0, len(school_ids), SCHOOL_CHUNK_SIZE):
+            school_batch = school_ids[start:start + SCHOOL_CHUNK_SIZE]
+            records = gm.score_gap_matches(
+                candidate_df,
+                scaler,
+                gap_scaled,
+                gap_data,
+                arch_deficit,
+                existing,
+                [season],
+                school_ids=school_batch,
+            )
+            if not records:
+                continue
+            gap_values = np.fromiter((r[3] for r in records), dtype=np.float64, count=len(records))
+            total_records += len(records)
+            season_records += len(records)
+            gap_sum += float(gap_values.sum())
+            gap_sq_sum += float(np.square(gap_values).sum())
+            upserted = gm.upsert_gap_scores(engine, records)
+            total_upserted += upserted
+            season_upserted += upserted
+            log.info(
+                "Season %d schools %d-%d/%d: scored=%s upserted=%s",
+                season,
+                start + 1,
+                min(start + len(school_batch), len(school_ids)),
+                len(school_ids),
+                f"{len(records):,}",
+                f"{upserted:,}",
+            )
+        log.info(
+            "Season %d complete: scored=%s upserted=%s",
+            season,
+            f"{season_records:,}",
+            f"{season_upserted:,}",
+        )
+    log.info("Total records scored: %s", f"{total_records:,}")
+    log.info("Total rows upserted to player_team_fit_scores: %s", f"{total_upserted:,}")
     conn.close()
 
-    gap_values = np.array([r[3] for r in records], dtype=np.float64)
-    mean_gap, std_gap = float(gap_values.mean()), float(gap_values.std())
+    if total_records == 0:
+        raise RuntimeError("No gap matching records were scored")
+    mean_gap = gap_sum / total_records
+    std_gap = float(np.sqrt(max(gap_sq_sum / total_records - mean_gap * mean_gap, 0.0)))
 
     client = setup_mlflow("gap-matching")
     import mlflow
@@ -163,7 +215,8 @@ def main() -> None:
         mlflow.log_metrics({
             "mean_gap_match": mean_gap,
             "std_gap_match": std_gap,
-            "n_records_written": float(len(records)),
+            "n_records_scored": float(total_records),
+            "n_records_written": float(total_upserted),
         })
         mlflow.pyfunc.log_model(artifact_path="gap_match_model", python_model=GapMatchPyfunc())
         run_id = run.info.run_id

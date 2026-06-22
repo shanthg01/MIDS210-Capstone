@@ -54,7 +54,7 @@ PLAYER_POOL_SQL = """
 SELECT
     pss.player_id, pss.school_id, pss.season, pss.games_played, pss.min_pct,
     pss.usage_rate, pss.points_per_game, pss.per,
-    p.position,
+    p.position, p.height_inches, pss.barttorvik_role,
     hep.pos_confidence_pg, hep.pos_confidence_sg, hep.pos_confidence_sf,
     hep.pos_confidence_pf, hep.pos_confidence_c,
     pa.archetype_label
