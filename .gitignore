@@ -3,8 +3,61 @@ CLAUDE.md
 
 # Data files (large, downloaded locally)
 data/
+.torvik_cache/
+
+# Jupyter
+.ipynb_checkpoints/
 
 # Python
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# uv
+.python-version
+uv.lock
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# MLflow (added when ML pipeline is wired)
+mlruns/
+mlartifacts/
+**/mlruns.db
+**/mlruns_backup.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large data files (S3 is source of truth; do not commit raw PBP / feature parquets)
+data/hoopr/
+notebooks/data/
+data/features/
+data/models/*.pkl
