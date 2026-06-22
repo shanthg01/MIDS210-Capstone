@@ -130,17 +130,17 @@ Watch-outs:
 
 - Default JWT expiry is one hour; set `JWT_EXPIRY_SECONDS=86400` locally if helpful.
 - Any page that assumes complete fit scores must communicate partial/stub state until all components are real.
-- `fit_scores.py` hardcodes `CURRENT_SEASON = 2026` — no season config exists yet. Add a `season` query param override if the frontend needs historical seasons.
-- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v2`.
+- `fit_scores.py` resolves current season dynamically (`fit_score_service.get_current_season()` — max season in `player_team_fit_scores`, Redis-cached); `season` query param overrides it for historical seasons.
+- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v3`.
 
 ---
 
 ## Tests
 
-Current known state from the prior tracker:
+Current state (2026-06-22):
 
 ```text
-111 tests passing across 8 modules
+115 tests passing across 8 modules
 ```
 
 Test areas:

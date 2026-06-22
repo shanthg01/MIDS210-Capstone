@@ -114,8 +114,8 @@ Hard dependencies must exist before the downstream model can run meaningfully.
 | M1 Player Clustering | Feature parquet with player features |
 | M2 Team System Clustering | Feature parquet with team style vectors |
 | M3 Scheme Fit | Player features, team style vectors, current team/player IDs |
-| Gap Matching baseline | Player season stats, positions or HE soft positions, fit-score pairs from M3 |
-| Gap Matching v2 | ✅ Done (2026-06-21) — `gap-cos-v2` filters confirmed portal departures (`transfers`, season 2026 populated, full 2020-2026 backfill pending) out of a school's own roster pool, current season only. `roster_state_features` (Issue #17 item 6, ✅ built) covers the broader "anyone not returning, any reason" case but isn't wired into Gap Matching itself — narrower scope was sufficient for v2. |
+| Gap Matching baseline | Player season stats, positions or HE soft positions. **No longer depends on M3's fit-score pairs** — `gap-cos-v3` (2026-06-22) scores every eligible player×school×season pair independently, same all-pairs scope Scheme Fit moved to the same day. Still must run *after* Scheme Fit, though: Scheme Fit's full-season delete+rebuild would wipe Gap Matching's output if run second. |
+| Gap Matching v2 | ✅ Done (2026-06-21) — `gap-cos-v2` filters confirmed portal departures (`transfers`, season 2026 populated, full 2020-2026 backfill pending) out of a school's own roster pool, current season only. `roster_state_features` (Issue #17 item 6, ✅ built) covers the broader "anyone not returning, any reason" case but isn't wired into Gap Matching itself — narrower scope was sufficient for v2. Departure-filter scope unchanged by the v3 all-pairs rewrite. |
 | Player Projection | Player game logs (✅ `hoopr_player_game_logs` populated for 2026) or season-level fallback; player ID joins; opponent/team context for full scope |
 | Role Fit / Playing Time | Roster snapshots (✅ populated, one school verified), transfers/departures (✅ populated), player projections (not yet built), roster-state features (✅ built — `roster_state_features`, Issue #17 item 6) |
 | Neutral Player Projection | Player game logs or season-level fallback; player ID joins; opponent/team context for full scope |
@@ -175,7 +175,7 @@ same local-first pattern.
 | `player_archetypes` | Real, accepted for MVP | M1 |
 | `team_system_profiles` | Real, accepted for MVP | M2 |
 | `player_team_fit_scores.scheme_fit` | Real | M3 |
-| `player_team_fit_scores.gap_match` | Real — `gap-cos-v2` (departure-aware for 2026, narrow scope: confirmed portal transfers only) | Gap Matching |
+| `player_team_fit_scores.gap_match` | Real — `gap-cos-v3`, all-pairs (departure-aware for 2026, narrow scope: confirmed portal transfers only) | Gap Matching |
 | `transfers` / `transfer_portal_events` | Real for season 2026 (1,251 promoted); 2020-2026 backfill pending | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, one school verified (Duke); full ~365-school run pending | Issue #17 item 4 |
 | `roster_state_features` | Real, one school verified (Duke); full ~365-school run pending (depends on roster_snapshots above) | Issue #17 item 6 |
@@ -283,6 +283,7 @@ Who is the player?
 | #26 Departure-Aware Gap Matching v2 | ✅ Done (2026-06-21) — `gap-cos-v2`, `gap_matching.filter_departed()`, scoped to confirmed portal transfers (`transfers`), current season only |
 | #27 Model Pipeline Orchestration And Runbook | Turns this dependency graph into runnable local process |
 | #28 API / Frontend Integration For Real Model Outputs | Replaces stubs with real model outputs in product surfaces |
+| PR #33 Gap Matching Coverage + Portal Scope | ✅ Done (2026-06-22) — Gap Matching and Scheme Fit both moved to all-pairs (`gap-cos-v3`/`scheme-cos-v3`); `player_team_fit_scores.is_portal_candidate` added as the recommendation-surface scope flag (kept in sync by `portalpoint.modeling.availability`); `fit_scores.py`/`players.py` API surface updated accordingly — see CLAUDE.md Process Improvement TODO #5 |
 
 ## Notes For Future Model Work
 

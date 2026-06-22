@@ -150,7 +150,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ SIMILARITY SCORING: Cosine Similarity                                   │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ • Player style vector [3PT rate, rim rate, mid rate] (3-dim base; scheme-cos-v2)            │
+│ • Player style vector [3PT rate, rim rate, mid rate] (3-dim base; scheme-cos-v3, all-pairs) │
 │ • Team system vector [team_three_rate, team_rim_rate, team_mid_rate] (same 3-dim)    │
 │ • Cosine similarity → convert to 0-100 scale                            │
 │ • USER INPUT: Player preferences adjust weighting                       │
