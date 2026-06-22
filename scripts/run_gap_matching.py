@@ -7,9 +7,11 @@ rows that already have it.
 
 Usage:
   uv run python scripts/run_gap_matching.py
+  uv run python scripts/run_gap_matching.py --include-player-ids 123 456
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
@@ -17,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from portalpoint.modeling import gap_matching as gm
-from portalpoint.modeling.availability import sync_portal_candidate_flags
+from portalpoint.modeling.availability import apply_portal_candidate_override, sync_portal_candidate_flags
 from portalpoint.modeling.io import find_repo_root, get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 
@@ -88,7 +90,26 @@ WHERE season = ANY(%s)
 """
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Non-interactive rerun of Gap Matching")
+    p.add_argument(
+        "--include-player-ids",
+        type=int,
+        nargs="+",
+        default=[],
+        metavar="PLAYER_ID",
+        help=(
+            "Force is_portal_candidate=true for these player_ids in the current "
+            "season's fit-score rows, regardless of real transfer_portal_events "
+            "status — for one-off 'what if X enters the portal' scenario runs. "
+            "Does not write to transfer_portal_events."
+        ),
+    )
+    return p.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     engine = get_sync_engine()
     conn = engine.raw_connection()
 
@@ -187,6 +208,13 @@ def main() -> None:
     log.info("Total records scored: %s", f"{total_records:,}")
     log.info("Total rows upserted to player_team_fit_scores: %s", f"{total_upserted:,}")
     conn.close()
+
+    if args.include_player_ids:
+        overridden = apply_portal_candidate_override(engine, args.include_player_ids, current_season)
+        log.info(
+            "Season %d: is_portal_candidate override applied to %d rows for player_ids %s",
+            current_season, overridden, args.include_player_ids,
+        )
 
     if total_records == 0:
         raise RuntimeError("No gap matching records were scored")

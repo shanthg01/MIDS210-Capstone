@@ -428,8 +428,12 @@ def upsert_gap_scores(engine, records: list[tuple], expires_days: int = 7) -> in
     """Upsert gap scores without replacing season rows.
 
     Existing Scheme Fit rows keep their scheme_fit/role_fit/program_fit fields;
-    new all-pairs rows are inserted with those component scores at zero until
-    the corresponding models populate them.
+    new all-pairs rows are inserted with scheme_fit at zero (no Scheme Fit data
+    for that pair) but role_fit/program_fit at the 50.0 stub baseline — matching
+    the W_ROLE*50.0 + W_PROG*50.0 already baked into overall_fit by
+    score_gap_matches, and the same stub convention scheme_fit_scorer.ipynb
+    (M3) uses. Storing 0.0 here instead would silently disagree with the
+    overall_fit value computed for the same row.
     """
     now_ts = datetime.now(timezone.utc).isoformat()
     expires = (datetime.now(timezone.utc) + timedelta(days=expires_days)).isoformat()
@@ -438,7 +442,7 @@ def upsert_gap_scores(engine, records: list[tuple], expires_days: int = 7) -> in
         (
             int(pid), int(sid), int(season),
             float(gap_match), float(overall_fit),
-            0.0, 0.0, 0.0,
+            0.0, 50.0, 50.0,
             W_GAP, W_SCHEME, W_ROLE, W_PROG,
             breakdown_json,
             MODEL_VERSION,

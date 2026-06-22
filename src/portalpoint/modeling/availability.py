@@ -75,3 +75,32 @@ def sync_portal_candidate_flags(engine: Engine, seasons: list[int]) -> dict[int,
     finally:
         raw_conn.close()
     return updated
+
+
+OVERRIDE_FLAG_SQL = """
+UPDATE player_team_fit_scores
+SET is_portal_candidate = true
+WHERE season = %s
+  AND player_id = ANY(%s)
+  AND is_portal_candidate = false
+"""
+
+
+def apply_portal_candidate_override(engine: Engine, player_ids: list[int], season: int) -> int:
+    """Force is_portal_candidate=true for specific player_ids in `season`,
+    regardless of real transfer_portal_events status — for one-off "what if
+    X enters the portal" scenario runs (PR #33 comment thread). Doesn't touch
+    transfer_portal_events, so the real availability source of truth is
+    untouched; only this run's recommendation surface is widened.
+    """
+    if not player_ids:
+        return 0
+    raw_conn = engine.raw_connection()
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(OVERRIDE_FLAG_SQL, (season, list(player_ids)))
+            updated = cur.rowcount
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return updated
