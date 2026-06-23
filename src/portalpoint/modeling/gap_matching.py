@@ -237,21 +237,6 @@ def load_existing_scheme_context(engine, season: int, school_ids: list[int]) -> 
     return {(int(pid), int(sid), season): {"scheme_fit": sfv, "breakdown": bd} for pid, sid, sfv, bd in rows}
 
 
-def filter_departed(df: pd.DataFrame, departed_pairs: set[tuple[int, int]], current_season: int) -> pd.DataFrame:
-    """gap-cos-v2: exclude (player_id, school_id) pairs that have since
-    transferred out of school_id, for current_season only — historical
-    seasons' rosters are already correct as-is; departure-awareness only
-    matters for "who's actually on the roster right now". departed_pairs
-    comes from `transfers` (Issue #17 items 3-4 — previously empty, now real)."""
-    if not departed_pairs:
-        return df
-    is_current = df["season"] == current_season
-    departed_mask = is_current & df.apply(
-        lambda r: (int(r["player_id"]), int(r["school_id"])) in departed_pairs, axis=1
-    )
-    return df[~departed_mask].reset_index(drop=True)
-
-
 def build_league_benchmarks(df: pd.DataFrame, seasons: list[int]) -> dict[int, np.ndarray]:
     """benchmark[season] = (5, 8) soft-weighted mean stat vector per position."""
     benchmarks = {}

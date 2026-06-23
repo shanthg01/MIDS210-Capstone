@@ -129,6 +129,9 @@ def main() -> None:
     )
     log.info("Candidate rows retained for scoring: %s", f"{len(candidate_df):,}")
 
+    baseline_written = rb.write_roster_baseline_members(engine, roster_df, SEASONS_IN_DATA)
+    log.info("roster_baseline_members upserted: %s", f"{baseline_written:,}")
+
     roster_df = gm.add_gap_reliability(gm.assign_soft_positions(roster_df))
     candidate_df = gm.add_gap_reliability(gm.assign_soft_positions(candidate_df))
 
