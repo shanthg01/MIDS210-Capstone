@@ -152,7 +152,7 @@ same local-first pattern.
 2.  Ingest BartTorvik
 3.  Ingest Hoop Explorer
 4.  Ingest hoopR season aggregates
-5.  Ingest remaining data: game logs, game context (✅ done, 2026), transfers (✅ done, 2026 — 2020-2026 backfill pending), rosters (✅ table populated, one school verified — full ~365-school run pending)
+5.  Ingest remaining data: game logs, game context (✅ done, 2026 only — 2020-2025 backfill still pending), transfers (✅ done, 2021-2026 — 2020 scraped but 0 matched, needs matcher fix), rosters (✅ done, 357 of ~365 D1 schools)
     — see ARCHITECTURE_STATUS.md "Ingest And Feature Pipeline" for the exact commands, including the full transfer backfill and full roster run
 6.  Generate feature parquet
 7.  Run M1 Player Clustering
@@ -177,9 +177,9 @@ same local-first pattern.
 | `team_system_profiles` | Real, accepted for MVP | M2 |
 | `player_team_fit_scores.scheme_fit` | Real | M3 |
 | `player_team_fit_scores.gap_match` | Real code path — `gap-cos-v4`, all-pairs with shared roster baseline (stored DB rows need rerun after merge) | Gap Matching |
-| `transfers` / `transfer_portal_events` | Real for season 2026 (1,251 promoted); 2020-2026 backfill pending | Issue #17 item 3 |
-| `roster_snapshots` / `roster_snapshot_players` | Real, one school verified (Duke); full ~365-school run pending | Issue #17 item 4 |
-| `roster_state_features` | Real, one school verified (Duke); full ~365-school run pending (depends on roster_snapshots above) | Issue #17 item 6 |
+| `transfers` / `transfer_portal_events` | Real for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped, 0 matched — matcher bug, not a backfill gap | Issue #17 item 3 |
+| `roster_snapshots` / `roster_snapshot_players` | Real, 357 distinct schools (target ~365) | Issue #17 item 4 |
+| `roster_state_features` | Depends on roster_snapshots above — re-run against the full 357-school set if last built against a narrower subset | Issue #17 item 6 |
 | `player_team_fit_scores.role_fit` | Placeholder `50.0` | Role Fit |
 | `player_team_fit_scores.program_fit` | Placeholder `50.0` | Program Fit |
 | `player_team_fit_scores.overall_fit` | Partial; compressed until all components are real | Fit Score Calibration |
@@ -272,7 +272,7 @@ Who is the player?
 
 | Issue | Dependency role |
 |---|---|
-| #17 Remaining Data Loading | Removes source-data blockers for all downstream models. Items 1-2 (hoopR game logs/context), 3-4 (transfers, roster snapshots), and 6 (roster-state features) done for 2026/one school; full backfills documented but not run. Item 5 (derived `player_team_seasons`) dropped on review — mostly duplicated `player_season_stats`, and its named use cases (inferring transfers/roster history) are now redundant since items 3-4 give real data instead. Items 7-8 (projection tables, Program Fit proxy) reassigned to #18/#25/#20. |
+| #17 Remaining Data Loading | Removes source-data blockers for all downstream models. Items 3-4 (transfers 2021-2026, roster snapshots 357 schools) and 6 (roster-state features) done. Item 1-2 (hoopR game logs/context) done for 2026 only — 2020-2025 backfill is the one real remaining gap, blocking full game-level Player Projection (see `player_projection_state_space_plan.md` §17). Item 5 (derived `player_team_seasons`) dropped on review — mostly duplicated `player_season_stats`, and its named use cases (inferring transfers/roster history) are now redundant since items 3-4 give real data instead. Items 7-8 (projection tables, Program Fit proxy) reassigned to #18/#25/#20. |
 | #18 Player Projection Model | Foundational player-talent model |
 | #19 Team Rating Projection Model | Roster counterfactual model |
 | #20 Program Fit Model Decision | Decides MVP program-fit feasibility and proxy contract |

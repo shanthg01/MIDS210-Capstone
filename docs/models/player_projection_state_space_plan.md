@@ -188,6 +188,8 @@ The implementation should have a dedicated data-preparation layer, similar in sp
 
 Current repo reality (updated 2026-06-21): game-level player/team data and transfer events now exist in Postgres for season 2026 (Issue #17 items 1-3); full multi-season backfills are documented (see `ARCHITECTURE_STATUS.md`) but not yet run. Season-level data should not be the target modeling grain; it should only support priors, bootstrapping, and temporary fallback checks.
 
+**This is a hard blocker for the full game-level state-space path, not just a fallback nicety.** The state evolution equation in §7 fits `rho` (season-to-season persistence) and the class-year development curve from cross-season movement in latent skill. With only one season (2026) of game-level data, there is no cross-season game-level signal to fit either term against — every player has exactly one season of observations. Concretely: **`scripts/ingest_hoopr.py --game-logs --skip-season-stats` must be run for seasons 2020-2025 before Cell 5 (state-space fit) can do anything beyond a single-season smoother.** Treat this backfill as step 0 of the implementation plan (§17), not as an optional data-quality nice-to-have discovered during the Cell 1 coverage audit.
+
 ### hoopR feasibility check
 
 hoopR appears to support the needed game-level data:
@@ -199,30 +201,27 @@ Remaining validation task: run a local coverage audit to confirm that hoopR athl
 
 ### Hoop Explorer impact labels
 
-Hoop Explorer should be treated as the first value-label source, not merely an enrichment source. The current repo sample already includes player-level impact fields:
+Hoop Explorer should be treated as the first value-label source, not merely an enrichment source. This section previously listed a 9-field RAPM set assumed from the local sample CSV (`data/hoop_explorer/all_player_stats_high_tier.csv`). That CSV is stale — `hoop_explorer_player_stats` is already ingested in Postgres (~16,750 rows, 6 seasons, all D1 tiers; see `ingest_hoop_explorer.py --all-seasons` in ARCHITECTURE_STATUS.md) and its actual impact columns (`src/portalpoint/db/models.py` `HoopExplorerPlayerStats`) are:
 
 ```text
+adj_rtg_margin       # on-court net efficiency, unadjusted
+adj_rapm_margin      # RAPM-isolated total impact
 off_adj_rapm
 def_adj_rapm
-adj_rapm_margin
-off_adj_rapm_prod
-def_adj_prod_rapm
-adj_rapm_prod_margin
-off_adj_rapm_pred
-def_adj_rapm_pred
-adj_rapm_margin_pred
+adj_rapm_margin_pred # projection to NCAAT-bound high-major context, total only — no off/def split
 ```
 
-The current file in `data/hoop_explorer/all_player_stats_high_tier.csv` is only the local sample. The modeling plan should assume we can add broader Hoop Explorer exports across more seasons/tiers where available.
+There is no `off_adj_rapm_pred`/`def_adj_rapm_pred`/`*_prod` split in the real schema — those were aspirational column names that never got built. Do not write code against them.
 
-Recommended value-label hierarchy:
+Recommended value-label hierarchy (corrected):
 
 | Priority | Label source | Use |
 |---|---|---|
-| 1 | Hoop Explorer adjusted RAPM | Primary MVP offensive, defensive, and total impact target |
-| 2 | Hoop Explorer adjusted rating / production | Secondary target and robustness check |
-| 3 | PortalPoint-owned RAPM from hoopR PBP + personnel | Long-term owned possession-impact label |
-| 4 | BartTorvik/hoopR box-value proxy | Fallback when impact labels are unavailable |
+| 1 | `off_adj_rapm`, `def_adj_rapm`, `adj_rapm_margin` | Primary MVP offensive, defensive, and total impact target |
+| 2 | `adj_rtg_margin` | Secondary/robustness target — same on-court signal pre-RAPM-adjustment, useful as a sanity check when RAPM sample is thin |
+| 3 | `adj_rapm_margin_pred` | Tertiary — already-projected total margin in a high-major context; useful as a validation comparator for the model's own projected value, not a training target (it's downstream of the same kind of projection this model is building) |
+| 4 | PortalPoint-owned RAPM from hoopR PBP + personnel | Long-term owned possession-impact label |
+| 5 | BartTorvik/hoopR box-value proxy | Fallback when impact labels are unavailable |
 
 BartTorvik remains essential for features and priors: usage, efficiency, shot profile, BPM-like statistics, team strength, schedule context, and transfer history. It should not be treated as the primary RAPM label source unless a separate verified feed exposes that metric.
 
@@ -335,6 +334,8 @@ schedule strength effect = opponent AdjEM, AdjO, AdjD, and quality within tier
 
 This lets the model account for both "SEC vs MAAC" and "played elite teams vs weak teams inside the same conference."
 
+**No competition-tier column exists today.** `schools.conference` (raw conference name string) and `schools.nil_tier` (NIL budget tier, an unrelated concept) are the only categorical fields on `schools`; there is no major/mid-major/low-major tier anywhere in the schema. `level_TP` must be derived at feature-build time, not read from a column: bucket each school-season into 4 tiers from `team_season_stats.adj_em` national-percentile rank for that season (recompute per season, since conference strength shifts year to year — a fixed conference-to-tier lookup table would drift). This derivation belongs in the same data-prep layer that builds `obs_TPS`/`ctx_TPC`, not in a migration.
+
 ---
 
 ## 6. Latent Skill State Vector
@@ -440,9 +441,29 @@ For basketball:
 - Rebounding observations use available rebound chances when available, otherwise possessions/minutes.
 - Steal/block/foul observations use defensive possessions or minutes.
 
-### Primary fitting path
+### Primary fitting path — staged, not one shot
 
-Use Kalman filtering/smoothing with maximum likelihood estimation as the primary implementation path.
+Fitting a full multivariate Kalman model with block covariance, hierarchical priors, and MLE in one pass, on a ragged single-season-deep panel, is a high non-convergence-risk first deliverable. Stage the build instead:
+
+```text
+Phase 0: per-skill empirical-Bayes shrinkage estimator
+    no Kalman filter at all — shrink observed rate toward position/class/archetype
+    prior in proportion to sample size (attempts/possessions/minutes)
+    ships fastest, gives every downstream model (Role Fit, Team Rating Projection)
+    something real to consume while Phase 1/2 are built
+
+Phase 1: univariate linear Gaussian state-space per skill
+    diagonal Q, no cross-skill covariance, fit via statsmodels/pykalman MLE
+    this is the first "real" state-space model — validate convergence and
+    calibration here before adding covariance structure
+
+Phase 2: block-covariance multivariate state-space
+    correlated process noise within the shooting/creation/rebounding/defense
+    blocks from §6 — only attempt once Phase 1 is calibrated and the
+    2020-2025 game-log backfill has landed
+```
+
+Use Kalman filtering/smoothing with maximum likelihood estimation as the primary implementation path for Phase 1 and Phase 2.
 
 Pros:
 
@@ -539,6 +560,8 @@ Important MVP constraint: this should be treated as a conservative scenario adju
 
 Usage is not randomly assigned. Players change usage because of talent, teammates, coaching, scheme, injuries, and roster quality. The first version should therefore estimate role-conditioned scenarios from historical role-change patterns and archetype-level priors, with wide uncertainty where evidence is thin.
 
+`transfers.pre_usage_rate`, `transfers.post_usage_rate`, and `transfers.per_change` (`src/portalpoint/db/models.py` `Transfer`) are real, already-populated historical role-change observations — every confirmed transfer has a pre/post usage delta and a PER delta tied to it. This is the actual training signal for Stage 2C, not just an archetype-prior fallback: regress post-transfer rate/value change on pre-transfer skill state, usage delta, and archetype, using the transfer population as the fit set. Archetype-level priors should only fill in where a given archetype/usage-delta bucket has too few transfer rows to fit directly.
+
 Recommended MVP framing:
 
 ```text
@@ -619,7 +642,7 @@ defensive_value_per_100 target = Hoop Explorer def_adj_rapm
 total_value_per_100 target     = Hoop Explorer adj_rapm_margin
 ```
 
-Production-weighted variants such as `off_adj_rapm_prod`, `def_adj_prod_rapm`, and `adj_rapm_prod_margin` should be secondary labels because they mix per-possession impact with playing-time share. They are useful for season value, but the neutral talent model should first learn per-possession impact.
+`adj_rtg_margin` (unadjusted on-court net efficiency) is the secondary/robustness label — see corrected hierarchy in §5. There is no production-weighted (`*_prod`) variant in the real Hoop Explorer schema; do not plan around one. `off_team_poss_pct` (fraction of team possessions played) is the closest existing column to a playing-time-share weight, and should be used directly as the observation-weight (`ss_TPS`) input at season grain rather than invented from a nonexistent RAPM variant.
 
 The value model should start as an interpretable regularized additive model:
 
@@ -739,25 +762,21 @@ neutral projection
 = school-specific projected stats and value
 ```
 
-### Current API compatibility
+### Current API compatibility — corrected
 
-The current `predictions` table can hold an MVP projection:
+The original idea of staging into `predictions` and migrating to `player_projections` later does not work and should be dropped. `predictions` (`src/portalpoint/db/models.py` `Prediction`) has `school_id: nullable=False` and a unique constraint on only `(player_id, school_id)` — no `season` column at all. That means:
 
-| Existing column | New interpretation |
-|---|---|
-| `predicted_per_change` | Compatibility field; derive from value/PER bridge until API evolves |
-| `predicted_minutes` | From Playing Time / Rotation model for destination mode; fallback-only before Role Fit exists |
-| `predicted_role` | From Role Fit usage/minutes outputs for destination mode; fallback-only before Role Fit exists |
-| `confidence` | Projection confidence from data quality and interval width |
-| `shap_explanations` | Projection decomposition JSON, not necessarily SHAP |
+- Neutral-mode rows (no destination school) cannot be inserted — `school_id` is required.
+- Destination-mode rows can only ever hold one row per `(player_id, school_id)` pair, ever — no season versioning, every re-run overwrites the same row regardless of season.
+- `predictions` is also already conceptually owned by Model 5 (Transfer Success / Outcome, XGBoost) per CLAUDE.md's ML Models table. Writing player-talent projections into it would conflate two different models under one table.
 
-Future table: `player_projections`.
+Go straight to a dedicated `player_projections` table instead of staging through `predictions`. See §18 for the migration.
 
 ```text
 player_id
 school_id nullable
 season
-projection_mode              # neutral or destination
+projection_mode              # 'neutral' or 'destination'
 value_per_100
 value_ci_lower
 value_ci_upper
@@ -970,24 +989,29 @@ These questions are settled for the first version of the player projection plan.
 
 ## 15. MVP vs Full Version
 
-### MVP
+Three tiers, matching the Phase 0/1/2 staging in §7, not two.
 
-- Preserve the two-stage architecture.
-- Use season-level data only for priors and temporary fallback checks if player-game ingest is not ready.
-- Use shared priors and simple block-level correlations.
-- Fit interpretable RAPM-style value model against Hoop Explorer adjusted RAPM labels where coverage exists.
+### Phase 0 (MVP — ships first)
+
+- Preserve the two-stage architecture conceptually, but Stage 1 is a per-skill empirical-Bayes shrinkage estimator, not a Kalman filter.
+- Use season-level data (`player_season_stats`, `hoop_explorer_player_stats`) as the only input — 2026 game logs are too thin for a single-season state-space fit to beat a shrinkage estimator anyway.
+- Fit interpretable RAPM-style value model against the corrected Hoop Explorer label set (§5/§8: `off_adj_rapm`, `def_adj_rapm`, `adj_rapm_margin`).
 - Consume heuristic or future Playing Time / Rotation minutes for destination-adjusted outputs.
-- Write to existing `predictions` table.
+- Write to the new `player_projections` table (§18) from day one — never stage through `predictions`.
 
-### Full version
+### Phase 1 (state-space, single-season)
 
-- Game-level state-space model.
-- Kalman filtering/smoothing with MLE.
-- Block-correlated latent skill states.
-- Hybrid possession outcome and conditional rate model.
+- Univariate (diagonal-covariance) linear Gaussian state-space per skill, fit via Kalman MLE, still on 2026 game logs only.
+- Validates the state-space machinery (filtering, smoothing, forecast uncertainty) without betting the whole MVP on multivariate convergence.
+- Requires `hoopr_player_game_logs`/`hoopr_games` for 2026 (already ingested) — does not require the 2020-2025 backfill.
+
+### Phase 2 (full version)
+
+- 2020-2025 game-log backfill complete — cross-season `rho` and class-year development curve become fittable.
+- Block-correlated latent skill states (§6).
+- Hybrid possession outcome and conditional rate model (Stage 2A/2B).
 - Dedicated Playing Time / Rotation model integration.
 - PortalPoint-owned RAPM-style possession-impact target from hoopR play-by-play and play personnel.
-- Dedicated `player_projections` table.
 - Team projection consumes projection distributions, not just means.
 
 ---
@@ -997,10 +1021,117 @@ These questions are settled for the first version of the player projection plan.
 1. **Hoop Explorer coverage and joins:** Can we export enough Hoop Explorer seasons/tiers, and can those rows join cleanly to PortalPoint player/school IDs?
 2. **hoopR play-personnel coverage:** Is `espn_mbb_game_play_personnel()` populated broadly enough to support a PortalPoint-owned RAPM-style possession model?
 3. **UI uncertainty surface:** How much uncertainty should surface in the product: intervals, risk tags, percentile bands, or all three?
+4. **No-history player priors:** §14 assumes recruiting/JUCO/international profile data is available for no-history priors, but no such source is ingested anywhere in the current schema (§19). Either find a source or fall back to replacement-level-only priors for that cohort.
 
 ---
 
-## 17. Research Context
+## 17. Implementation Plan
+
+Sequenced to match `docs/models/model_dependency_graph.md`'s execution order, with the game-log backfill pulled forward as step 0 since it gates the full game-level path.
+
+```text
+0.  Backfill 2020-2025 hoopR game logs:
+    uv run python scripts/ingest_hoopr.py --season 2020 --game-logs --skip-season-stats
+    (repeat for 2021-2025; 2026 already done)
+    Blocking for Phase 2 (§15) only — Phase 0/1 can start without this.
+
+1.  Migration: add `player_projections` table (§18).
+
+2.  src/portalpoint/modeling/player_projection.py
+    - Phase 0: shrinkage fit/score/write functions, mirroring the pure-function
+      pattern already used by player_clustering.py / scheme_fit.py / gap_matching.py.
+    - Derive level_TP (competition tier) from team_season_stats.adj_em
+      percentile-per-season (see §5 "Context adjustments").
+    - Pull value-label targets from the corrected Hoop Explorer column set (§5/§8).
+
+3.  notebooks/models/player_projection_state_space.ipynb
+    - Cell 0-4 as specified in §13, scoped to Phase 0 first.
+    - Cell 1 coverage audit should explicitly report: how many seasons of
+      game-log coverage exist per player, and gate Phase 1/2 cells on that
+      count rather than silently falling back.
+
+4.  scripts/run_player_projection.py
+    - Thin non-interactive CLI, same convention as run_scheme_fit.py /
+      run_gap_matching.py — fixed params, no tuning, writes to
+      player_projections.
+
+5.  Validation (§12) against the corrected RAPM labels, run before wiring
+    into Role Fit — Role Fit's hard dependency on "player projections" in
+    model_dependency_graph.md is currently "not yet built"; this is what
+    unblocks it.
+
+6.  Once 2020-2025 backfill (step 0) lands and Phase 1 is calibrated,
+    revisit Phase 2 (block covariance, multivariate Kalman) as a separate
+    follow-up, not bundled into the first ship.
+```
+
+## 18. Additional Database Changes
+
+### `player_projections` (new table, replaces the `predictions`-staging idea)
+
+```text
+id               bigint PK
+player_id        FK players.id, not null
+school_id        FK schools.id, nullable        -- null for neutral mode
+season           smallint, not null
+projection_mode  varchar(20), not null           -- 'neutral' | 'destination'
+value_per_100    float, not null
+value_ci_lower   float
+value_ci_upper   float
+projected_minutes  float, nullable
+projected_usage    float, nullable
+projected_box_score  jsonb
+projected_rates      jsonb
+skill_states         jsonb
+skill_percentiles    jsonb
+uncertainty          jsonb
+explanation          jsonb
+model_version    varchar(20), not null
+computed_at      timestamptz, server_default now()
+expires_at       timestamptz, not null
+```
+
+Constraint design needs care because `school_id` is nullable but still needs to dedupe on re-run. A plain `UniqueConstraint("player_id", "school_id", "season", "model_version")` will not work — Postgres treats every `NULL` as distinct, so neutral-mode reruns would insert a fresh row every time instead of upserting. Use two partial unique indexes instead:
+
+```sql
+CREATE UNIQUE INDEX uq_player_projections_neutral
+  ON player_projections (player_id, season, model_version)
+  WHERE school_id IS NULL;
+
+CREATE UNIQUE INDEX uq_player_projections_destination
+  ON player_projections (player_id, school_id, season, model_version)
+  WHERE school_id IS NOT NULL;
+```
+
+Plus a lookup index for the common read path: `Index("ix_player_projections_player_season", "player_id", "season")`.
+
+### No other schema changes are required
+
+`hoop_explorer_player_stats`, `hoopr_player_game_logs`, `hoopr_games`, `transfers`, `player_season_stats`, and `team_season_stats` already carry everything else this plan needs. Competition tier (`level_TP`) is a derived feature, not a column (§5) — do not add a `schools.tier` column for this; it would need season-aware recomputation and would just go stale like a cached value.
+
+## 19. Additional Source Data Needed
+
+| Need | Status | Action |
+|---|---|---|
+| 2020-2025 game-level player/team logs | Not ingested (2026 only) | Run `ingest_hoopr.py --game-logs --skip-season-stats` per season 2020-2025 (§17 step 0) — this is the only genuinely *new* source-data work; everything else below is reuse of existing tables |
+| Hoop Explorer RAPM labels, multi-season | Already ingested, 6 seasons, ~16,750 rows | None — just stop coding against the stale sample-CSV column list (§5) |
+| Historical transfer pre/post role-change data | Already populated (`transfers.pre_usage_rate`/`post_usage_rate`/`per_change`) | None — wire into Stage 2C (§8) instead of building a separate role-change dataset |
+| Competition/conference tier labels | Does not exist as a column anywhere | Derive at feature-build time from `team_season_stats.adj_em` percentile-per-season; no ingest needed |
+| hoopR play-personnel (`espn_mbb_game_play_personnel()`) | Not ingested, needed only for the long-term owned-RAPM target (Stage 2D priority 4) | Out of scope for Phase 0-2; revisit when building the owned possession-impact model |
+| Recruiting/JUCO/international profile for no-history priors (§14) | Not ingested anywhere in current schema | Open gap — no source identified yet; flag as a real open question rather than assuming it exists |
+
+---
+
+## 20. Cross-Document Notes Found During This Review
+
+Not part of the modeling plan itself, but surfaced while grounding this doc against the live schema and sibling plans:
+
+- `CLAUDE.md`'s "ML Models (7 total)" table has no row for Player Projection. It is a distinct model from #4 Playing Time Predictor (PyMC3) and #5 Transfer Success Predictor (XGBoost) — both of which depend on it per `model_dependency_graph.md`. Worth adding a row once this plan starts shipping real output, so the model count and dependency graph stay in sync.
+- `docs/models/role_fit_playing_time_model_plan.md` and `docs/models/playing_time_rotation_model_plan.md` both target the same notebook (`notebooks/models/playing_time_rotation_model.ipynb`) and the same model. They look like two drafts of the same plan, not two different models — worth consolidating or marking one superseded before that model's implementation starts, so a future contributor doesn't build against the stale one.
+
+---
+
+## 21. Research Context
 
 - EvanMiya Player Skill Projections: dynamic linear models over game-by-game data, context adjustments, priors, recent form, and uncertainty.  
   https://blog.evanmiya.com/p/new-tool-player-skill-projections

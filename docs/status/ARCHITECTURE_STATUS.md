@@ -145,7 +145,7 @@ Important tables:
 | `recommendations` | Future ranked player recommendations |
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
 
-**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` is no longer empty — `ingest_transfers_247sports.py` has populated season 2026 (1,251 rows); full 2020-2026 backfill not yet run (command below).
+**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` backfill is done for 2021-2026 (499/628/774/1,037/1,346/1,251 rows respectively, confirmed 2026-06-23). Season 2020 was scraped (371 raw rows in `transfer_portal_events`) but produced zero matches — all rows landed `match_status='no_school'`; `transfers` has no 2020 rows and this needs separate investigation, not a rerun of the same command. **Game-level data is the real remaining gap:** `hoopr_player_game_logs`/`hoopr_games`/`hoopr_team_game_logs` only cover season 2026 (178,108 player-game rows) — 2020-2025 backfill not yet run (command below).
 
 **Gap Matching is now `gap-cos-v4`, all-pairs with shared roster baseline (2026-06-22 branch):** scoring still covers every eligible player×school×season pair, but team gap vectors no longer use raw `player_season_stats` plus a narrow portal-departure subtraction. `scripts/run_gap_matching.py` now builds roster vectors through `portalpoint.modeling.roster_baseline`: historical seasons use `player_season_stats(S+1)` to infer the actual target roster outlook; the latest season uses latest `roster_snapshots` when available, with same-season stats minus expected departures (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) for schools without usable snapshots. `player_team_fit_scores.is_portal_candidate` (migration `c7f1a9d3e652`) still flags portal candidates via `portalpoint.modeling.availability`; this is intentionally separate from roster-baseline membership.
 
@@ -191,9 +191,9 @@ Policy/ops notes:
 | Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026, including the `off_ast_*`/`def_ast_*` assist-split backfill (2026-06-19) | `hoop_explorer_team_stats` (~2,151 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble + assist-split cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
 | hoopR game logs | `scripts/ingest_hoopr.py --game-logs` | Complete for 2026 — same sportsdataverse-data host as PBP, different release tag (schedule + team/player box score parquet) | `hoopr_games` + `hoopr_team_game_logs` + `hoopr_player_game_logs` |
-| 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for season 2026 (1,251 promoted) — full 2020-2026 backfill not yet run | `transfer_portal_events` (raw) + `transfers` (promoted) |
-| barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Verified on one school (Duke) — full ~365-school run not yet done | `roster_snapshots` + `roster_snapshot_players` |
-| Roster-state features | `scripts/build_roster_state_features.py` | Verified on one school (Duke) — plain script, not a model (no MLflow); depends on a roster snapshot existing | `roster_state_features` |
+| 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped but 0 matched, needs investigation | `transfer_portal_events` (raw) + `transfers` (promoted) |
+| barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Complete — 357 distinct schools (target ~365) | `roster_snapshots` + `roster_snapshot_players` |
+| Roster-state features | `scripts/build_roster_state_features.py` | Plain script, not a model (no MLflow); depends on a roster snapshot existing — should be re-run against the full 357-school snapshot set if it was last run against a narrower subset | `roster_state_features` |
 | Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19/20 for local sync | Produces gitignored `data/features/player_features.parquet` and `data/features/team_style_vectors.parquet`; must be regenerated against each local DB because surrogate `players.id` values are not portable |
 | Model scripts | `scripts/run_player_clustering.py`, `scripts/run_team_clustering.py`, `scripts/run_scheme_fit.py`, `scripts/run_gap_matching.py` | ✅ Complete baseline — M1/M2/M3 refresh locally and log to MLflow; Scheme Fit (`scheme-cos-v3`) and Gap Matching (`gap-cos-v4` code path) are both all-pairs now — run Scheme Fit first | Preferred non-interactive rerun path; writes DB outputs, local artifacts, MLflow runs, and S3 model uploads when credentials are configured |
 | Model notebooks | `notebooks/models/*.ipynb` | M1-M3 + Gap Matching complete | Use for retuning, validation plots, and product-copy refinement; scripts should be used for ordinary local refresh |
@@ -216,21 +216,21 @@ Suggested rebuild order from a fresh DB:
 13. run_gap_matching.py                            # gap-cos-v4 — all-pairs, shared roster baseline
 ```
 
-**Full transfer-portal backfill (2020-2026, Issue #17 item 3):**
+**Transfer-portal backfill (Issue #17 item 3) — done for 2021-2026, 2020 unresolved:**
 
 ```bash
 uv run python scripts/ingest_transfers_247sports.py --seasons 2020 2021 2022 2023 2024 2025 2026
 ```
 
-~2 min/season scraped (110 pages for 2026; fewer for earlier, smaller-portal-era seasons) — roughly 15 min total for all 7 seasons. Idempotent — safe to re-run.
+~2 min/season scraped (110 pages for 2026; fewer for earlier, smaller-portal-era seasons). Idempotent — safe to re-run. 2021-2026 are confirmed populated in `transfers`. Re-running the 2020 season alone (`--seasons 2020`) reproduces the same 371 `transfer_portal_events` rows, all `match_status='no_school'` — this is not a transient scrape failure, the matching logic itself is rejecting every 2020 row. Needs debugging in `ingest_transfers_247sports.py`'s matcher, not another backfill run.
 
-**Full roster snapshot run (all ~365 D1 schools, Issue #17 item 4):**
+**Roster snapshot run (all D1 schools, Issue #17 item 4) — done:**
 
 ```bash
 uv run python scripts/ingest_roster_snapshots.py
 ```
 
-~3 min (365 schools × 0.5s `REQUEST_DELAY`, matching `ingest_barttorvik.py`'s existing convention — see the robots.txt `Crawl-Delay: 10` note in `ingest_transfers_247sports.py`'s module docstring history; not strictly complied with, same as the rest of this repo's barttorvik scraping). One snapshot per school per calendar day — re-running same-day upserts in place; run again on a later date to accumulate a new snapshot row and enable day-over-day roster diffing. `--schools "Duke" "North Carolina"` limits to a subset for a fast test.
+~3 min (365 schools × 0.5s `REQUEST_DELAY`, matching `ingest_barttorvik.py`'s existing convention — see the robots.txt `Crawl-Delay: 10` note in `ingest_transfers_247sports.py`'s module docstring history; not strictly complied with, same as the rest of this repo's barttorvik scraping). Confirmed: 357 distinct schools in `roster_snapshots` (target ~365 — gap likely a handful of schools missing from barttorvik's rostercast coverage, not an ingest bug). One snapshot per school per calendar day — re-running same-day upserts in place; run again on a later date to accumulate a new snapshot row and enable day-over-day roster diffing. `--schools "Duke" "North Carolina"` limits to a subset for a fast test.
 
 **After pulling a migration that adds new source columns** (e.g. `2f6a1c9d8b30`'s HE assist-split columns): the migration only adds the column — it does NOT backfill data. You must re-run the relevant ingest script (`ingest_hoop_explorer.py --all-seasons` in that case) before the new columns have any data, and re-run `feature_eng_m1_m2_m3.ipynb` afterward so the parquet picks up the populated values. Confirmed: skipping the ingest rerun left `off_ast_*`/`def_ast_*` 100% NULL, which silently zeroed out `he_team_cluster_available` for every team and crashed `team_clustering.ipynb`'s scaler fit with "0 samples."
 
