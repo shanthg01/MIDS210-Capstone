@@ -139,6 +139,12 @@ def _pooled_neg_log_likelihood(q_value: float, sequences: list[Sequence]) -> flo
     return total
 
 
+def pooled_neg_log_likelihood(q_value: float, sequences: list[Sequence]) -> float:
+    """Public alias of _pooled_neg_log_likelihood — exposed for notebook
+    diagnostics (e.g. plotting the likelihood curve around a fitted Q)."""
+    return _pooled_neg_log_likelihood(q_value, sequences)
+
+
 def fit_q_mle(sequences: list[Sequence], bounds: tuple[float, float] = (1e-6, 2.0)) -> tuple[float, float]:
     """Pooled MLE fit of one global process variance Q for a skill, across
     every player's game sequence. Returns (Q, neg_log_likelihood_at_Q)."""

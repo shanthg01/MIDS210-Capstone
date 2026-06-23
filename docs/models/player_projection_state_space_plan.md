@@ -211,7 +211,7 @@ def_adj_rapm
 adj_rapm_margin_pred # projection to NCAAT-bound high-major context, total only — no off/def split
 ```
 
-There is no `off_adj_rapm_pred`/`def_adj_rapm_pred`/`*_prod` split in the real schema — those were aspirational column names that never got built. Do not write code against them.
+**Correction (2026-06-23):** these fields are not aspirational — they genuinely exist in the raw Hoop Explorer source CSVs (`data/hoop_explorer/all_player_stats_*.csv` has `off_adj_rapm_prod`, `def_adj_prod_rapm`, `adj_rapm_prod_margin`, `off_adj_rapm_pred`, `def_adj_rapm_pred`, plus a full `rank_*`/`pctile_*` set HE computes server-side). `ingest_hoop_explorer.py`'s player-row mapping (around line 486) simply never selects them — only `off_adj_rapm`, `def_adj_rapm`, `adj_rtg_margin`, `adj_rapm_margin`, and `adj_rapm_margin_pred` are mapped into `hoop_explorer_player_stats`. This is a real ingestion gap (missing columns + a migration), not a documentation error — see §19 for the fix.
 
 Recommended value-label hierarchy (corrected):
 
@@ -642,7 +642,7 @@ defensive_value_per_100 target = Hoop Explorer def_adj_rapm
 total_value_per_100 target     = Hoop Explorer adj_rapm_margin
 ```
 
-`adj_rtg_margin` (unadjusted on-court net efficiency) is the secondary/robustness label — see corrected hierarchy in §5. There is no production-weighted (`*_prod`) variant in the real Hoop Explorer schema; do not plan around one. `off_team_poss_pct` (fraction of team possessions played) is the closest existing column to a playing-time-share weight, and should be used directly as the observation-weight (`ss_TPS`) input at season grain rather than invented from a nonexistent RAPM variant.
+`adj_rtg_margin` (unadjusted on-court net efficiency) is the secondary/robustness label — see corrected hierarchy in §5. The production-weighted variant (`off_adj_rapm_prod`/`adj_rapm_prod_margin`) is now ingested (§19) and wired in as a robustness check in `scripts/run_player_projection.py` and the notebook — correlated against, not retrained on (corr 0.643/0.433 against `off_value_per_100`/`value_per_100`, sane for a playing-time-weighted secondary label). `def_adj_prod_rapm` has no def-side equivalent currently available — empty in the raw HE export (§19). `off_team_poss_pct` (fraction of team possessions played) is the closest existing ingested column to a playing-time-share weight, and should be used directly as the observation-weight (`ss_TPS`) input at season grain.
 
 The value model should start as an interpretable regularized additive model:
 
@@ -1114,7 +1114,7 @@ Plus a lookup index for the common read path: `Index("ix_player_projections_play
 | Need | Status | Action |
 |---|---|---|
 | 2020-2025 game-level player/team logs | Not ingested (2026 only) | Run `ingest_hoopr.py --game-logs --skip-season-stats` per season 2020-2025 (§17 step 0) — this is the only genuinely *new* source-data work; everything else below is reuse of existing tables |
-| Hoop Explorer RAPM labels, multi-season | Already ingested, 6 seasons, ~16,750 rows | None — just stop coding against the stale sample-CSV column list (§5) |
+| Hoop Explorer RAPM labels, multi-season | **Done (2026-06-23).** Core 5 fields plus `off_adj_rapm_prod`/`adj_rapm_prod_margin` now ingested (migration `f1c4a8d3e570`). `def_adj_prod_rapm`/`off_adj_rapm_pred`/`def_adj_rapm_pred` are mapped but 100% NULL — confirmed empty in the raw source CSV across all 6 seasons, an HE export-configuration limit (their `_pred` fields need a "for transfers" leaderboard view we don't currently export with), not a PortalPoint ingestion bug. `rank_*`/`pctile_*` (~80 cols) intentionally not ingested — no concrete use case yet. | None remaining for the 5 originally-targeted fields; getting `_pred` populated needs a different manual HE export, out of scope here |
 | Historical transfer pre/post role-change data | Already populated (`transfers.pre_usage_rate`/`post_usage_rate`/`per_change`) | None — wire into Stage 2C (§8) instead of building a separate role-change dataset |
 | Competition/conference tier labels | Does not exist as a column anywhere | Derive at feature-build time from `team_season_stats.adj_em` percentile-per-season; no ingest needed |
 | hoopR play-personnel (`espn_mbb_game_play_personnel()`) | Not ingested, needed only for the long-term owned-RAPM target (Stage 2D priority 4) | Out of scope for Phase 0-2; revisit when building the owned possession-impact model |

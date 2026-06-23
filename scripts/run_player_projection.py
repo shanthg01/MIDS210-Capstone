@@ -53,7 +53,9 @@ SELECT
     pss.steal_pct,
     pss.block_pct,
     he.off_adj_rapm,
-    he.def_adj_rapm
+    he.def_adj_rapm,
+    he.off_adj_rapm_prod,
+    he.adj_rapm_prod_margin
 FROM player_season_stats pss
 LEFT JOIN hoop_explorer_player_stats he
     ON he.player_id = pss.player_id AND he.season = pss.season
@@ -84,6 +86,26 @@ def main() -> None:
     )
 
     df = pp.project_value(df, off_model, def_model, off_resid_std, def_resid_std)
+
+    # Secondary-label robustness check (plan doc §5/§8): off_adj_rapm_prod /
+    # adj_rapm_prod_margin mix per-possession impact with playing-time share,
+    # so they're not retraining targets — but our offense-only projection
+    # should still track them directionally. Logged, not asserted on; a low
+    # correlation here is a real signal worth investigating, not a hard failure.
+    prod_check = df[["off_value_per_100", "off_adj_rapm_prod"]].dropna()
+    if len(prod_check) > 30:
+        prod_corr = prod_check["off_value_per_100"].corr(prod_check["off_adj_rapm_prod"])
+        log.info(
+            "Robustness check: off_value_per_100 vs off_adj_rapm_prod corr=%.3f (n=%s)",
+            prod_corr, f"{len(prod_check):,}",
+        )
+    margin_check = df[["value_per_100", "adj_rapm_prod_margin"]].dropna()
+    if len(margin_check) > 30:
+        margin_corr = margin_check["value_per_100"].corr(margin_check["adj_rapm_prod_margin"])
+        log.info(
+            "Robustness check: value_per_100 vs adj_rapm_prod_margin corr=%.3f (n=%s)",
+            margin_corr, f"{len(margin_check):,}",
+        )
 
     records = pp.build_neutral_records(df)
     upserted = pp.upsert_neutral_projections(engine, records)

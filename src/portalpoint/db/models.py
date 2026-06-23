@@ -466,6 +466,15 @@ class HoopExplorerPlayerStats(Base):
     off_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
     def_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
     adj_rapm_margin_pred: Mapped[Optional[float]] = mapped_column(Float)  # projection to NCAAT-bound high-major
+    # Production-weighted RAPM (mixes per-possession impact with playing-time share —
+    # secondary label, see player_projection_state_space_plan.md §5/§8) and the off/def
+    # split of the predicted-high-major projection. Source CSV column names are
+    # asymmetric (off_adj_rapm_prod vs def_adj_prod_rapm) — not a typo, that's HE's own naming.
+    off_adj_rapm_prod: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_prod_rapm: Mapped[Optional[float]] = mapped_column(Float)
+    adj_rapm_prod_margin: Mapped[Optional[float]] = mapped_column(Float)
+    off_adj_rapm_pred: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_rapm_pred: Mapped[Optional[float]] = mapped_column(Float)
     # Usage and shot creation
     off_usage: Mapped[Optional[float]] = mapped_column(Float)
     off_assist: Mapped[Optional[float]] = mapped_column(Float)
