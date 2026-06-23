@@ -15,6 +15,8 @@ from dataclasses import dataclass
 import pandas as pd
 from sqlalchemy import Engine
 
+from portalpoint.modeling.db_writers import upsert_with_season_replace
+
 BASELINE_STATUS_RETURNING = "returning"
 BASELINE_STATUS_CHANGED_SCHOOL = "changed_school_next_season"
 BASELINE_STATUS_SNAPSHOT = "latest_snapshot"
@@ -68,6 +70,17 @@ WHERE season = %s
   AND player_id IS NOT NULL
   AND school_id IS NOT NULL
   AND year_class IN ('Sr', 'Gr')
+"""
+
+
+DELETE_BASELINE_MEMBERS_SQL = "DELETE FROM roster_baseline_members WHERE season = ANY(%s)"
+
+UPSERT_BASELINE_MEMBERS_SQL = """
+INSERT INTO roster_baseline_members (player_id, school_id, season, baseline_status)
+VALUES %s
+ON CONFLICT ON CONSTRAINT uq_roster_baseline_member DO UPDATE SET
+    baseline_status = EXCLUDED.baseline_status,
+    computed_at = now()
 """
 
 
@@ -244,3 +257,33 @@ def build_roster_baseline_frame(
         ),
     )
     return baseline, summary
+
+
+def write_roster_baseline_members(engine: Engine, baseline_df: pd.DataFrame, seasons: list[int]) -> int:
+    """Persist build_roster_baseline_frame()'s membership rows to
+    roster_baseline_members — the single real computation that
+    fit_score_service.get_roster_baseline_membership() reads, instead of
+    re-deriving the same rules a second time at API-read time. Called by both
+    scripts/run_gap_matching.py and notebooks/models/gap_matching.ipynb so the
+    two paths can't produce different answers.
+
+    Full delete-by-season-then-insert, matching every other modeling writer
+    in this codebase (see db_writers.upsert_with_season_replace's docstring).
+    """
+    if baseline_df.empty:
+        return 0
+    rows = baseline_df[["player_id", "school_id", "season", "baseline_status"]].drop_duplicates(
+        subset=["player_id", "school_id", "season"]
+    )
+    records = [
+        (int(r.player_id), int(r.school_id), int(r.season), r.baseline_status)
+        for r in rows.itertuples(index=False)
+    ]
+    _, upserted = upsert_with_season_replace(
+        engine,
+        UPSERT_BASELINE_MEMBERS_SQL,
+        records,
+        delete_sql=DELETE_BASELINE_MEMBERS_SQL,
+        delete_params=([int(s) for s in seasons],),
+    )
+    return upserted

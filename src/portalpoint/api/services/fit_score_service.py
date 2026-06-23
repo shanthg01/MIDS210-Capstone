@@ -20,17 +20,7 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
-from portalpoint.db.models import (
-    HoopExplorerPlayerStats,
-    Player,
-    PlayerSeasonStats,
-    PlayerTeamFitScore,
-    RosterSnapshot,
-    RosterSnapshotPlayer,
-    Transfer,
-)
-
-ROSTER_BASELINE_MIN_GAMES = 5
+from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember
 
 
 def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
@@ -245,123 +235,18 @@ async def get_roster_baseline_membership(
 ) -> bool:
     """Whether player_id counts in school_id's shared roster baseline.
 
-    Historical seasons use player_season_stats(season + 1). Latest seasons
-    use the latest roster snapshot when available, then fall back to same-season
-    stats minus explicit transfer/NBA/senior-graduate departures.
+    Single lookup against roster_baseline_members — the table
+    scripts/run_gap_matching.py and notebooks/models/gap_matching.ipynb both
+    write via portalpoint.modeling.roster_baseline.write_roster_baseline_members().
+    Reads what Gap Matching actually used, rather than re-deriving the same
+    historical/snapshot/fallback rules a second time here — one real
+    computation, not two that can drift.
     """
-    feature_row_exists = (
-        await db.execute(
-            select(PlayerSeasonStats.player_id)
-            .where(
-                PlayerSeasonStats.player_id == player_id,
-                PlayerSeasonStats.season == season,
-                PlayerSeasonStats.games_played >= ROSTER_BASELINE_MIN_GAMES,
-            )
-            .limit(1)
+    result = await db.execute(
+        select(RosterBaselineMember.id).where(
+            RosterBaselineMember.player_id == player_id,
+            RosterBaselineMember.school_id == school_id,
+            RosterBaselineMember.season == season,
         )
-    ).scalar_one_or_none() is not None
-    if not feature_row_exists:
-        return False
-
-    next_season_exists = (
-        await db.execute(
-            select(PlayerSeasonStats.player_id)
-            .where(PlayerSeasonStats.season == season + 1)
-            .limit(1)
-        )
-    ).scalar_one_or_none() is not None
-    if next_season_exists:
-        historical_member = (
-            await db.execute(
-                select(PlayerSeasonStats.player_id).where(
-                    PlayerSeasonStats.player_id == player_id,
-                    PlayerSeasonStats.school_id == school_id,
-                    PlayerSeasonStats.season == season + 1,
-                )
-            )
-        ).scalar_one_or_none()
-        return historical_member is not None
-
-    snapshot = (
-        await db.execute(
-            select(RosterSnapshot)
-            .where(RosterSnapshot.school_id == school_id, RosterSnapshot.season == season)
-            .order_by(RosterSnapshot.snapshot_date.desc(), RosterSnapshot.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if snapshot is not None:
-        snapshot_member = (
-            await db.execute(
-                select(RosterSnapshotPlayer.player_id).where(
-                    RosterSnapshotPlayer.snapshot_id == snapshot.id,
-                    RosterSnapshotPlayer.player_id == player_id,
-                )
-            )
-        ).scalar_one_or_none()
-        return snapshot_member is not None
-
-    same_school = (
-        await db.execute(
-            select(PlayerSeasonStats.player_id).where(
-                PlayerSeasonStats.player_id == player_id,
-                PlayerSeasonStats.school_id == school_id,
-                PlayerSeasonStats.season == season,
-                PlayerSeasonStats.games_played >= ROSTER_BASELINE_MIN_GAMES,
-            )
-        )
-    ).scalar_one_or_none() is not None
-    if not same_school:
-        return False
-
-    transfer_out = (
-        await db.execute(
-            select(Transfer.player_id).where(
-                Transfer.player_id == player_id,
-                Transfer.from_school_id == school_id,
-                Transfer.season == season,
-            )
-        )
-    ).scalar_one_or_none() is not None
-    if transfer_out:
-        return False
-
-    likely_eligibility_departure = (
-        await db.execute(
-            select(Player.id)
-            .join(PlayerSeasonStats, PlayerSeasonStats.player_id == Player.id)
-            .where(
-                Player.id == player_id,
-                PlayerSeasonStats.school_id == school_id,
-                PlayerSeasonStats.season == season,
-                func.lower(Player.class_year).in_(("senior", "graduate")),
-            )
-        )
-    ).scalar_one_or_none() is not None
-    if likely_eligibility_departure:
-        return False
-
-    he_senior_departure = (
-        await db.execute(
-            select(HoopExplorerPlayerStats.player_id).where(
-                HoopExplorerPlayerStats.player_id == player_id,
-                HoopExplorerPlayerStats.school_id == school_id,
-                HoopExplorerPlayerStats.season == season,
-                HoopExplorerPlayerStats.year_class.in_(("Sr", "Gr")),
-            )
-        )
-    ).scalar_one_or_none() is not None
-    if he_senior_departure:
-        return False
-
-    nba_departure = (
-        await db.execute(
-            select(HoopExplorerPlayerStats.player_id).where(
-                HoopExplorerPlayerStats.player_id == player_id,
-                HoopExplorerPlayerStats.school_id == school_id,
-                HoopExplorerPlayerStats.season == season,
-                HoopExplorerPlayerStats.transfer_dest == "NBA",
-            )
-        )
-    ).scalar_one_or_none() is not None
-    return not nba_departure
+    )
+    return result.scalar_one_or_none() is not None
