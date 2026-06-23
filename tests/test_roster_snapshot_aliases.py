@@ -1,6 +1,5 @@
+import asyncio
 from datetime import date
-
-import pytest
 
 from scripts import ingest_roster_snapshots as irs
 from scripts.ingest_roster_snapshots import (
@@ -82,48 +81,45 @@ def test_name_initials_must_match_before_fuzzy_matching():
     assert _name_initials_match("Caden Pierce", "Braden Pierce") is False
 
 
-@pytest.mark.asyncio
-async def test_freshman_global_match_collision_is_kept_as_new_snapshot_row(monkeypatch):
-    record = await _dry_run_one_row(
+def test_freshman_global_match_collision_is_kept_as_new_snapshot_row(monkeypatch):
+    record = asyncio.run(_dry_run_one_row(
         monkeypatch,
         school_id=3,
         school_name="Duke",
         row=_snapshot_row("Cameron Williams", "Fr"),
         roster_index={6: [(4386, "Cameron Williams")]},
         player_to_school={4386: 6},
-    )
+    ))
 
     assert record["raw_player_name"] == "Cameron Williams"
     assert record["player_id"] is None
     assert record["returning_status"] == "new"
 
 
-@pytest.mark.asyncio
-async def test_global_match_requires_first_and_last_initials(monkeypatch):
-    record = await _dry_run_one_row(
+def test_global_match_requires_first_and_last_initials(monkeypatch):
+    record = asyncio.run(_dry_run_one_row(
         monkeypatch,
         school_id=8,
         school_name="Purdue",
         row=_snapshot_row("Caden Pierce", "Sr"),
         roster_index={99: [(1524, "Braden Pierce")]},
         player_to_school={1524: 99},
-    )
+    ))
 
     assert record["raw_player_name"] == "Caden Pierce"
     assert record["player_id"] is None
     assert record["returning_status"] == "new"
 
 
-@pytest.mark.asyncio
-async def test_cj_cox_matches_as_purdue_returner(monkeypatch):
-    record = await _dry_run_one_row(
+def test_cj_cox_matches_as_purdue_returner(monkeypatch):
+    record = asyncio.run(_dry_run_one_row(
         monkeypatch,
         school_id=8,
         school_name="Purdue",
         row=_snapshot_row("C.J. Cox", "Jr"),
         roster_index={8: [(2742, "C.J. Cox")]},
         player_to_school={2742: 8},
-    )
+    ))
 
     assert record["raw_player_name"] == "C.J. Cox"
     assert record["player_id"] == 2742
@@ -131,16 +127,15 @@ async def test_cj_cox_matches_as_purdue_returner(monkeypatch):
     assert record["transfer_source_school_id"] is None
 
 
-@pytest.mark.asyncio
-async def test_patrick_ngongba_matches_as_duke_returner(monkeypatch):
-    record = await _dry_run_one_row(
+def test_patrick_ngongba_matches_as_duke_returner(monkeypatch):
+    record = asyncio.run(_dry_run_one_row(
         monkeypatch,
         school_id=3,
         school_name="Duke",
         row=_snapshot_row("Patrick Ngongba", "Jr"),
         roster_index={3: [(2474, "Patrick Ngongba")]},
         player_to_school={2474: 3},
-    )
+    ))
 
     assert record["raw_player_name"] == "Patrick Ngongba"
     assert record["player_id"] == 2474
@@ -148,16 +143,15 @@ async def test_patrick_ngongba_matches_as_duke_returner(monkeypatch):
     assert record["transfer_source_school_id"] is None
 
 
-@pytest.mark.asyncio
-async def test_non_freshman_global_match_still_identifies_transfer_in(monkeypatch):
-    record = await _dry_run_one_row(
+def test_non_freshman_global_match_still_identifies_transfer_in(monkeypatch):
+    record = asyncio.run(_dry_run_one_row(
         monkeypatch,
         school_id=3,
         school_name="Duke",
         row=_snapshot_row("John Blackwell", "Sr"),
         roster_index={22: [(1255, "John Blackwell")]},
         player_to_school={1255: 22},
-    )
+    ))
 
     assert record["raw_player_name"] == "John Blackwell"
     assert record["player_id"] == 1255
