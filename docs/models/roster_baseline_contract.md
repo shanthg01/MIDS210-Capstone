@@ -41,6 +41,10 @@ Latest season where `S + 1` does not exist:
   other schools. Those rows remain raw roster members with `player_id = NULL`
   and `returning_status = 'new'` until a proper identity/stat/depth-prior path
   exists.
+- Snapshot fuzzy matching requires the raw roster name and candidate player
+  name to share first-name and last-name initials before `difflib` scoring.
+  This blocks obvious same-last-name or similar-name collisions while preserving
+  exact returning/transfer-in matches.
 - Matched snapshot players count in the roster baseline.
 - Incoming freshmen or other unmatched snapshot players are left out of the
   feature-bearing baseline until a depth-only prior exists.

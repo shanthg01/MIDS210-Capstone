@@ -47,6 +47,7 @@ import logging
 import re
 import sys
 import time
+import unicodedata
 from datetime import date, datetime
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -86,6 +87,7 @@ ROSTERCAST_TEAM_ALIASES = {
     "St. Mary's": "Saint Mary's",
     "UConn": "Connecticut",
 }
+NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 ROW_RE = re.compile(
     r"<tr>\s*"
@@ -130,6 +132,24 @@ def is_freshman_snapshot_class(class_year: str | None) -> bool:
         return False
     normalized = class_year.strip().lower().replace(".", "")
     return normalized in {"fr", "freshman", "first year", "first-year"}
+
+
+def _name_tokens(name: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.findall(r"[A-Za-z]+", normalized.lower())
+
+
+def _name_initials(name: str) -> tuple[str, str] | None:
+    tokens = [token for token in _name_tokens(name) if token not in NAME_SUFFIXES]
+    if len(tokens) < 2:
+        return None
+    return tokens[0][0], tokens[-1][0]
+
+
+def _name_initials_match(raw_name: str, candidate_name: str) -> bool:
+    raw_initials = _name_initials(raw_name)
+    candidate_initials = _name_initials(candidate_name)
+    return raw_initials is not None and raw_initials == candidate_initials
 
 
 def fetch_roster(session: requests.Session, team: str) -> list[dict]:
@@ -182,7 +202,10 @@ def _match_player(
 ) -> tuple[int | None, float | None, str]:
     if not roster:
         return None, None, "unmatched"
-    names = [name for _, name in roster]
+    eligible_roster = [(pid, name) for pid, name in roster if _name_initials_match(raw_name, name)]
+    if not eligible_roster:
+        return None, None, "unmatched"
+    names = [name for _, name in eligible_roster]
     matches = difflib.get_close_matches(raw_name, names, n=2, cutoff=threshold)
     if not matches:
         return None, None, "unmatched"
@@ -190,7 +213,7 @@ def _match_player(
         return None, None, "ambiguous"
     name = matches[0]
     confidence = difflib.SequenceMatcher(None, raw_name, name).ratio()
-    player_id = next(pid for pid, n in roster if n == name)
+    player_id = next(pid for pid, n in eligible_roster if n == name)
     return player_id, round(confidence, 3), "matched"
 
 

@@ -3,7 +3,12 @@ from datetime import date
 import pytest
 
 from scripts import ingest_roster_snapshots as irs
-from scripts.ingest_roster_snapshots import is_freshman_snapshot_class, rostercast_team_name
+from scripts.ingest_roster_snapshots import (
+    _name_initials,
+    _name_initials_match,
+    is_freshman_snapshot_class,
+    rostercast_team_name,
+)
 
 
 def _snapshot_row(raw_player_name: str, class_year: str) -> dict:
@@ -66,6 +71,17 @@ def test_freshman_snapshot_class_detection():
     assert is_freshman_snapshot_class(None) is False
 
 
+def test_name_initials_ignore_suffixes_and_punctuation():
+    assert _name_initials("C.J. Cox") == ("c", "c")
+    assert _name_initials("Brandon McCoy Jr.") == ("b", "m")
+    assert _name_initials("A.J. Wright, III") == ("a", "w")
+
+
+def test_name_initials_must_match_before_fuzzy_matching():
+    assert _name_initials_match("John Blackwell", "John Blackwell") is True
+    assert _name_initials_match("Caden Pierce", "Braden Pierce") is False
+
+
 @pytest.mark.asyncio
 async def test_freshman_global_match_collision_is_kept_as_new_snapshot_row(monkeypatch):
     record = await _dry_run_one_row(
@@ -78,6 +94,22 @@ async def test_freshman_global_match_collision_is_kept_as_new_snapshot_row(monke
     )
 
     assert record["raw_player_name"] == "Cameron Williams"
+    assert record["player_id"] is None
+    assert record["returning_status"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_global_match_requires_first_and_last_initials(monkeypatch):
+    record = await _dry_run_one_row(
+        monkeypatch,
+        school_id=8,
+        school_name="Purdue",
+        row=_snapshot_row("Caden Pierce", "Sr"),
+        roster_index={99: [(1524, "Braden Pierce")]},
+        player_to_school={1524: 99},
+    )
+
+    assert record["raw_player_name"] == "Caden Pierce"
     assert record["player_id"] is None
     assert record["returning_status"] == "new"
 
