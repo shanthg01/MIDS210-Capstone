@@ -35,10 +35,6 @@ SELECT
     l.school_id AS baseline_school_id,
     rsp.player_id,
     l.season,
-    rsp.returning_status,
-    rsp.class_year,
-    rsp.transfer_source_school_id,
-    rsp.match_confidence,
     l.snapshot_id,
     l.snapshot_date
 FROM latest l
@@ -83,42 +79,6 @@ class RosterBaselineSummary:
     fallback_rows: int
     snapshot_schools: int
     fallback_schools: int
-
-
-def _is_freshman_class(class_year: object) -> bool:
-    if not isinstance(class_year, str):
-        return False
-    normalized = class_year.strip().lower().replace(".", "")
-    return normalized in {"fr", "freshman", "first year", "first-year"}
-
-
-def is_suspicious_snapshot_feature_match(
-    returning_status: object,
-    class_year: object,
-) -> bool:
-    """Whether a matched snapshot row should be excluded from feature baselines."""
-    return returning_status == "transfer_in" and _is_freshman_class(class_year)
-
-
-def filter_snapshot_members(members: pd.DataFrame) -> pd.DataFrame:
-    """Drop snapshot matches that are likely same-name entity collisions.
-
-    The roster snapshot source includes incoming freshmen, but those players
-    often have no college feature row yet. A global exact-name match can attach
-    that freshman to an unrelated college player, making them look like a
-    transfer-in with prior stats. Treat freshman + transfer-in as suspicious
-    and leave that player out of the feature-bearing baseline.
-    """
-    if members.empty or not {"class_year", "returning_status"}.issubset(members.columns):
-        return members
-    suspicious = members.apply(
-        lambda r: is_suspicious_snapshot_feature_match(
-            r["returning_status"],
-            r["class_year"],
-        ),
-        axis=1,
-    )
-    return members.loc[~suspicious].copy()
 
 
 def build_historical_members(stats_df: pd.DataFrame, seasons: list[int]) -> pd.DataFrame:
@@ -174,7 +134,6 @@ def load_latest_snapshot_members(engine: Engine, season: int) -> pd.DataFrame:
     if not rows:
         return empty
     members = pd.DataFrame(rows, columns=cols)
-    members = filter_snapshot_members(members)
     members["baseline_status"] = BASELINE_STATUS_SNAPSHOT
     return members[
         ["player_id", "baseline_school_id", "season", "baseline_status"]

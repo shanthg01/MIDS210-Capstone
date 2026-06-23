@@ -29,7 +29,6 @@ from portalpoint.db.models import (
     RosterSnapshotPlayer,
     Transfer,
 )
-from portalpoint.modeling.roster_baseline import is_suspicious_snapshot_feature_match
 
 ROSTER_BASELINE_MIN_GAMES = 5
 
@@ -294,19 +293,13 @@ async def get_roster_baseline_membership(
     if snapshot is not None:
         snapshot_member = (
             await db.execute(
-                select(
-                    RosterSnapshotPlayer.returning_status,
-                    RosterSnapshotPlayer.class_year,
-                ).where(
+                select(RosterSnapshotPlayer.player_id).where(
                     RosterSnapshotPlayer.snapshot_id == snapshot.id,
                     RosterSnapshotPlayer.player_id == player_id,
                 )
             )
-        ).first()
-        if snapshot_member is None:
-            return False
-        returning_status, class_year = snapshot_member
-        return not is_suspicious_snapshot_feature_match(returning_status, class_year)
+        ).scalar_one_or_none()
+        return snapshot_member is not None
 
     same_school = (
         await db.execute(

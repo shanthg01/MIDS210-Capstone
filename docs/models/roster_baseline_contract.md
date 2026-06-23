@@ -37,11 +37,13 @@ Latest season where `S + 1` does not exist:
 - Snapshot ingest must use BartTorvik `rostercast.php` team-name aliases where
   the DB `schools.name` differs from the source-site parameter (`UConn` ->
   `Connecticut`, `Ole Miss` -> `Mississippi`, etc.).
+- Snapshot ingest does not global-name-match freshman rows to players from
+  other schools. Those rows remain raw roster members with `player_id = NULL`
+  and `returning_status = 'new'` until a proper identity/stat/depth-prior path
+  exists.
 - Matched snapshot players count in the roster baseline.
 - Incoming freshmen or other unmatched snapshot players are left out of the
   feature-bearing baseline until a depth-only prior exists.
-- Snapshot matches marked as freshman + transfer-in are treated as suspicious
-  same-name collisions and excluded at baseline-read time.
 - If a school has no usable snapshot, fallback to same-season
   `player_season_stats` minus explicit departures from `transfers`, Hoop
   Explorer `transfer_dest = 'NBA'`, and likely senior/graduate eligibility

@@ -71,38 +71,3 @@ def test_prior_fallback_subtracts_explicit_departures():
         (1, 10, 2026, rb.BASELINE_STATUS_PRIOR_FALLBACK),
     }
 
-
-def test_snapshot_members_drop_freshman_transfer_in_name_collision():
-    members = pd.DataFrame([
-        {
-            "player_id": 1,
-            "baseline_school_id": 10,
-            "season": 2026,
-            "returning_status": "transfer_in",
-            "class_year": "Fr",
-        },
-        {
-            "player_id": 2,
-            "baseline_school_id": 10,
-            "season": 2026,
-            "returning_status": "transfer_in",
-            "class_year": "Jr",
-        },
-        {
-            "player_id": 3,
-            "baseline_school_id": 10,
-            "season": 2026,
-            "returning_status": "returning",
-            "class_year": "Fr",
-        },
-    ])
-
-    filtered = rb.filter_snapshot_members(members)
-
-    assert set(filtered["player_id"]) == {2, 3}
-
-
-def test_suspicious_snapshot_feature_match_predicate():
-    assert rb.is_suspicious_snapshot_feature_match("transfer_in", "Fr") is True
-    assert rb.is_suspicious_snapshot_feature_match("transfer_in", "Jr") is False
-    assert rb.is_suspicious_snapshot_feature_match("returning", "Fr") is False
