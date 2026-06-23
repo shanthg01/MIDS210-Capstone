@@ -13,12 +13,16 @@ Model per (player, skill) — scalar local-level state-space:
     alpha_t = alpha_(t-1) + w_t,      w_t ~ N(0, Q)
     y_t     = alpha_t + v_t,          v_t ~ N(0, R_t)
 
-`R_t` is sample-size-weighted (`R_t = 1 / weight_t`) per §7 of the plan doc:
-shooting skills weight by attempts that game, rate skills (assists,
-rebounds, etc., expressed per-40-minutes) weight by minutes played that
-game. `Q` is fit once per skill via pooled MLE across every player's game
-sequence for that skill — fitting a separate Q per player would be unstable
-on panels this short (many players have under 15 games this season).
+`R_t` is sample-size-weighted (`R_t = numerator / weight_t`, see `_r_numerator`)
+per §7 of the plan doc: shooting skills weight by attempts that game (Bernoulli
+variance, numerator ~ p(1-p)), rate skills (assists, rebounds, etc., expressed
+per-40-minutes) weight by minutes played that game (Poisson-consistent
+numerator ~ mean_rate * 40 — fixed 2026-06-23, see notebook §13/BRANCH_TODO.md
+P1; a flat numerator of 1.0 had been underestimating count-rate noise by
+orders of magnitude). `Q` is fit once per skill via pooled MLE across every
+player's game sequence for that skill — fitting a separate Q per player would
+be unstable on panels this short (many players have under 15 games this
+season).
 
 This module deliberately does not re-derive the value-translation step —
 it produces `skill_*` columns in the same shape Phase 0
@@ -124,6 +128,15 @@ def kalman_smoother_series(a: np.ndarray, P: np.ndarray, Q: float) -> tuple[np.n
 
 Sequence = tuple[np.ndarray, np.ndarray, np.ndarray, float, float]  # y, R, mask, prior_mean, prior_var
 
+# Q search bounds. Widened from the original (1e-6, 2.0) — that range was
+# implicitly tuned against the old, badly-undersized R_t (see _r_numerator):
+# now that count-rate skills' R_t is correctly scaled to their y-units (which
+# can run into the tens, e.g. assists/turnovers per 40 minutes, vs. shooting
+# skills' [0, 1] rate scale), their plausible Q range is larger too. One wide
+# shared bound is simpler than a per-skill-type bound and costs nothing extra
+# — minimize_scalar's bounded Brent search is cheap regardless of width.
+Q_BOUNDS = (1e-6, 100.0)
+
 
 def _pooled_neg_log_likelihood(q_value: float, sequences: list[Sequence]) -> float:
     if q_value <= 0:
@@ -145,31 +158,61 @@ def pooled_neg_log_likelihood(q_value: float, sequences: list[Sequence]) -> floa
     return _pooled_neg_log_likelihood(q_value, sequences)
 
 
-def fit_q_mle(sequences: list[Sequence], bounds: tuple[float, float] = (1e-6, 2.0)) -> tuple[float, float]:
+def fit_q_mle(sequences: list[Sequence], bounds: tuple[float, float] = Q_BOUNDS) -> tuple[float, float]:
     """Pooled MLE fit of one global process variance Q for a skill, across
     every player's game sequence. Returns (Q, neg_log_likelihood_at_Q)."""
     result = minimize_scalar(_pooled_neg_log_likelihood, bounds=bounds, args=(sequences,), method="bounded")
     return float(result.x), float(result.fun)
 
 
+def _r_numerator(skill: str, prior_mean: float) -> float:
+    """Per-skill observation-noise numerator for R_t = numerator / weight_t.
+
+    Shooting skills: y is a make/attempt Bernoulli rate, weight is attempts.
+    Var(y) = p(1-p)/attempts, so numerator = p(1-p) — roughly constant
+    (~0.2-0.25) across realistic shooting percentages, which is why a flat
+    numerator of 1.0 happened to work tolerably for these (just a constant
+    rescaling Q absorbs).
+
+    Rate-per-40 skills: y = K/minutes*40 where K ~ Poisson(lambda*minutes)
+    is the raw game count and lambda is the true per-minute rate.
+    Var(K) = lambda*minutes (Poisson variance = mean), so
+    Var(y) = Var(K)*(40/minutes)**2 = lambda*1600/minutes.
+    lambda = E[y]/40, so Var(y) = (E[y]/40)*1600/minutes = E[y]*40/minutes
+    -> numerator = E[y]*40 (approximated here by prior_mean*40).
+
+    This was the actual bug (plan doc §15, notebook §13): a flat numerator of
+    1.0 underestimated count-rate observation noise by orders of magnitude
+    (e.g. turnover_avoidance's true numerator is ~prior_mean*40, often
+    100-500+, not 1) — Q was saturating at its upper bound trying to explain
+    that mismatch as real game-to-game state movement instead of noise.
+    """
+    if skill in SHOOTING_SKILLS:
+        p = min(max(prior_mean, 0.01), 0.99)
+        return p * (1.0 - p)
+    return max(prior_mean, 1e-3) * 40.0
+
+
 def build_player_sequences(obs_df: pd.DataFrame, skill: str) -> dict[int, Sequence]:
     """One Sequence per player_id for the given skill. Observation noise
-    R_t = 1/weight_t (capped) — relative weighting only; Phase 1 explicitly
-    does not attempt absolute noise-scale calibration (that's Phase 2+,
-    see plan doc §15)."""
+    R_t = numerator / weight_t — see _r_numerator for the Bernoulli vs.
+    Poisson-rate derivation. This is still an approximation (population-mean
+    numerator, not per-player), but fixes the order-of-magnitude scale error
+    that previously pinned count-rate skills' Q at its upper bound."""
     y_col, w_col = f"y_{skill}", f"weight_{skill}"
     valid_mask_all = obs_df[w_col] > 0
     prior_mean = float(obs_df.loc[valid_mask_all, y_col].mean())
     prior_var = float(obs_df.loc[valid_mask_all, y_col].var(ddof=1)) * 4.0
     if not np.isfinite(prior_var) or prior_var <= 0:
         prior_var = 1.0
+    r_numerator = _r_numerator(skill, prior_mean)
 
     sequences: dict[int, Sequence] = {}
     for player_id, g in obs_df.groupby("player_id"):
         mask = (g[w_col] > 0).to_numpy()
         y = g[y_col].fillna(prior_mean).to_numpy(dtype=np.float64)
         weight = g[w_col].clip(lower=1e-6).to_numpy(dtype=np.float64)
-        R = 1.0 / weight
+        R = r_numerator / weight
         sequences[int(player_id)] = (y, R, mask, prior_mean, prior_var)
     return sequences
 

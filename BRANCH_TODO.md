@@ -100,6 +100,16 @@ priority — work top to bottom.**
    *why* Q saturates at the upper bound for exactly these skills (Cell 9/10) and why Phase 0
    agreement is weak for them (Cell 12, corr 0.15-0.39). Fix: derive `R_t` from an empirical
    or Poisson-approximate per-skill noise scale, not a flat `1/weight`.
+   **[x] Done 2026-06-23.** Added `_r_numerator()` in `player_projection_kalman.py` —
+   Bernoulli `p(1-p)` for shooting skills, Poisson-derived `mean_rate * 40` for count-rate
+   skills (full derivation in the function docstring). Widened `Q_BOUNDS` from `(1e-6, 2.0)`
+   to `(1e-6, 100.0)` to match the corrected scale. **Result: zero skills at-bound**, and
+   Phase 0/Phase 1 correlation jumped for every count-rate skill: usage 0.39→0.77, passing
+   0.37→0.81, turnover 0.15→0.50, off/def rebounding 0.29/0.27→0.78/0.77, steal 0.17→0.72,
+   block 0.39→0.80. Shooting skills dipped slightly (0.61→0.60, 0.68→0.59) — expected,
+   harmless (numerator changed from flat 1.0 to `p(1-p)`, not a regression). Added 5 unit
+   tests (`tests/test_player_projection_kalman.py`); notebook re-executed end-to-end with
+   the fix, zero errors; full suite 144 passed.
 
 2. **[P2] Investigate the `def_adj_rapm` vs. box-score-defense sign anomaly (new — from Q4
    review).** `block_rim_protection`/`steal_disruption` have *negative* coefficients against
@@ -114,16 +124,27 @@ priority — work top to bottom.**
 3. **[P3] Re-run notebook Cells 9-12 after the P1 fix.** Success criteria: count-rate skills'
    fitted Q lands in the interior of `(1e-6, 2.0)`, not pinned; Phase 0/Phase 1 correlation
    improves materially from the current 0.15-0.39 range for those skills.
+   **[x] Done 2026-06-23** — folded into the P1 re-run above; same numbers.
 
 4. **[P4] Do not start Phase 2 (block covariance, cross-season `rho`/dev-curve) until P1-P3
    are resolved.** The 2020-2026 game-log backfill already removed the data blocker — adding
    cross-season complexity on top of a miscalibrated single-season model would bury the P1/P2
    bugs deeper, not fix them.
+   **P1/P3 now resolved — Phase 2 is unblocked on both axes (data + calibration). P2 (the
+   def_adj_rapm sign anomaly) is still open** and arguably should gate Phase 2 too, since it
+   questions Phase 0's value-model validity for defense, which Phase 2 would build on.
 
 5. **[P5] Re-run Phase 0 (Cells 2-7) once Section 1's upstream fixes land** — real
    `players.position` and the expanded HE RAPM label set both feed Phase 0's inputs/training
    labels. Re-check the value-model coefficients (Cell 4) and top-10 spot-check (Cell 5) for
    material changes, not just a mechanical rerun.
+   **[x] Done 2026-06-23** — done as part of closing out Section 1 (notebook re-executed
+   twice: once after the position/HE fixes, once after the P1 R_t fix). Top-10 list shifted
+   only slightly (minor name-match drift from the barttorvik rerun) — no material change.
+
+**Remaining open: P2 only.** Recommend tackling the `def_adj_rapm` sign anomaly next — it's
+the one item left that questions whether Phase 0's current production output (`value_per_100`
+for defense-heavy players) is trustworthy as-is.
 
 ---
 
