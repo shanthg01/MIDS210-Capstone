@@ -1,9 +1,20 @@
 # Player Projection Model Plan
 ## State-Space Player Skill and Value Projection System
 
-**Planned notebook:** `notebooks/models/player_projection_state_space.ipynb`  
+**Status (2026-06-23): Phase 0 in production. Phase 1 validated and calibrated. Phase 2 unblocked, not started.**
+Phase 0 (`player-projection-shrinkage-v1`) writes real rows to `player_projections`, served by
+`GET /api/players/{id}/projection`. Phase 1 (single-season Kalman, `player_projection_kalman.py`)
+is implemented, its `R_t`-scaling bug found and fixed, and its defense-label sign question
+investigated and resolved as a real (non-bug) finding — see §15 and the notebook's §13 for the
+full record. Phase 2 (cross-season persistence, block covariance) is the open next step: the
+2020-2025 game-log backfill that gated it is complete, and nothing in §15's Phase 0/1 checklist
+remains open.
+
+**Notebook:** `notebooks/models/player_projection_state_space.ipynb` (built, executed, both phases)  
+**Script:** `scripts/run_player_projection.py` (Phase 0 only — Phase 1 has no production script, it's notebook-only validation)  
+**Module:** `src/portalpoint/modeling/player_projection.py` (Phase 0), `player_projection_kalman.py` (Phase 1)  
 **Model family:** Game-level state-space model + hybrid basketball rate model  
-**Primary output table:** `predictions` initially, with a future dedicated `player_projections` table  
+**Primary output table:** `player_projections` (migration `e6a2c8f1b734`) — the original plan to stage through `predictions` was dropped, see §10  
 **Downstream consumers:** Playing Time / Rotation model, Role Fit score, Team Rating Projection, Recommendations, player profile UI  
 **Related plan:** `docs/models/role_fit_playing_time_model_plan.md`
 
@@ -991,23 +1002,25 @@ These questions are settled for the first version of the player projection plan.
 
 Three tiers, matching the Phase 0/1/2 staging in §7, not two.
 
-### Phase 0 (MVP — ships first)
+### Phase 0 (MVP — ships first) — ✅ done, in production (2026-06-23)
 
 - Preserve the two-stage architecture conceptually, but Stage 1 is a per-skill empirical-Bayes shrinkage estimator, not a Kalman filter.
 - Use season-level data (`player_season_stats`, `hoop_explorer_player_stats`) as the only input — 2026 game logs are too thin for a single-season state-space fit to beat a shrinkage estimator anyway.
 - Fit interpretable RAPM-style value model against the corrected Hoop Explorer label set (§5/§8: `off_adj_rapm`, `def_adj_rapm`, `adj_rapm_margin`).
 - Consume heuristic or future Playing Time / Rotation minutes for destination-adjusted outputs.
 - Write to the new `player_projections` table (§18) from day one — never stage through `predictions`.
+- **Result:** 27,047 player-seasons (2021-2026) scored and written, served by `GET /api/players/{id}/projection`. Two real upstream data bugs found and fixed along the way (`players.position` hardcoded `'G'`; Hoop Explorer ingest dropping `off_adj_rapm_prod`/`adj_rapm_prod_margin`) — neither was a Phase 0 logic bug, both were pre-existing ingestion gaps Phase 0's data audit surfaced.
 
-### Phase 1 (state-space, single-season)
+### Phase 1 (state-space, single-season) — ✅ done, validated and calibrated (2026-06-23)
 
 - Univariate (diagonal-covariance) linear Gaussian state-space per skill, fit via Kalman MLE, still on 2026 game logs only.
 - Validates the state-space machinery (filtering, smoothing, forecast uncertainty) without betting the whole MVP on multivariate convergence.
 - Requires `hoopr_player_game_logs`/`hoopr_games` for 2026 (already ingested) — does not require the 2020-2025 backfill.
+- **Result:** machinery works; first run surfaced a real bug (`R_t` mis-scaled for count-rate skills — Bernoulli-shaped noise applied to Poisson-shaped data, pinning their fitted `Q` at its search bound). Fixed via `_r_numerator()` (Bernoulli `p(1-p)` vs. Poisson `mean_rate*40`, full derivation in the function docstring) plus widening `Q_BOUNDS` to `(1e-6, 100.0)`. Post-fix: zero skills at-bound, Phase 0/Phase 1 correlation jumped from 0.15-0.39 to 0.50-0.81 for every affected skill. Also investigated (separately, not a Phase 1 bug) a negative correlation between block/steal/def-rebound box stats and Hoop Explorer's `def_adj_rapm` in Phase 0's value model — ruled out competition tier, position, and sample-size as confounds; concluded it's a real, robust property of the RAPM label, not a pipeline artifact.
 
-### Phase 2 (full version)
+### Phase 2 (full version) — unblocked, not started
 
-- 2020-2025 game-log backfill complete — cross-season `rho` and class-year development curve become fittable.
+- 2020-2026 game-log backfill complete (2026-06-23, all 7 seasons) — cross-season `rho` and class-year development curve are now fittable.
 - Block-correlated latent skill states (§6).
 - Hybrid possession outcome and conditional rate model (Stage 2A/2B).
 - Dedicated Playing Time / Rotation model integration.
@@ -1018,7 +1031,7 @@ Three tiers, matching the Phase 0/1/2 staging in §7, not two.
 
 ## 16. Remaining Open Questions
 
-1. **Hoop Explorer coverage and joins:** Can we export enough Hoop Explorer seasons/tiers, and can those rows join cleanly to PortalPoint player/school IDs?
+1. **Hoop Explorer coverage and joins — resolved (2026-06-23):** 16,568 player rows, 16,206 matched to PortalPoint players (97.8%), RAPM columns 100% populated for matched rows. Not a blocker.
 2. **hoopR play-personnel coverage:** Is `espn_mbb_game_play_personnel()` populated broadly enough to support a PortalPoint-owned RAPM-style possession model?
 3. **UI uncertainty surface:** How much uncertainty should surface in the product: intervals, risk tags, percentile bands, or all three?
 4. **No-history player priors:** §14 assumes recruiting/JUCO/international profile data is available for no-history priors, but no such source is ingested anywhere in the current schema (§19). Either find a source or fall back to replacement-level-only priors for that cohort.
@@ -1030,39 +1043,38 @@ Three tiers, matching the Phase 0/1/2 staging in §7, not two.
 Sequenced to match `docs/models/model_dependency_graph.md`'s execution order, with the game-log backfill pulled forward as step 0 since it gates the full game-level path.
 
 ```text
-0.  Backfill 2020-2025 hoopR game logs:
+0.  ✅ DONE (2026-06-23). Backfill 2020-2025 hoopR game logs:
     uv run python scripts/ingest_hoopr.py --season 2020 --game-logs --skip-season-stats
-    (repeat for 2021-2025; 2026 already done)
-    Blocking for Phase 2 (§15) only — Phase 0/1 can start without this.
+    (repeated for 2021-2025; 2026 already done) — all 7 seasons now in hoopr_player_game_logs.
+    Was blocking for Phase 2 only — Phase 0/1 didn't need it and shipped first as planned.
 
-1.  Migration: add `player_projections` table (§18).
+1.  ✅ DONE. Migration: add `player_projections` table (§18) — e6a2c8f1b734.
 
-2.  src/portalpoint/modeling/player_projection.py
+2.  ✅ DONE. src/portalpoint/modeling/player_projection.py
     - Phase 0: shrinkage fit/score/write functions, mirroring the pure-function
       pattern already used by player_clustering.py / scheme_fit.py / gap_matching.py.
-    - Derive level_TP (competition tier) from team_season_stats.adj_em
-      percentile-per-season (see §5 "Context adjustments").
+    - level_TP (competition tier) derivation was scoped out of Phase 0 — Phase 0
+      doesn't use a level/tier feature at all (§5's "Context adjustments" framing
+      applies to Phase 1/2's game-level context, not Phase 0's season-grain shrinkage).
+      Still open whenever Phase 2 needs it.
     - Pull value-label targets from the corrected Hoop Explorer column set (§5/§8).
 
-3.  notebooks/models/player_projection_state_space.ipynb
-    - Cell 0-4 as specified in §13, scoped to Phase 0 first.
-    - Cell 1 coverage audit should explicitly report: how many seasons of
-      game-log coverage exist per player, and gate Phase 1/2 cells on that
-      count rather than silently falling back.
+3.  ✅ DONE. notebooks/models/player_projection_state_space.ipynb
+    - Built with 13 sections covering both Phase 0 and Phase 1 (not just 0-4 as
+      originally scoped — Phase 1 landed in the same notebook once it was ready).
+    - Cell 1 coverage audit reports per-season game-log row counts; confirmed full
+      2020-2026 coverage as of the step-0 backfill above.
 
-4.  scripts/run_player_projection.py
-    - Thin non-interactive CLI, same convention as run_scheme_fit.py /
-      run_gap_matching.py — fixed params, no tuning, writes to
-      player_projections.
+4.  ✅ DONE. scripts/run_player_projection.py — Phase 0 only, no production script
+    for Phase 1 (notebook-only validation, by design — see §15).
 
-5.  Validation (§12) against the corrected RAPM labels, run before wiring
-    into Role Fit — Role Fit's hard dependency on "player projections" in
-    model_dependency_graph.md is currently "not yet built"; this is what
-    unblocks it.
+5.  ✅ DONE. Validation against the corrected RAPM labels (off_adj_rapm_prod/
+    adj_rapm_prod_margin robustness check, corr 0.643/0.433). Role Fit's hard
+    dependency on player projections is now unblocked — Role Fit itself not yet built.
 
-6.  Once 2020-2025 backfill (step 0) lands and Phase 1 is calibrated,
-    revisit Phase 2 (block covariance, multivariate Kalman) as a separate
-    follow-up, not bundled into the first ship.
+6.  Phase 2 (block covariance, multivariate Kalman, cross-season rho) — data and
+    calibration blockers both cleared (step 0 above; Phase 1's R_t bug fixed,
+    see §15). Not yet started. Next real step on this model.
 ```
 
 ## 18. Additional Database Changes
@@ -1105,9 +1117,11 @@ CREATE UNIQUE INDEX uq_player_projections_destination
 
 Plus a lookup index for the common read path: `Index("ix_player_projections_player_season", "player_id", "season")`.
 
-### No other schema changes are required
+### One additional schema change landed alongside this: `hoop_explorer_player_stats` RAPM columns
 
-`hoop_explorer_player_stats`, `hoopr_player_game_logs`, `hoopr_games`, `transfers`, `player_season_stats`, and `team_season_stats` already carry everything else this plan needs. Competition tier (`level_TP`) is a derived feature, not a column (§5) — do not add a `schools.tier` column for this; it would need season-aware recomputation and would just go stale like a cached value.
+Not originally scoped under "Additional Database Changes" (it surfaced from the §5/§19 ingestion-gap investigation, not from `player_projections`' own design) — migration `f1c4a8d3e570` added `off_adj_rapm_prod`/`def_adj_prod_rapm`/`adj_rapm_prod_margin`/`off_adj_rapm_pred`/`def_adj_rapm_pred` to `hoop_explorer_player_stats`. Only 2 of the 5 actually populate (the other 3 are empty in HE's raw export itself, not an ingest bug — see §19).
+
+`hoopr_player_game_logs`, `hoopr_games`, `transfers`, `player_season_stats`, and `team_season_stats` carry everything else this plan needs. Competition tier (`level_TP`) is a derived feature, not a column (§5) — do not add a `schools.tier` column for this; it would need season-aware recomputation and would just go stale like a cached value.
 
 ## 19. Additional Source Data Needed
 

@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 21, 2026
+**Last updated:** June 23, 2026
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -117,6 +117,10 @@ Applied migration chain:
 | `d8e5c2a9f163` | Adds `hoopr_games`, `hoopr_team_game_logs`, `hoopr_player_game_logs` (game-level grain — Issue #17 items 1-2) |
 | `f4a7c1e9b026` | Adds `transfer_portal_events`, `roster_snapshots`, `roster_snapshot_players` (Issue #17 items 3-4); adds `uq_transfers_player_season` unique constraint to `transfers` (enables upsert) |
 | `b9c3f7a2d514` | Adds `roster_state_features` (Issue #17 item 6) |
+| `c7f1a9d3e652` | Adds `player_team_fit_scores.is_portal_candidate` + index |
+| `d4e8b1f3a927` | Adds `roster_baseline_members` |
+| `e6a2c8f1b734` | Adds `player_projections` (Player Projection Phase 0) — two partial unique indexes (`WHERE school_id IS NULL` / `IS NOT NULL`) instead of one `UniqueConstraint`, since `school_id` is nullable and Postgres treats every `NULL` as distinct under a normal unique constraint |
+| `f1c4a8d3e570` | Adds `hoop_explorer_player_stats.off_adj_rapm_prod`/`def_adj_prod_rapm`/`adj_rapm_prod_margin`/`off_adj_rapm_pred`/`def_adj_rapm_pred` — **migration only adds columns; must re-run `ingest_hoop_explorer.py --all-seasons` to populate.** Confirmed after rerun: only `off_adj_rapm_prod`/`adj_rapm_prod_margin` actually populate (100%) — the other 3 are empty in HE's raw export across all 6 seasons, an HE export-configuration limit, not an ingest bug |
 
 Important tables:
 
@@ -140,12 +144,16 @@ Important tables:
 | `transfers` | Promoted transfer records (matched rows only) — `(player_id, season)` unique, supports upsert; backfills `pre_per`/`pre_minutes_per_game`/`pre_usage_rate` from `player_season_stats` |
 | `roster_snapshots` / `roster_snapshot_players` | Point-in-time roster composition per school per scrape date (barttorvik `rostercast.php`); `returning_status` (`returning`/`transfer_in`/`new`) computed by diffing against `player_season_stats`, not given by the source |
 | `roster_state_features` | One row per `roster_snapshots` row — derived facts (counts/sums, not gap scores): returning/departing/incoming minutes+usage by position (as min_pct share — see note below), returning production/impact, class balance, archetype counts. Built by `scripts/build_roster_state_features.py` (plain script, not a model — no MLflow) |
+| `roster_baseline_members` | Shared roster-membership snapshot consumed by Gap Matching (`gap-cos-v4`) and intended for Role Fit/Team Rating Projection too — see `portalpoint.modeling.roster_baseline` |
+| `player_projections` | **Real, 27,047 rows (2021-2026), Player Projection Phase 0.** Neutral-mode only (`school_id` NULL) — destination mode is Phase 2+, gated on Role Fit. Written by `scripts/run_player_projection.py` / `notebooks/models/player_projection_state_space.ipynb`; served by `GET /api/players/{id}/projection` |
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Future team impact outputs |
 | `recommendations` | Future ranked player recommendations |
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
 
-**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` backfill is done for 2021-2026 (499/628/774/1,037/1,346/1,251 rows respectively, confirmed 2026-06-23). Season 2020 was scraped (371 raw rows in `transfer_portal_events`) but produced zero matches — all rows landed `match_status='no_school'`; `transfers` has no 2020 rows and this needs separate investigation, not a rerun of the same command. **Game-level data is the real remaining gap:** `hoopr_player_game_logs`/`hoopr_games`/`hoopr_team_game_logs` only cover season 2026 (178,108 player-game rows) — 2020-2025 backfill not yet run (command below).
+**Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` backfill is done for 2021-2026 (499/628/774/1,037/1,346/1,251 rows respectively, confirmed 2026-06-23). Season 2020 was scraped (371 raw rows in `transfer_portal_events`) but produced zero matches — all rows landed `match_status='no_school'`; `transfers` has no 2020 rows and this needs separate investigation, not a rerun of the same command. **Game-level data backfill is done (2026-06-23):** `hoopr_player_game_logs`/`hoopr_games`/`hoopr_team_game_logs` now cover all 7 seasons 2020-2026 (player-game row counts: 162,813 / 121,547 / 171,896 / 176,962 / 180,527 / 184,504 / 178,108 — 1,176,237 total). This was blocked mid-backfill by an unrelated stray Postgres session that had been `idle in transaction` since before the backfill even started, silently holding a lock on `hoopr_games` inserts — `pg_terminate_backend()` on that session unblocked it; not a backfill-script bug.
+
+**`players.position` was hardcoded `'G'` for all players, now fixed (2026-06-23):** root cause was a literal placeholder in `ingest_barttorvik.py` predating this fix window (`"position": "G",  # ... update from cbbpy later`). A real fix (`_infer_position()`, maps barttorvik role + height to PG/SG/SF/PF/C) landed 2026-06-21 (commit `5be701e`) but the ingest was never re-run afterward. Reran `ingest_barttorvik.py --seasons 2021 2022 2023 2024 2025 2026` — confirmed real distribution (SG=5172, C=3947, PG=1874, SF=1354, PF=956). This also un-stalled `gap_matching.py`'s `players_position` fallback layer (previously dead — `'G'` can never match `"PG"`/etc.).
 
 **Gap Matching is now `gap-cos-v4`, all-pairs with shared roster baseline (2026-06-22 branch):** scoring still covers every eligible player×school×season pair, but team gap vectors no longer use raw `player_season_stats` plus a narrow portal-departure subtraction. `scripts/run_gap_matching.py` now builds roster vectors through `portalpoint.modeling.roster_baseline`: historical seasons use `player_season_stats(S+1)` to infer the actual target roster outlook; the latest season uses latest `roster_snapshots` when available, with same-season stats minus expected departures (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) for schools without usable snapshots. `player_team_fit_scores.is_portal_candidate` (migration `c7f1a9d3e652`) still flags portal candidates via `portalpoint.modeling.availability`; this is intentionally separate from roster-baseline membership.
 
@@ -187,10 +195,12 @@ Policy/ops notes:
 
 | Stage | Script / notebook | Status | Output |
 |---|---|---|---|
-| BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete | Player/team stats in Postgres; raw CSVs in S3 |
-| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026, including the `off_ast_*`/`def_ast_*` assist-split backfill (2026-06-19) | `hoop_explorer_team_stats` (~2,151 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble + assist-split cols populated; raw files in S3 |
+| BartTorvik ingest | `scripts/ingest_barttorvik.py` | Complete; re-run 2026-06-23 to pick up the `players.position` fix (`_infer_position()`) | Player/team stats in Postgres; raw CSVs in S3 |
+| Hoop Explorer ingest | `scripts/ingest_hoop_explorer.py --all-seasons` | Complete — 6 seasons 2021-2026; assist-split backfill (2026-06-19); RAPM-prod/pred field mapping extended + re-run (2026-06-23, migration `f1c4a8d3e570`) | `hoop_explorer_team_stats` (~2,151 rows) + `hoop_explorer_player_stats` (~16,750 rows, all D1 tiers); `pos_confidence_*` + trans/scramble + assist-split + `off_adj_rapm_prod`/`adj_rapm_prod_margin` cols populated; raw files in S3 |
 | hoopR PBP ingest | `scripts/ingest_hoopr.py` | Complete — 6 seasons 2021-2026 | `hoopr_team_season_stats` + `hoopr_player_season_stats`; raw parquet in S3 |
-| hoopR game logs | `scripts/ingest_hoopr.py --game-logs` | Complete for 2026 — same sportsdataverse-data host as PBP, different release tag (schedule + team/player box score parquet) | `hoopr_games` + `hoopr_team_game_logs` + `hoopr_player_game_logs` |
+| hoopR game logs | `scripts/ingest_hoopr.py --game-logs` | **Complete for all 7 seasons 2020-2026** (was 2026-only; backfilled 2026-06-23) — same sportsdataverse-data host as PBP, different release tag (schedule + team/player box score parquet) | `hoopr_games` + `hoopr_team_game_logs` + `hoopr_player_game_logs` — 1,176,237 player-game rows total |
+| Player Projection Phase 0 | `scripts/run_player_projection.py` / `notebooks/models/player_projection_state_space.ipynb` | Complete — `player-projection-shrinkage-v1` | `player_projections` (27,047 rows, neutral mode); served by `GET /api/players/{id}/projection` |
+| Player Projection Phase 1 | `notebooks/models/player_projection_state_space.ipynb` Cells 8-12 | Validation only, no production script — single-season (2026) Kalman filter/smoother per skill; `R_t` scaling bug fixed 2026-06-23 | No DB write; validates Phase 2 readiness |
 | 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped but 0 matched, needs investigation | `transfer_portal_events` (raw) + `transfers` (promoted) |
 | barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Complete — 357 distinct schools (target ~365) | `roster_snapshots` + `roster_snapshot_players` |
 | Roster-state features | `scripts/build_roster_state_features.py` | Plain script, not a model (no MLflow); depends on a roster snapshot existing — should be re-run against the full 357-school snapshot set if it was last run against a narrower subset | `roster_state_features` |
@@ -214,6 +224,7 @@ Suggested rebuild order from a fresh DB:
 11. run_team_clustering.py
 12. run_scheme_fit.py                              # scheme-cos-v3 — all-pairs; run before run_gap_matching.py
 13. run_gap_matching.py                            # gap-cos-v4 — all-pairs, shared roster baseline
+14. run_player_projection.py                        # player-projection-shrinkage-v1 — Phase 0, writes player_projections (neutral mode)
 ```
 
 **Transfer-portal backfill (Issue #17 item 3) — done for 2021-2026, 2020 unresolved:**
