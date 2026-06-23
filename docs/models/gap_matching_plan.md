@@ -57,6 +57,14 @@ detail, including two bugs found and fixed at this scale (role_fit/program_fit
 placeholder mismatch; the "preserve existing Scheme Fit context" step not scaling past
 ~1.3M rows).
 
+**Update (2026-06-22 branch) — `gap-cos-v4`, shared roster baseline.** The
+current script no longer uses the `filter_departed()` query below as the
+complete roster-baseline definition. It now calls
+`portalpoint.modeling.roster_baseline`: historical seasons infer target roster
+membership from `player_season_stats(S+1)`, while the latest season uses latest
+`roster_snapshots` with expected-departure fallback for schools without usable
+snapshots. Candidate availability still comes from `portalpoint.modeling.availability`.
+
 SELECT player_id, from_school_id
 FROM transfers
 WHERE from_school_id IS NOT NULL

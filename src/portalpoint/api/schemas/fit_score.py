@@ -72,3 +72,8 @@ class FitScoreResponse(BaseModel):
     # (player_season_stats) — flags the current-school-row confusion case
     # (PR #33 follow-up #3) instead of hiding it.
     is_current_school: bool = False
+    # True if the player counts in the shared roster baseline used by
+    # roster-aware models. This can differ from is_current_school when a
+    # player has a stale player_season_stats row but is absent from the latest
+    # roster outlook.
+    is_roster_baseline_member: bool = False

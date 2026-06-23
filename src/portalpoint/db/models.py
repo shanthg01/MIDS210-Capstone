@@ -982,6 +982,33 @@ class RosterStateFeatures(Base):
     school: Mapped[School] = relationship()
 
 
+class RosterBaselineMember(Base):
+    """
+    Persisted output of portalpoint.modeling.roster_baseline.build_roster_baseline_frame()
+    — one row per (player_id, school_id, season) the shared roster baseline
+    considers "on this school's roster outlook." Written by both
+    scripts/run_gap_matching.py and notebooks/models/gap_matching.ipynb (same
+    helper, roster_baseline.write_roster_baseline_members()) so there is one
+    real computation, not a second copy of the membership rules re-derived
+    at API-read time.
+    """
+
+    __tablename__ = "roster_baseline_members"
+    __table_args__ = (
+        UniqueConstraint("player_id", "school_id", "season", name="uq_roster_baseline_member"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    baseline_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    player: Mapped[Player] = relationship()
+    school: Mapped[School] = relationship()
+
+
 class NILValuation(Base):
     __tablename__ = "nil_valuations"
     __table_args__ = (
