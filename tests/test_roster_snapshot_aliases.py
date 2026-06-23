@@ -83,18 +83,18 @@ async def test_freshman_global_match_collision_is_kept_as_new_snapshot_row(monke
 
 
 @pytest.mark.asyncio
-async def test_braden_smith_matches_as_purdue_returner(monkeypatch):
+async def test_cj_cox_matches_as_purdue_returner(monkeypatch):
     record = await _dry_run_one_row(
         monkeypatch,
         school_id=8,
         school_name="Purdue",
-        row=_snapshot_row("Braden Smith", "Sr"),
-        roster_index={8: [(579, "Braden Smith")]},
-        player_to_school={579: 8},
+        row=_snapshot_row("C.J. Cox", "Jr"),
+        roster_index={8: [(2742, "C.J. Cox")]},
+        player_to_school={2742: 8},
     )
 
-    assert record["raw_player_name"] == "Braden Smith"
-    assert record["player_id"] == 579
+    assert record["raw_player_name"] == "C.J. Cox"
+    assert record["player_id"] == 2742
     assert record["returning_status"] == "returning"
     assert record["transfer_source_school_id"] is None
 
