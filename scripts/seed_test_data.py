@@ -5,9 +5,12 @@ Idempotent seed for the rows the pytest suite assumes already exist:
 school_id=301, player_id in (1, 2, 3, 42, 101) — see tests/conftest.py and
 tests/test_players.py / tests/test_users.py. The suite is integration-style
 (hits the real DB, not fixtures) — locally these rows come from running the
-ingest pipeline (ingest_barttorvik.py etc.); CI has no ingest step, so this
-fills the gap deterministically and fast. Safe to run against an
-already-populated dev DB too — every insert is ON CONFLICT DO NOTHING.
+ingest pipeline (ingest_barttorvik.py etc.) and the modeling scripts
+(run_player_projection.py etc.); CI has neither, so this fills the gap
+deterministically and fast. Safe to run against an already-populated dev DB
+too — every insert is ON CONFLICT DO NOTHING (or DO NOTHING on the relevant
+partial unique index for player_projections), so a real row from an actual
+model run always wins over the seed placeholder.
 
 Usage:
   uv run python scripts/seed_test_data.py
@@ -46,6 +49,23 @@ ON CONFLICT (player_id, school_id, season) DO NOTHING;
 INSERT INTO player_archetypes (player_id, season, archetype_id, archetype_label, confidence, model_version)
 VALUES (101, 2026, 0, 'Test Archetype', 0.85, 'seed-test-v1')
 ON CONFLICT (player_id, season) DO NOTHING;
+
+INSERT INTO player_projections
+    (player_id, school_id, season, projection_mode, value_per_100, value_ci_lower, value_ci_upper,
+     skill_states, skill_percentiles, model_version, expires_at)
+VALUES (
+    101, NULL, 2026, 'neutral', 2.5, 0.5, 4.5,
+    '{"shooting_3p": 0.35, "shooting_2p_finishing": 0.55, "free_throw_touch": 0.75,
+      "shot_creation_usage": 22.0, "passing_creation": 15.0, "turnover_avoidance": 12.0,
+      "offensive_rebounding": 5.0, "defensive_rebounding": 10.0,
+      "steal_disruption": 1.2, "block_rim_protection": 0.9}'::jsonb,
+    '{"shooting_3p": 60.0, "shooting_2p_finishing": 65.0, "free_throw_touch": 70.0,
+      "shot_creation_usage": 55.0, "passing_creation": 80.0, "turnover_avoidance": 50.0,
+      "offensive_rebounding": 40.0, "defensive_rebounding": 60.0,
+      "steal_disruption": 45.0, "block_rim_protection": 35.0}'::jsonb,
+    'player-projection-shrinkage-v1', now() + interval '30 days'
+)
+ON CONFLICT (player_id, season, model_version) WHERE school_id IS NULL DO NOTHING;
 """
 
 
@@ -53,7 +73,7 @@ def main() -> None:
     engine = get_sync_engine()
     with engine.begin() as conn:
         conn.execute(text(SEED_SQL))
-    print("Seed data ready: school(301), players(1,2,3,42,101), player_season_stats, player_archetypes")
+    print("Seed data ready: school(301), players(1,2,3,42,101), player_season_stats, player_archetypes, player_projections")
 
 
 if __name__ == "__main__":
