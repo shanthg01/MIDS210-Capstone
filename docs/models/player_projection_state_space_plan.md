@@ -1172,3 +1172,60 @@ Not part of the modeling plan itself, but surfaced while grounding this doc agai
   https://hoopr.sportsdataverse.org/reference/load_mbb_pbp.html
 - hoopR function index: lists `espn_mbb_game_play_personnel()` for MBB event play personnel / on-court lineup at play, which is the key data dependency for a PortalPoint-owned RAPM target.  
   https://hoopr.sportsdataverse.org/reference/index.html
+
+---
+
+## 22. Phase 2 Progress and TODOs (2026-06-23)
+
+**Status: 2a implemented and validated-with-caveats, then paused for consolidation. 2b-2e not started.** This section is the resume-here record — read it before picking Phase 2 back up.
+
+### 2a — Cross-season, block-aware state-space
+
+Files: `src/portalpoint/modeling/player_projection_phase2.py`, `scripts/validate_phase2_season_model.py`, `tests/test_player_projection_phase2.py` (7 tests, all passing).
+
+**Design:** two-level hierarchical Kalman, not one combined model. Phase 1's intra-season filter (`player_projection_kalman.py`, unchanged) runs once per season across 2020-2026, producing one end-of-season smoothed state per player per season per skill. A new season-grain Kalman layer fits cross-season persistence (`rho`) and development-curve/transfer/level-change drift on top of those season-ending estimates, per §7's state evolution equation. `career_season_index` (rank among a player's own observed seasons) replaces literal `class_year` as the drift covariate — `players.class_year` only holds the most-recently-ingested value, not a per-season history (see the module docstring for the full reasoning).
+
+**Real finding: joint MLE of `rho` and the drift terms (beta_1/beta_2) is not identifiable on this data.** Confirmed three ways, in order:
+1. Naive joint fit on short sequences (n=2-4, the real-data median) lands on a wrong-but-genuinely-better-likelihood optimum than the true generating params — confirmed via multi-start from 4 different initial `rho` values, all converging to the same degenerate point (`rho≈0.06`, wrong-signed drift).
+2. Pooling `rho` from only the long-career subset (n≥5 seasons) didn't fix it — even our longest real sequences (capped at 7 seasons by the game-log backfill) aren't long enough to separate persistence from trend.
+3. Adding a Gaussian MAP-style prior penalty on `rho` didn't fix it either — the likelihood's pull toward the degenerate `rho→0` region was large enough (hundreds of NLL units) to swamp even a fairly tight prior.
+
+**Fix:** estimate `rho` via simple pooled lag-1 Pearson autocorrelation of consecutive-season smoothed estimates instead of MLE — a single, well-identified statistic with no competing parameter to be traded against. Fix it, then fit the drift terms by MLE on the full population. All three failed attempts are preserved in `tests/test_player_projection_phase2.py`, not deleted, so this doesn't get rediscovered the hard way next time.
+
+**Real-data results (full 2020-2026 run, completed 2026-06-23, ~2h15min):**
+
+| Skill | rho | beta_1 | beta_2 | Q | Notes |
+|---|---|---|---|---|---|
+| shooting_3p | 0.200 | 0.011 | -0.001 | 0.0005 | rho at clip floor — see caveat below |
+| shooting_2p_finishing | 0.216 | -0.000 | 0.001 | 0.003 | |
+| free_throw_touch | 0.307 | 0.024 | -0.003 | 0.006 | |
+| shot_creation_usage | 0.491 | -2.997 | 0.600 | 11.0 | large-magnitude params are this skill's natural scale (per-40 attempt rate ~20s), not necessarily alarming |
+| passing_creation | 0.563 | 0.219 | -0.027 | 0.65 | |
+| turnover_avoidance | 0.219 | -0.092 | 0.006 | 0.38 | negative beta_1 = improves with experience (correct direction — this skill is inverted) |
+| offensive_rebounding | 0.530 | -0.049 | 0.007 | 0.48 | |
+| defensive_rebounding | 0.416 | 1.455 | -0.222 | 1.24 | |
+| steal_disruption | 0.234 | 0.007 | -0.001 | 0.12 | |
+| block_rim_protection | 0.601 | -0.017 | 0.003 | 0.15 | |
+
+**Within-block residual correlations — validates 2 of 4 blocks cleanly, 1 weakly, 1 not at all:**
+- **Creation block: validates §6's own hypothesis.** `passing_creation` vs `turnover_avoidance` residual corr = **0.35** — unexpectedly good passing correlates with unexpectedly higher turnovers, exactly matching §6's "usage/creation can inform turnover risk."
+- **Rebounding block: validates.** `offensive_rebounding` vs `defensive_rebounding` = **0.41** — correlated but not collinear, matching §6's "shared athleticism/size prior but still diverge."
+- **Defensive playmaking: near-zero (-0.10).** Steals and blocks are genuinely different skillsets (perimeter gambling vs. rim presence) — sensible, just not the "shared block" signal §6 hoped for.
+- **Shooting touch: weak/mixed, does not cleanly validate.** 3P vs FT = 0.20 (sensible), 2P-finishing vs FT = -0.15 (counterintuitive), 3P vs 2P-finishing ≈ 0 (-0.02).
+
+**Known caveats, not yet resolved:**
+- `shooting_3p`'s `rho` landed at exactly the clip floor (0.2). The raw unclipped value wasn't logged in this run — logging was added afterward (see below) but never re-verified against real data, since re-running costs ~2h15min and nothing yet requires it.
+- No proper held-out validation anywhere in Player Projection yet — Phase 0 shipped on in-sample residual std only (no train/test split, no R², no cross-validation); 2a has nothing better. This is exactly what §12/2e is for, not yet built.
+- Shooting-touch block doesn't validate as cleanly as creation/rebounding — worth a closer look before trusting any cross-skill prior-blending built on top of it.
+
+**Performance + tooling added after the first real run:**
+- `load_or_build_season_skill_states()` / `load_or_build_season_covariates()` — parquet-cached wrappers (gitignored under `data/features/player_projection_phase2/`, same convention as `feature_eng_m1_m2_m3.ipynb`'s caches) so 2b/2c/2d don't re-pay the ~2h intra-season filtering cost.
+- `estimate_rho_autocorrelation()` now logs the raw pre-clip value whenever clipping changes it (or confirms it didn't), closing the `shooting_3p` transparency gap for future runs.
+
+### TODO before resuming Phase 2
+
+1. **Move `scripts/validate_phase2_season_model.py` into the notebook**, matching Phase 1's precedent exactly: `validate_phase1_kalman.py` was built standalone first, then folded into `notebooks/models/player_projection_state_space.ipynb` once it was stable, and the standalone script deleted (see this notebook's own intro markdown, which already documents that supersession for Phase 1). **Not yet done for 2a** — the script still exists standalone and should not be treated as the long-term home for this validation.
+2. Re-confirm `shooting_3p`'s raw autocorrelation once the cache is warm and a future run actually executes the new logging — current real-data results predate that fix.
+3. Investigate the shooting-touch block's weak correlation result specifically before relying on cross-skill prior-blending for those 3 skills.
+4. **2b-2e not started.** Hybrid possession-outcome + conditional rate model (Stage 2A/2B), role/usage adapter (Stage 2C), Stage 2D value-model refit, and the full §12 validation suite (2e) remain exactly as scoped when Phase 2 was approved. Re-scope/re-confirm sequencing when resuming — 2a's real findings here (the rho-identifiability trap, the cost of a full real-data run) should inform how 2b is built, particularly: budget for an identifiability check early, and validate on a smaller sample before committing to a multi-hour full run, rather than discovering problems after a 2+ hour fit the way 2a did.
+5. Phase 2a's code (`player_projection_phase2.py`, its tests, the validation script) is implemented and passing but **not yet committed** — exists only in the working tree as of this pause point.
