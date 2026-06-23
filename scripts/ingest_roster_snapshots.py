@@ -125,6 +125,13 @@ def rostercast_team_name(school_name: str) -> str:
     return ROSTERCAST_TEAM_ALIASES.get(school_name, school_name)
 
 
+def is_freshman_snapshot_class(class_year: str | None) -> bool:
+    if not class_year:
+        return False
+    normalized = class_year.strip().lower().replace(".", "")
+    return normalized in {"fr", "freshman", "first year", "first-year"}
+
+
 def fetch_roster(session: requests.Session, team: str) -> list[dict]:
     time.sleep(REQUEST_DELAY)
     resp = session.get(ROSTERCAST_URL, params={"team": rostercast_team_name(team)}, timeout=30)
@@ -271,6 +278,10 @@ async def ingest_team(
         )
         if player_id is None:
             player_id, confidence, match_status = _match_player(row["raw_player_name"], all_players)
+            prior_school_id = player_to_school.get(player_id) if player_id is not None else None
+            if prior_school_id is not None and prior_school_id != school_id:
+                if is_freshman_snapshot_class(row["class_year"]):
+                    player_id, confidence, match_status = None, None, "unmatched"
         counts[match_status] = counts.get(match_status, 0) + 1
 
         transfer_source_school_id = None
@@ -311,8 +322,10 @@ async def ingest_team(
         status_counts["returning"], status_counts["transfer_in"], status_counts["new"],
     )
 
-    if dry_run or not records:
-        return {"players": len(records)}
+    if dry_run:
+        return {"players": len(records), "records": records}
+    if not records:
+        return {"players": 0}
 
     snapshot_id = await _upsert_snapshot(
         db_session,
