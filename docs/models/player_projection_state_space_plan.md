@@ -832,48 +832,57 @@ For tree or nonlinear challenger models, SHAP can be added later. For the core p
 
 ## 12. Validation Strategy
 
-### Temporal cross-validation
+**Status (2026-06-23): implemented for Phase 0's value model, with real results.** `src/portalpoint/modeling/player_projection_eval.py` + a new notebook section ("7a. Phase 0 — Formal Rolling-Origin Evaluation") replace what used to be in-sample-only metrics (`off_resid_std`/`def_resid_std` computed on the same rows used to fit the model) with real rolling-origin temporal CV, hyperparameter tuning, baseline comparison, and partial cohort slicing. This closes the gap called out earlier in this doc and in CLAUDE.md — production had shipped with zero held-out validation.
 
-Use rolling-origin validation:
+### Temporal cross-validation — done
 
-```text
-train through game/date T
-forecast next N games or rest of season
-compare projected rates and values to observed outcomes
-```
+3 rolling-origin folds (not one static split — cheap to run, more robust, and what this section already specified):
+
+| Fold | Train | Val (hyperparameter selection only) | Test | k | alpha | off_rmse | off_r² | off_spearman | def_rmse | def_r² | def_spearman | calibration |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2021-2022 | 2023 | 2024 | 8.0 | 1.0 | 1.544 | 0.491 | 0.716 | 1.446 | 0.122 | 0.347 | 90.9% |
+| 2 | 2021-2023 | 2024 | 2025 | 8.0 | 0.1 | 1.631 | 0.453 | 0.676 | 1.535 | 0.117 | 0.366 | 89.2% |
+| 3 (headline) | 2021-2024 | 2025 | **2026** | 4.0 | 0.1 | 1.714 | 0.451 | 0.702 | 1.559 | 0.129 | 0.365 | 88.2% |
+
+**Real findings:**
+- **The model clearly beats baselines** — fold 3's Ridge `off_rmse`=1.714 vs. predict-train-mean's 2.315 and predict-position-mean's 2.300. Ridge is earning its complexity, not just memorizing the mean.
+- **Offense predicts much better than defense, out-of-sample too** — off_r²≈0.45-0.49 vs. def_r²≈0.12-0.13 in every fold. This is the held-out, quantitative confirmation of the qualitative finding already documented below (§13's "investigated, not a bug" note on `def_adj_rapm` vs. box-score defense) — defense is a genuinely harder target for this feature set, not an artifact of in-sample overfitting.
+- **Calibration runs slightly high** (88-91% vs. the 80% nominal target of `project_value`'s `CI_Z=1.2816`) — the model is mildly conservative (CI bands a bit too wide), not overconfident. Safer failure direction for a product surface, not urgent to fix.
+- **Hyperparameter tuning: `alpha` barely matters.** Grid-searched `RIDGE_ALPHA ∈ [0.1, 1, 5, 10, 20]` — validation RMSE was flat to the 3rd decimal place across that entire range (confirmed by extending the grid down to 0.05 before finalizing — not a boundary artifact, genuinely flat). At ~13 coefficients (10 skills + position dummies) against thousands of training rows, the model is heavily overdetermined; Ridge's regularization strength isn't the binding constraint. Production's `RIDGE_ALPHA=5.0` default is fine as-is — this is a real result (checked), not an assumption. `SHRINKAGE_K` showed mild sensitivity (selected 4.0-8.0 across folds vs. production's hardcoded 8.0) but differences were small enough not to warrant a production change without more evidence.
+- **Production unchanged.** This evaluation used a smaller, fold-specific train set on purpose (to keep honest holdouts) — `run_player_projection.py` keeps fitting on the full pooled 2021-2026 population, which is the right call for the actual product surface.
 
 ### Skill/rate metrics
 
-| Metric | Use |
-|---|---|
-| Cross-entropy / log loss | Possession outcome model |
-| RMSE/MAE | Continuous rate forecasts |
-| Brier score | Probabilistic rate events |
-| Calibration | Whether 80% intervals cover outcomes about 80% of the time |
-| Rank correlation | Whether leaderboards are useful |
-| Cohort error | Freshmen, transfers, low-minute players, high-usage players |
+| Metric | Use | Status |
+|---|---|---|
+| Cross-entropy / log loss | Possession outcome model | N/A — no possession outcome model exists (Stage 2A, never built) |
+| RMSE/MAE | Continuous rate forecasts | ✅ done, value-model RMSE above |
+| Brier score | Probabilistic rate events | N/A — no probabilistic rate model exists |
+| Calibration | Whether 80% intervals cover outcomes about 80% of the time | ✅ done, 88-91% — see above |
+| Rank correlation | Whether leaderboards are useful | ✅ done, Spearman 0.68-0.72 (offense) — leaderboards are reasonably useful; 0.35-0.37 (defense) — much less so |
+| Cohort error | Freshmen, transfers, low-minute players, high-usage players | Partial — see Required slices below |
 
 ### Value metrics
 
-| Metric | Use |
-|---|---|
-| RAPM target RMSE | Accuracy against Hoop Explorer `off_adj_rapm`, `def_adj_rapm`, and `adj_rapm_margin` |
-| Impact rank correlation | Whether projected player value orders players similarly to RAPM-style labels |
-| Team-level lift | Whether player values improve team AdjEM projection |
-| Transfer holdout error | Performance on players changing teams |
-| Directional accuracy | Whether the model gets improvement/decline direction right |
+| Metric | Use | Status |
+|---|---|---|
+| RAPM target RMSE | Accuracy against Hoop Explorer `off_adj_rapm`, `def_adj_rapm`, and `adj_rapm_margin` | ✅ done for `off_adj_rapm`/`def_adj_rapm`; `adj_rapm_margin` not separately evaluated (off+def combined is a reasonable proxy, not yet checked directly) |
+| Impact rank correlation | Whether projected player value orders players similarly to RAPM-style labels | ✅ done — Spearman, see above |
+| Team-level lift | Whether player values improve team AdjEM projection | ❌ not done — needs Team Rating Projection (Model 6), not built |
+| Transfer holdout error | Performance on players changing teams | ✅ done — see cohort slice below (transfers: rmse=1.596, r²=0.370 vs. returning: rmse=1.763, r²=0.474 — transfers have lower error but the model explains less of their variance, a mixed signal worth a closer look, not yet investigated further) |
+| Directional accuracy | Whether the model gets improvement/decline direction right | ❌ not done — needs a player-level season-over-season comparison, doesn't apply to a single rolling-origin test fold the way it's currently built |
 
 ### Required slices
 
-Validate separately for:
-
-- Low-major to high-major transfers.
-- High-major to mid-major transfers.
-- High-usage guards.
-- Low-minute upside players.
-- Bigs / rim protectors.
-- Elite shooters with small 3P samples.
-- Returning players vs transfers.
+| Slice | Status |
+|---|---|
+| Low-major to high-major transfers | ❌ not done — needs competition tier, which only exists in the Phase 2 branch's `player_projection_phase2.compute_level_tier`, out of scope here |
+| High-major to mid-major transfers | ❌ not done — same reason |
+| High-usage guards | Partial — guards evaluated as a slice (rmse=1.747, r²=0.424), not cross-cut with usage specifically |
+| Low-minute upside players | ✅ done as "small_sample (<15 games)" — rmse=1.839, r²=0.127, n=17. Small n, high noise, exactly as expected — not a red flag, a sample-size reality |
+| Bigs / rim protectors | ✅ done as "bigs (C/PF-ish)" — rmse=1.618, r²=0.500 (offense) |
+| Elite shooters with small 3P samples | ❌ not done — not yet sliced this specifically |
+| Returning players vs transfers | ✅ done — see Transfer holdout error above |
 
 ---
 
