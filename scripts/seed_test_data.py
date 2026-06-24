@@ -56,7 +56,7 @@ INSERT INTO player_projections
 VALUES (
     101, NULL, 2026, 'neutral', 2.5, 0.5, 4.5,
     '{"shooting_3p": 0.35, "shooting_2p_finishing": 0.55, "free_throw_touch": 0.75,
-      "shot_creation_usage": 22.0, "passing_creation": 15.0, "turnover_avoidance": 12.0,
+      "shot_creation_usage": 22.0, "passing_creation": 15.0, "turnover_avoidance": -12.0,
       "offensive_rebounding": 5.0, "defensive_rebounding": 10.0,
       "steal_disruption": 1.2, "block_rim_protection": 0.9}'::jsonb,
     '{"shooting_3p": 60.0, "shooting_2p_finishing": 65.0, "free_throw_touch": 70.0,

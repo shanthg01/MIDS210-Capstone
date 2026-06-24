@@ -35,10 +35,13 @@ import json
 import pickle
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
@@ -147,7 +150,7 @@ def build_design_matrix(df: pd.DataFrame) -> pd.DataFrame:
     return X.reindex(columns=skill_cols + [f"pos_{p}" for p in POSITIONS], fill_value=0.0)
 
 
-def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -> tuple[Ridge, float]:
+def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -> tuple[Pipeline, float]:
     """Ridge-regress a Hoop Explorer adjusted-RAPM label on shrunk skill
     rates + position dummies, using only rows with a non-null label. Returns
     (fitted model, residual std) — residual std is the Phase 0 uncertainty
@@ -157,16 +160,24 @@ def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -
         raise ValueError(f"Too few labeled rows ({len(train)}) to fit a value model for {target}")
     X = build_design_matrix(train)
     y = train[target].to_numpy()
-    model = Ridge(alpha=alpha)
-    model.fit(X, y)
+    model = Pipeline([
+        ("scale", StandardScaler()),
+        ("ridge", Ridge(alpha=alpha)),
+    ])
+    fit_kwargs: dict[str, Any] = {}
+    if "_weight" in train:
+        sample_weights = train["_weight"].fillna(0).clip(lower=0).to_numpy(dtype=np.float64)
+        if sample_weights.sum() > 0:
+            fit_kwargs["ridge__sample_weight"] = sample_weights
+    model.fit(X, y, **fit_kwargs)
     resid_std = float(np.std(y - model.predict(X)))
     return model, resid_std
 
 
 def project_value(
     df: pd.DataFrame,
-    off_model: Ridge,
-    def_model: Ridge,
+    off_model: Pipeline,
+    def_model: Pipeline,
     off_resid_std: float,
     def_resid_std: float,
 ) -> pd.DataFrame:
@@ -191,12 +202,19 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
     expires_at = computed_at + timedelta(days=EXPIRES_DAYS)
     records: list[tuple] = []
     for _, r in df.iterrows():
-        skill_states = {s: round(float(r[f"skill_{s}"]), 4) for s in SKILLS}
+        skill_states = {
+            s: round(float(-r[f"skill_{s}"] if s in INVERTED_SKILLS else r[f"skill_{s}"]), 4)
+            for s in SKILLS
+        }
         skill_pcts = {s: float(r[f"pctile_{s}"]) for s in SKILLS}
         explanation = {
             "prior_skill_estimate": {s: round(float(r[f"prior_{s}"]), 4) for s in SKILLS},
             "observed_performance_signal": {s: round(float(r[f"raw_{s}"]), 4) for s in SKILLS},
             "sample_size_weight": round(float(r["_weight"]), 2),
+            "skill_state_direction": {
+                s: "higher_is_better" if s not in INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
+                for s in SKILLS
+            },
         }
         records.append((
             int(r["player_id"]), None, int(r["season"]), "neutral",
@@ -221,20 +239,45 @@ def upsert_neutral_projections(engine: Engine, records: list[tuple]) -> int:
     return upserted
 
 
-def save_artifacts(models_dir: Path, off_model: Ridge, def_model: Ridge) -> dict[str, Path]:
-    """Pickles the fitted off/def Ridge models to models_dir, mirroring
-    player_clustering.py's save_artifacts — the local-pkl-then-S3-upload
-    path (s3://portalpoint-data/models/player-projection/), kept separate
-    from MLflow's own log_model/artifact store. Both the script and the
-    notebook call this, then upload each returned path, same convention as
-    M1/M2's save_artifacts + upload pair."""
+def save_artifacts(
+    models_dir: Path,
+    off_model: Pipeline,
+    def_model: Pipeline,
+    off_resid_std: float | None = None,
+    def_resid_std: float | None = None,
+) -> dict[str, Path]:
+    """Pickle fitted off/def pipelines plus a replayable metadata bundle."""
     models_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "model_version": MODEL_VERSION,
+        "min_games": MIN_GAMES,
+        "shrinkage_k": SHRINKAGE_K,
+        "ridge_alpha": RIDGE_ALPHA,
+        "feature_columns": build_design_matrix(pd.DataFrame({
+            "position": POSITIONS,
+            **{f"skill_{s}": [0.0] * len(POSITIONS) for s in SKILLS},
+        })).columns.tolist(),
+        "skill_columns": SKILL_COLUMNS,
+        "inverted_skills": sorted(INVERTED_SKILLS),
+        "value_targets": VALUE_TARGETS,
+        "ci_z": CI_Z,
+        "off_resid_std": off_resid_std,
+        "def_resid_std": def_resid_std,
+    }
+    bundle = {
+        "off_model": off_model,
+        "def_model": def_model,
+        "metadata": metadata,
+    }
     paths = {
         "off_model": models_dir / "player_projection_off_model.pkl",
         "def_model": models_dir / "player_projection_def_model.pkl",
+        "bundle": models_dir / "player_projection_model_bundle.pkl",
     }
     with open(paths["off_model"], "wb") as f:
         pickle.dump(off_model, f)
     with open(paths["def_model"], "wb") as f:
         pickle.dump(def_model, f)
+    with open(paths["bundle"], "wb") as f:
+        pickle.dump(bundle, f)
     return paths

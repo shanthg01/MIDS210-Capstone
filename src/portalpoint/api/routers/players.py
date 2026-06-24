@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
@@ -24,6 +26,7 @@ from portalpoint.db.models import (
     TransferPortalEvent,
 )
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
+from portalpoint.modeling.player_projection import MODEL_VERSION as PLAYER_PROJECTION_MODEL_VERSION
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -235,10 +238,15 @@ async def get_player_projection(
     stmt = select(PlayerProjectionORM).where(
         PlayerProjectionORM.player_id == player_id,
         PlayerProjectionORM.projection_mode == "neutral",
+        PlayerProjectionORM.model_version == PLAYER_PROJECTION_MODEL_VERSION,
+        PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
     )
     if season is not None:
         stmt = stmt.where(PlayerProjectionORM.season == season)
-    stmt = stmt.order_by(PlayerProjectionORM.season.desc()).limit(1)
+    stmt = stmt.order_by(
+        PlayerProjectionORM.season.desc(),
+        PlayerProjectionORM.computed_at.desc(),
+    ).limit(1)
 
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:

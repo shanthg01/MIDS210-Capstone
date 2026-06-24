@@ -1,3 +1,6 @@
+import json
+import pickle
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -124,7 +127,8 @@ def test_fit_value_model_recovers_known_positive_relationship():
     model, resid_std = pp.fit_value_model(shrunk, "off_adj_rapm")
 
     skill_idx = pp.SKILLS.index("shooting_3p")
-    assert model.coef_[skill_idx] > 0  # ground truth: off_adj_rapm increases with fg3_pct
+    coef = model.named_steps["ridge"].coef_
+    assert coef[skill_idx] > 0  # ground truth: off_adj_rapm increases with fg3_pct
     assert resid_std > 0
 
 
@@ -168,3 +172,36 @@ def test_build_neutral_records_shape_and_neutral_mode():
         assert season == 2025 or season == 2026
         assert mode == "neutral"
         assert model_version == pp.MODEL_VERSION
+
+
+def test_build_neutral_records_stores_turnover_avoidance_as_higher_is_better():
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    pctiles = pp.skill_percentiles(shrunk)
+    off_model, off_resid = pp.fit_value_model(pctiles, "off_adj_rapm")
+    def_model, def_resid = pp.fit_value_model(pctiles, "def_adj_rapm")
+    projected = pp.project_value(pctiles, off_model, def_model, off_resid, def_resid)
+
+    rec = pp.build_neutral_records(projected.head(1))[0]
+    skill_states = json.loads(rec[11])
+    explanation = json.loads(rec[14])
+
+    assert skill_states["turnover_avoidance"] <= 0
+    assert explanation["skill_state_direction"]["turnover_avoidance"] == "stored_as_negative_rate_so_higher_is_better"
+
+
+def test_save_artifacts_writes_replayable_bundle(tmp_path):
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    off_model, off_resid = pp.fit_value_model(shrunk, "off_adj_rapm")
+    def_model, def_resid = pp.fit_value_model(shrunk, "def_adj_rapm")
+
+    paths = pp.save_artifacts(tmp_path, off_model, def_model, off_resid, def_resid)
+
+    assert set(paths) == {"off_model", "def_model", "bundle"}
+    with open(paths["bundle"], "rb") as f:
+        bundle = pickle.load(f)
+    assert bundle["metadata"]["model_version"] == pp.MODEL_VERSION
+    assert bundle["metadata"]["off_resid_std"] == off_resid
+    assert bundle["metadata"]["def_resid_std"] == def_resid
+    assert bundle["metadata"]["feature_columns"] == pp.build_design_matrix(shrunk).columns.tolist()
