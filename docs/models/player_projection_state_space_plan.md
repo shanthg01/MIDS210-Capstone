@@ -10,11 +10,11 @@ full record. Phase 2 (cross-season persistence, block covariance) is the open ne
 2020-2025 game-log backfill that gated it is complete, and nothing in §15's Phase 0/1 checklist
 remains open.
 
-**Notebook:** `notebooks/models/player_projection_state_space.ipynb` (built, executed, both phases)  
-**Script:** `scripts/run_player_projection.py` (Phase 0 only — Phase 1 has no production script, it's notebook-only validation)  
-**Module:** `src/portalpoint/modeling/player_projection.py` (Phase 0), `player_projection_kalman.py` (Phase 1)  
+**Notebook:** `notebooks/models/player_projection_state_space.ipynb` (built, executed, both phases)
+**Script:** `scripts/run_player_projection.py` (Phase 0 only — Phase 1 has no production script, it's notebook-only validation)
+**Module:** `src/portalpoint/modeling/player_projection.py` (Phase 0), `player_projection_kalman.py` (Phase 1)
 **Model family:** Game-level state-space model + hybrid basketball rate model  
-**Primary output table:** `player_projections` (migration `e6a2c8f1b734`) — the original plan to stage through `predictions` was dropped, see §10  
+**Primary output table:** `player_projections` (migration `e6a2c8f1b734`) — the original plan to stage through `predictions` was dropped, see §10
 **Downstream consumers:** Playing Time / Rotation model, Role Fit score, Team Rating Projection, Recommendations, player profile UI  
 **Related plan:** `docs/models/role_fit_playing_time_model_plan.md`
 

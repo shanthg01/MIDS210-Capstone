@@ -1,6 +1,6 @@
 # PortalPoint Model Dependency Graph
 
-**Last updated:** June 23, 2026  
+**Last updated:** June 23, 2026
 **Scope:** Model inputs, outputs, downstream consumers, and execution order.
 
 This document is the dependency contract for PortalPoint's data science stack. It
