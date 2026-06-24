@@ -95,6 +95,33 @@ def test_tune_hyperparameters_selects_from_grid_and_falls_back_when_too_few_rows
     assert grid_fb.empty
 
 
+def test_tune_hyperparameters_skip_shrinkage_works_on_a_presmoothed_frame_with_no_games_played():
+    # Gap G (Issue #37 reconciliation, 2026-06-24): Phase 2a's state frame has
+    # skill_<x> columns (already-smoothed Kalman states) but no
+    # games_played/min_pct -- shrink_skills() would KeyError on it. This is
+    # the bug a real notebook run actually hit; regression-guard it.
+    rng = np.random.default_rng(0)
+    n = 300
+    df = pd.DataFrame({
+        "player_id": np.arange(n),
+        "season": rng.choice([2024, 2025, 2026], size=n),
+        "position": rng.choice(["WG", "C", "PG"], size=n),
+        "off_adj_rapm": rng.normal(0, 1.0, size=n),
+        "def_adj_rapm": rng.normal(0, 1.0, size=n),
+    })
+    import portalpoint.modeling.player_projection as pp
+    for skill in pp.SKILLS:
+        df[f"skill_{skill}"] = rng.normal(0, 1.0, size=n)
+    train_df = df[df["season"].isin([2024, 2025])]
+    val_df = df[df["season"] == 2026]
+
+    assert "games_played" not in df.columns  # the actual shape that broke shrink_skills()
+    k, alpha, grid_df = ppe.tune_hyperparameters(train_df, val_df, alpha_candidates=[1.0, 10.0], skip_shrinkage=True)
+    assert k is None
+    assert alpha in [1.0, 10.0]
+    assert not grid_df.empty
+
+
 def test_compare_to_baselines_position_mean_beats_or_ties_global_mean_when_positions_differ():
     train_df = pd.DataFrame({
         "position": ["C"] * 50 + ["PG"] * 50,

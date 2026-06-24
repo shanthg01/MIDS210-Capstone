@@ -94,9 +94,22 @@ def compute_calibration(y_true, ci_lower, ci_upper) -> float:
     return float(covered.mean()) if len(covered) > 0 else float("nan")
 
 
-def _fold_combined_val_rmse(train_df: pd.DataFrame, val_df: pd.DataFrame, k: float, alpha: float) -> dict | None:
-    shrunk_train = pp.shrink_skills(train_df, k=k)
-    shrunk_val = pp.shrink_skills(val_df, k=k)
+def _fold_combined_val_rmse(
+    train_df: pd.DataFrame, val_df: pd.DataFrame, k: float | None, alpha: float, skip_shrinkage: bool = False,
+) -> dict | None:
+    if skip_shrinkage:
+        # Gap G (Issue #37 reconciliation, 2026-06-24): Phase 2a's state frame
+        # already has skill_<x> columns (smoothed Kalman states) and no
+        # games_played/min_pct columns at all -- shrink_skills() would
+        # KeyError on it (Phase 0's raw-rate-only sample_weight() needs
+        # games_played). There's nothing for shrinkage to do here: the
+        # season-grain Kalman layer already *is* the shrinkage-equivalent
+        # step for these states. Use the frames as-is; k is not meaningful in
+        # this mode and is not grid-searched (see tune_hyperparameters).
+        shrunk_train, shrunk_val = train_df, val_df
+    else:
+        shrunk_train = pp.shrink_skills(train_df, k=k)
+        shrunk_val = pp.shrink_skills(val_df, k=k)
     try:
         off_model, off_resid_std = pp.fit_value_model(shrunk_train, "off_adj_rapm", alpha=alpha)
         def_model, def_resid_std = pp.fit_value_model(shrunk_train, "def_adj_rapm", alpha=alpha)
@@ -120,14 +133,32 @@ def _fold_combined_val_rmse(train_df: pd.DataFrame, val_df: pd.DataFrame, k: flo
 def tune_hyperparameters(
     train_df: pd.DataFrame, val_df: pd.DataFrame,
     k_candidates: list[float] = K_CANDIDATES, alpha_candidates: list[float] = ALPHA_CANDIDATES,
-) -> tuple[float, float, pd.DataFrame]:
+    skip_shrinkage: bool = False,
+) -> tuple[float | None, float, pd.DataFrame]:
     """Grid search over (SHRINKAGE_K, RIDGE_ALPHA) on this fold's validation
     season only — selection criterion is the combined off+def RMSE
     (sqrt(off_rmse^2 + def_rmse^2), the same combination
     scripts/run_player_projection.py already uses for its MLflow promotion
     metric). Falls back to production's current defaults
     (pp.SHRINKAGE_K, pp.RIDGE_ALPHA) if no grid cell has enough labeled rows
-    to fit at all (e.g. a very small early fold)."""
+    to fit at all (e.g. a very small early fold).
+
+    `skip_shrinkage` (Gap G, 2026-06-24): set True for Phase 2a's state
+    frame, which has no `games_played`/raw-rate columns for `shrink_skills`
+    to act on — k is meaningless in this mode and is not grid-searched (only
+    `alpha` is), and the returned `k` is `None`."""
+    if skip_shrinkage:
+        results = [
+            result
+            for alpha in alpha_candidates
+            if (result := _fold_combined_val_rmse(train_df, val_df, None, alpha, skip_shrinkage=True)) is not None
+        ]
+        grid_df = pd.DataFrame(results)
+        if grid_df.empty:
+            return None, pp.RIDGE_ALPHA, grid_df
+        best = grid_df.loc[grid_df["val_rmse"].idxmin()]
+        return None, float(best["alpha"]), grid_df
+
     results = [
         result
         for k in k_candidates
