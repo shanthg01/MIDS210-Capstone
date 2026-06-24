@@ -1,6 +1,6 @@
 # PortalPoint Model Dependency Graph
 
-**Last updated:** June 23, 2026  
+**Last updated:** June 23, 2026
 **Scope:** Model inputs, outputs, downstream consumers, and execution order.
 
 This document is the dependency contract for PortalPoint's data science stack. It
@@ -176,7 +176,7 @@ same local-first pattern.
 | `player_archetypes` | Real, accepted for MVP | M1 |
 | `team_system_profiles` | Real, accepted for MVP | M2 |
 | `player_team_fit_scores.scheme_fit` | Real | M3 |
-| `player_team_fit_scores.gap_match` | Real code path — `gap-cos-v4`, all-pairs with shared roster baseline (stored DB rows need rerun after merge) | Gap Matching |
+| `player_team_fit_scores.gap_match` | Real — `gap-cos-v4`, all-pairs with shared roster baseline; DB refreshed 2026-06-23 with 9,756,718 rows | Gap Matching |
 | `transfers` / `transfer_portal_events` | Real for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped, 0 matched — matcher bug, not a backfill gap | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, 357 distinct schools (target ~365) | Issue #17 item 4 |
 | `roster_state_features` | Depends on roster_snapshots above — re-run against the full 357-school set if last built against a narrower subset | Issue #17 item 6 |

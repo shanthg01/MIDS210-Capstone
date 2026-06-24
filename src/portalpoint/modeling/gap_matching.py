@@ -83,6 +83,13 @@ ON CONFLICT ON CONSTRAINT uq_fit_score DO UPDATE SET
     expires_at    = EXCLUDED.expires_at
 """
 
+DELETE_STALE_GAP_SQL = """
+DELETE FROM player_team_fit_scores
+WHERE season = ANY(%s)
+  AND model_version LIKE 'gap-cos-%%'
+  AND model_version <> %s
+"""
+
 
 def assign_soft_positions(df: pd.DataFrame) -> pd.DataFrame:
     """HE pos_confidence_* where available (~59%); one-hot players.position
@@ -466,3 +473,16 @@ def upsert_gap_scores(engine, records: list[tuple], expires_days: int = 7) -> in
     ]
     _, upserted = upsert_with_season_replace(engine, UPSERT_SQL, upsert_records, page_size=2000)
     return upserted
+
+
+def delete_stale_gap_scores(engine, seasons: list[int], model_version: str = MODEL_VERSION) -> int:
+    """Remove gap rows left behind when the valid scoring scope contracts."""
+    raw_conn = engine.raw_connection()
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(DELETE_STALE_GAP_SQL, (list(seasons), model_version))
+            deleted = cur.rowcount
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return deleted
