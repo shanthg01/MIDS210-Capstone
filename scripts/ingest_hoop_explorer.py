@@ -503,6 +503,13 @@ async def ingest_player_stats(
             "off_adj_rapm": _safe_float(r.get("off_adj_rapm")),
             "def_adj_rapm": _safe_float(r.get("def_adj_rapm")),
             "adj_rapm_margin_pred": _safe_float(r.get("adj_rapm_margin_pred")),
+            # Production-weighted RAPM + off/def predicted-high-major split — exist in the
+            # raw CSV (confirmed against the header), previously never mapped here.
+            "off_adj_rapm_prod": _safe_float(r.get("off_adj_rapm_prod")),
+            "def_adj_prod_rapm": _safe_float(r.get("def_adj_prod_rapm")),
+            "adj_rapm_prod_margin": _safe_float(r.get("adj_rapm_prod_margin")),
+            "off_adj_rapm_pred": _safe_float(r.get("off_adj_rapm_pred")),
+            "def_adj_rapm_pred": _safe_float(r.get("def_adj_rapm_pred")),
             "off_usage": _safe_float(r.get("off_usage")),
             "off_assist": _safe_float(r.get("off_assist")),
             "off_efg": _safe_float(r.get("off_efg")),

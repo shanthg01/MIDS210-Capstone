@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
@@ -13,15 +15,18 @@ from portalpoint.api.schemas.player import (
     PlayerStats,
     Position,
 )
+from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
 from portalpoint.db.models import (
     Player,
     PlayerArchetype as PlayerArchetypeORM,
+    PlayerProjection as PlayerProjectionORM,
     PlayerSeasonStats,
     School,
     Transfer,
     TransferPortalEvent,
 )
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
+from portalpoint.modeling.player_projection import MODEL_VERSION as PLAYER_PROJECTION_MODEL_VERSION
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -214,6 +219,55 @@ async def get_player(player_id: int, db: DbSession):
         portal_entry_date=transfer.portal_entry_date if transfer else None,
         twitter_handle=player.twitter_handle,
         social_followers=player.social_followers,
+    )
+
+
+@router.get("/{player_id}/projection", response_model=PlayerProjectionResponse)
+async def get_player_projection(
+    player_id: int,
+    db: DbSession,
+    season: int | None = Query(
+        default=None,
+        description="Season to fetch. Defaults to the player's latest available projection.",
+    ),
+):
+    """Neutral talent projection (player-projection-shrinkage-v1, Phase 0).
+    Real model output, not a stub — 404 if the player has no projection row
+    rather than synthesizing one, since fabricating a fake skill/value
+    breakdown would be actively misleading for a product surface like this."""
+    stmt = select(PlayerProjectionORM).where(
+        PlayerProjectionORM.player_id == player_id,
+        PlayerProjectionORM.projection_mode == "neutral",
+        PlayerProjectionORM.model_version == PLAYER_PROJECTION_MODEL_VERSION,
+        PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
+    )
+    if season is not None:
+        stmt = stmt.where(PlayerProjectionORM.season == season)
+    stmt = stmt.order_by(
+        PlayerProjectionORM.season.desc(),
+        PlayerProjectionORM.computed_at.desc(),
+    ).limit(1)
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        detail = f"No projection found for player {player_id}"
+        if season is not None:
+            detail += f" in season {season}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    return PlayerProjectionResponse(
+        player_id=row.player_id,
+        season=row.season,
+        projection_mode=row.projection_mode,
+        value_per_100=row.value_per_100,
+        value_ci_lower=row.value_ci_lower,
+        value_ci_upper=row.value_ci_upper,
+        skill_states=row.skill_states,
+        skill_percentiles=row.skill_percentiles,
+        uncertainty=row.uncertainty,
+        explanation=row.explanation,
+        model_version=row.model_version,
+        computed_at=row.computed_at,
     )
 
 

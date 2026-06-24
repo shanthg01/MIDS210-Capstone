@@ -30,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -465,6 +466,15 @@ class HoopExplorerPlayerStats(Base):
     off_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
     def_adj_rapm: Mapped[Optional[float]] = mapped_column(Float)
     adj_rapm_margin_pred: Mapped[Optional[float]] = mapped_column(Float)  # projection to NCAAT-bound high-major
+    # Production-weighted RAPM (mixes per-possession impact with playing-time share —
+    # secondary label, see player_projection_state_space_plan.md §5/§8) and the off/def
+    # split of the predicted-high-major projection. Source CSV column names are
+    # asymmetric (off_adj_rapm_prod vs def_adj_prod_rapm) — not a typo, that's HE's own naming.
+    off_adj_rapm_prod: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_prod_rapm: Mapped[Optional[float]] = mapped_column(Float)
+    adj_rapm_prod_margin: Mapped[Optional[float]] = mapped_column(Float)
+    off_adj_rapm_pred: Mapped[Optional[float]] = mapped_column(Float)
+    def_adj_rapm_pred: Mapped[Optional[float]] = mapped_column(Float)
     # Usage and shot creation
     off_usage: Mapped[Optional[float]] = mapped_column(Float)
     off_assist: Mapped[Optional[float]] = mapped_column(Float)
@@ -1081,6 +1091,55 @@ class Prediction(Base):
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlayerProjection(Base):
+    """Player talent/value projection — see docs/models/player_projection_state_space_plan.md.
+
+    Phase 0 writes neutral rows only (school_id NULL, projection_mode='neutral').
+    Destination-mode rows (school_id set) are Phase 2+ work, gated on Role Fit
+    existing. school_id is nullable, so a plain UniqueConstraint can't dedupe
+    correctly — Postgres treats every NULL as distinct under a normal unique
+    constraint, which would let every neutral rerun insert a fresh row instead
+    of updating in place. Two partial unique indexes handle the two modes
+    separately instead (see plan doc §18).
+    """
+
+    __tablename__ = "player_projections"
+    __table_args__ = (
+        Index(
+            "uq_player_projections_neutral", "player_id", "season", "model_version",
+            unique=True, postgresql_where=text("school_id IS NULL"),
+        ),
+        Index(
+            "uq_player_projections_destination", "player_id", "school_id", "season", "model_version",
+            unique=True, postgresql_where=text("school_id IS NOT NULL"),
+        ),
+        Index("ix_player_projections_player_season", "player_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # null for neutral mode
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    projection_mode: Mapped[str] = mapped_column(String(20), nullable=False)  # 'neutral' | 'destination'
+    value_per_100: Mapped[float] = mapped_column(Float, nullable=False)
+    value_ci_lower: Mapped[Optional[float]] = mapped_column(Float)
+    value_ci_upper: Mapped[Optional[float]] = mapped_column(Float)
+    projected_minutes: Mapped[Optional[float]] = mapped_column(Float)  # destination mode only
+    projected_usage: Mapped[Optional[float]] = mapped_column(Float)    # destination mode only
+    projected_box_score: Mapped[Optional[dict]] = mapped_column(JSONB)
+    projected_rates: Mapped[Optional[dict]] = mapped_column(JSONB)
+    skill_states: Mapped[Optional[dict]] = mapped_column(JSONB)
+    skill_percentiles: Mapped[Optional[dict]] = mapped_column(JSONB)
+    uncertainty: Mapped[Optional[dict]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
+    model_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    player: Mapped[Player] = relationship()
+    school: Mapped[Optional[School]] = relationship()
 
 
 class Recommendation(Base):
