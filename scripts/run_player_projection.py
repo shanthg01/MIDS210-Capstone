@@ -20,8 +20,6 @@ import logging
 import sys
 
 import numpy as np
-import pandas as pd
-from sqlalchemy import text
 
 from portalpoint.modeling import player_projection as pp
 from portalpoint.modeling.io import find_repo_root, get_sync_engine
@@ -35,43 +33,10 @@ if hasattr(sys.stderr, "reconfigure"):
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-PLAYER_SQL = """
-SELECT
-    pss.player_id,
-    pss.season,
-    he.pos_class AS position,
-    pss.games_played,
-    pss.min_pct,
-    pss.fg3_pct,
-    pss.rim_pct,
-    pss.ft_pct,
-    pss.usage_rate,
-    pss.assist_rate,
-    pss.tov_pct,
-    pss.off_reb_pct,
-    pss.def_reb_pct,
-    pss.steal_pct,
-    pss.block_pct,
-    he.off_adj_rapm,
-    he.def_adj_rapm,
-    he.off_adj_rapm_prod,
-    he.adj_rapm_prod_margin
-FROM player_season_stats pss
-LEFT JOIN hoop_explorer_player_stats he
-    ON he.player_id = pss.player_id AND he.season = pss.season
-WHERE pss.games_played >= :min_games
-"""
-
-
 def main() -> None:
     engine = get_sync_engine()
 
-    with engine.connect() as conn:
-        df = pd.read_sql(text(PLAYER_SQL), conn, params={"min_games": pp.MIN_GAMES})
-    # he LEFT JOIN can in principle match more than one HE row per
-    # (player_id, season) if a future data issue duplicates he_player_code
-    # mappings — guard against silently duplicating pss rows.
-    df = df.drop_duplicates(subset=["player_id", "season"], keep="first").reset_index(drop=True)
+    df = pp.load_player_season_frame(engine)
     log.info("Loaded %s player-seasons (games_played >= %d)", f"{len(df):,}", pp.MIN_GAMES)
 
     df = pp.shrink_skills(df)

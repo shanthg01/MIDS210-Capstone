@@ -42,7 +42,7 @@ import pandas as pd
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
 
@@ -71,6 +71,48 @@ SKILL_COLUMNS = {
 INVERTED_SKILLS = {"turnover_avoidance"}
 SKILLS = list(SKILL_COLUMNS)
 VALUE_TARGETS = ("off_adj_rapm", "def_adj_rapm")
+
+PLAYER_SEASON_SQL = """
+SELECT
+    pss.player_id,
+    pss.season,
+    he.pos_class AS position,
+    pss.games_played,
+    pss.min_pct,
+    pss.fg3_pct,
+    pss.rim_pct,
+    pss.ft_pct,
+    pss.usage_rate,
+    pss.assist_rate,
+    pss.tov_pct,
+    pss.off_reb_pct,
+    pss.def_reb_pct,
+    pss.steal_pct,
+    pss.block_pct,
+    he.off_adj_rapm,
+    he.def_adj_rapm,
+    he.off_adj_rapm_prod,
+    he.adj_rapm_prod_margin
+FROM player_season_stats pss
+LEFT JOIN hoop_explorer_player_stats he
+    ON he.player_id = pss.player_id AND he.season = pss.season
+WHERE pss.games_played >= :min_games
+"""
+
+
+def load_player_season_frame(engine: Engine, min_games: int = MIN_GAMES) -> pd.DataFrame:
+    """Loads the Phase 0 player-season frame (all seasons at once —
+    `shrink_skills` groups by season internally, so there's no need to
+    query per-season). Shared by `run_player_projection.py`, the notebook,
+    and `player_projection_phase2.py`'s Gap D prior-sourcing (Issue #37
+    reconciliation) — single source of truth instead of three copies of the
+    same SQL."""
+    with engine.connect() as conn:
+        df = pd.read_sql(text(PLAYER_SEASON_SQL), conn, params={"min_games": min_games})
+    # he LEFT JOIN can in principle match more than one HE row per
+    # (player_id, season) if a future data issue duplicates he_player_code
+    # mappings — guard against silently duplicating pss rows.
+    return df.drop_duplicates(subset=["player_id", "season"], keep="first").reset_index(drop=True)
 
 NEUTRAL_UPSERT_SQL = """
 INSERT INTO player_projections

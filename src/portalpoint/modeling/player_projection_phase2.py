@@ -43,6 +43,7 @@ and this layer answers "how does that estimate evolve season to season."
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 from pathlib import Path
@@ -50,8 +51,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from sklearn.linear_model import LinearRegression
 from sqlalchemy import Engine, text
 
+from portalpoint.modeling import player_projection as pp
 from portalpoint.modeling import player_projection_kalman as ppk
 from portalpoint.modeling.io import find_repo_root
 
@@ -80,7 +83,7 @@ LEVEL_TIERS = 4
 
 GAME_LOG_SQL = """
 SELECT
-    player_id, game_date, minutes,
+    player_id, game_date, minutes, school_id, opponent_school_id, home_away,
     field_goals_made, field_goals_attempted,
     three_point_field_goals_made, three_point_field_goals_attempted,
     free_throws_made, free_throws_attempted,
@@ -90,10 +93,101 @@ FROM hoopr_player_game_logs
 WHERE season = :season AND player_id IS NOT NULL
 """
 
+TEAM_CONTEXT_SQL = """
+SELECT school_id, season, adj_d, adj_tempo
+FROM team_season_stats
+WHERE season = :season
+"""
+
 
 def load_game_logs(engine: Engine, season: int) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(text(GAME_LOG_SQL), conn, params={"season": season})
+
+
+def load_game_context(engine: Engine, season: int) -> pd.DataFrame:
+    """Per-team-season context for Gap B's observation-layer adjustment
+    (Issue #37 item 2): opponent defensive strength (`adj_d`), the player's
+    own team pace (`adj_tempo`), and competition tier (`compute_level_tier`).
+    Returned per `school_id` so the caller joins it onto game logs twice —
+    once as the player's own school (for pace/tier), once as the opponent
+    (for opponent_adj_d) — see `attach_game_context`."""
+    with engine.connect() as conn:
+        team_context = pd.read_sql(text(TEAM_CONTEXT_SQL), conn, params={"season": season})
+    tier_df = compute_level_tier(engine, [season])
+    return team_context.merge(tier_df, on=["school_id", "season"], how="left")
+
+
+def attach_game_context(game_logs: pd.DataFrame, team_context: pd.DataFrame) -> pd.DataFrame:
+    """Joins `load_game_context`'s per-team frame onto game_logs twice (own
+    school for pace/tier, opponent school for opponent_adj_d), plus a numeric
+    `home_flag` (1.0 home, 0.0 away/neutral). Pure function — no DB — so it's
+    unit-testable with synthetic frames."""
+    out = game_logs.copy()
+    own = team_context.rename(columns={"school_id": "school_id", "adj_tempo": "team_pace", "tier": "tier"})
+    opp = team_context.rename(columns={"school_id": "opponent_school_id", "adj_d": "opponent_adj_d"})
+    out = out.merge(own[["school_id", "team_pace", "tier"]], on="school_id", how="left")
+    out = out.merge(opp[["opponent_school_id", "opponent_adj_d"]], on="opponent_school_id", how="left")
+    out["home_flag"] = (out["home_away"].astype(str).str.lower() == "home").astype(float)
+    return out
+
+
+CONTEXT_COLS = ["opponent_adj_d", "team_pace", "tier", "home_flag"]
+
+
+def _context_design_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Builds the context design matrix, imputing missing context (failed
+    team-join, etc.) with each column's own mean rather than dropping rows —
+    every game-row must stay in the panel the Kalman filter sees, even if its
+    context adjustment ends up being a no-op (imputed-to-mean contributes ~0
+    net adjustment once centered in apply_context_adjustment)."""
+    X = df[CONTEXT_COLS].copy()
+    for col in CONTEXT_COLS:
+        X[col] = X[col].fillna(X[col].mean())
+        if X[col].isna().all():
+            X[col] = 0.0
+    return X
+
+
+def fit_context_adjustment(obs_df: pd.DataFrame, skill: str) -> LinearRegression | None:
+    """Fits a single weighted linear regression of the raw observed skill
+    rate on opponent strength / team pace / competition tier / home-away —
+    the additive observation-layer context term from plan doc §7's
+    `y = Z*alpha + level_intercept + opponent_adjustment + ... + noise` form,
+    fit once (not per-game-by-game), then subtracted from the observation
+    before it reaches the Kalman update (`apply_context_adjustment`).
+
+    Returns None if there isn't enough weighted, context-complete data to
+    fit at all (e.g. an empty or all-missing-context frame) — callers must
+    treat that as "no adjustment available," not crash.
+    """
+    y_col, w_col = f"y_{skill}", f"weight_{skill}"
+    valid = obs_df[obs_df[w_col] > 0].dropna(subset=[y_col])
+    if len(valid) < 30:
+        return None
+    X = _context_design_matrix(valid)
+    weights = valid[w_col].clip(lower=1e-6).to_numpy(dtype=np.float64)
+    model = LinearRegression()
+    model.fit(X, valid[y_col].to_numpy(dtype=np.float64), sample_weight=weights)
+    return model
+
+
+def apply_context_adjustment(obs_df: pd.DataFrame, skill: str, model: LinearRegression | None) -> pd.Series:
+    """Returns a context-neutralized `y_{skill}` series: observed rate minus
+    the fitted context effect, re-centered on the population-weighted mean
+    predicted effect so the adjusted series stays on the same natural scale
+    the rest of the pipeline (priors, R_t, etc.) expects — only the
+    game-to-game variation *explained by context* is removed, not the
+    skill's overall level. Returns the original column unchanged if `model`
+    is None (no fit was possible)."""
+    y_col, w_col = f"y_{skill}", f"weight_{skill}"
+    if model is None:
+        return obs_df[y_col]
+    X = _context_design_matrix(obs_df)
+    predicted = model.predict(X)
+    weights = obs_df[w_col].clip(lower=1e-6).to_numpy(dtype=np.float64)
+    population_mean_predicted = float(np.average(predicted, weights=weights))
+    return obs_df[y_col] - (predicted - population_mean_predicted)
 
 
 def compute_level_tier(engine: Engine, seasons: list[int]) -> pd.DataFrame:
@@ -114,42 +208,128 @@ def compute_level_tier(engine: Engine, seasons: list[int]) -> pd.DataFrame:
 
 
 def build_season_skill_states(
-    engine: Engine, seasons: list[int],
+    engine: Engine, seasons: list[int], use_phase0_prior: bool = True, max_workers: int | None = None,
+    player_id_subset: set[int] | None = None,
 ) -> tuple[dict[int, dict[str, float]], pd.DataFrame]:
-    """Runs Phase 1's intra-season filter+smoother once per season. Returns
-    (fitted_Q per season per skill, one merged frame with skill_<s>/
-    skill_var_<s> per player per season — the season-grain layer's raw
-    "observations")."""
-    fitted_q_by_season: dict[int, dict[str, float]] = {}
-    frames: list[pd.DataFrame] = []
+    """Runs Phase 1's intra-season filter+smoother once per (season, skill)
+    pair. Returns (fitted_Q per season per skill, one merged frame with
+    skill_<s>/skill_var_<s> per player per season — the season-grain layer's
+    raw "observations").
+
+    `use_phase0_prior` (Gap D, Issue #37 reconciliation, 2026-06-23):
+    when True (default), loads Phase 0's `shrink_skills()` output once for
+    all seasons and passes each season's slice to `ppk.smooth_skill`'s
+    `external_priors` argument, so the intra-season filter starts from
+    Phase 0's position x season shrinkage estimate instead of a flat
+    population mean — see `player_projection_kalman.build_player_sequences`'s
+    docstring for the full reasoning. `shrink_skills` groups by season
+    internally, so loading and shrinking once here (not per-season) is
+    correct and avoids redundant work.
+
+    Performance (2026-06-24): every (season, skill) pair is an independent
+    fit — nothing about season 2023's `shooting_3p` fit depends on 2024's or
+    on `passing_creation`'s. The original implementation called
+    `ppk.smooth_all_skills` once per season, which looped over the 10 skills
+    serially *inside* that call — meaning up to 70 independent fits (7
+    seasons x 10 skills) ran one at a time. This flattens that into one flat
+    list of up to 70 tasks submitted to a single `ProcessPoolExecutor`
+    (`max_workers=None` uses all available cores), instead of nesting a
+    skills-pool inside a seasons-loop — nested process pools are themselves a
+    real footgun (multiprocessing-within-multiprocessing is fragile and often
+    silently serializes or deadlocks), so this flat structure is deliberate,
+    not an oversight. Results are collected into a plain dict first and then
+    re-assembled in canonical `seasons`/`SKILLS` order — `as_completed()`'s
+    order is non-deterministic across runs, and the original per-season
+    merge order must stay reproducible regardless of which worker finishes
+    first.
+
+    `player_id_subset` (2026-06-24, proxy-run support): when given, restricts
+    every season's game logs (and the Phase 0 prior lookup) to this player
+    set before any fitting happens — not a sampling step inside the math
+    itself, just a smaller population fed through the unchanged pipeline.
+    For getting a fast read on model behavior (sign/magnitude of fitted
+    rho/beta/Q per skill, sanity of smoothed trajectories) before committing
+    to a full real-data run — not used in the production path.
+    """
+    phase0_shrunk: pd.DataFrame | None = None
+    if use_phase0_prior:
+        phase0_df = pp.load_player_season_frame(engine)
+        if player_id_subset is not None:
+            phase0_df = phase0_df[phase0_df["player_id"].isin(player_id_subset)]
+        phase0_shrunk = pp.shrink_skills(phase0_df)
+
+    season_obs: dict[int, pd.DataFrame] = {}
     for season in seasons:
         game_logs = load_game_logs(engine, season)
+        if player_id_subset is not None:
+            game_logs = game_logs[game_logs["player_id"].isin(player_id_subset)]
         if game_logs.empty:
             log.warning("No game logs for season %d, skipping", season)
             continue
-        obs_df = ppk.build_game_observations(game_logs)
-        fitted_q, kalman_df = ppk.smooth_all_skills(obs_df)
-        kalman_df = kalman_df.copy()
-        kalman_df["season"] = season
+        season_obs[season] = ppk.build_game_observations(game_logs)
+
+    tasks: list[tuple[int, str, pd.DataFrame, pd.DataFrame | None]] = []
+    for season, obs_df in season_obs.items():
+        external_priors_df = None
+        if phase0_shrunk is not None:
+            season_priors = phase0_shrunk[phase0_shrunk["season"] == season]
+            external_priors_df = season_priors if not season_priors.empty else None
+        for skill in ppk.SKILLS:
+            tasks.append((season, skill, obs_df, external_priors_df))
+
+    results: dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_key = {
+            executor.submit(ppk.smooth_skill, obs_df, skill, ext): (season, skill)
+            for season, skill, obs_df, ext in tasks
+        }
+        for future in concurrent.futures.as_completed(future_to_key):
+            key = future_to_key[future]
+            results[key] = future.result()
+
+    fitted_q_by_season: dict[int, dict[str, float]] = {}
+    frames: list[pd.DataFrame] = []
+    for season in seasons:
+        if season not in season_obs:
+            continue
+        fitted_q: dict[str, float] = {}
+        merged: pd.DataFrame | None = None
+        for skill in ppk.SKILLS:
+            q_value, skill_df = results[(season, skill)]
+            fitted_q[skill] = q_value
+            skill_df = skill_df.drop(columns=["_n_games_observed"])
+            merged = skill_df if merged is None else merged.merge(skill_df, on="player_id", how="outer")
+        merged["season"] = season
         fitted_q_by_season[season] = fitted_q
-        frames.append(kalman_df)
-        log.info("Season %d: %d players, intra-season filter complete", season, len(kalman_df))
-    merged = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    return fitted_q_by_season, merged
+        frames.append(merged)
+        n_with_prior = (
+            len(phase0_shrunk[phase0_shrunk["season"] == season]) if phase0_shrunk is not None else 0
+        )
+        log.info(
+            "Season %d: %d players, intra-season filter complete (%d with Phase 0 prior)",
+            season, len(merged), n_with_prior,
+        )
+    merged_all = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return fitted_q_by_season, merged_all
 
 
 def load_or_build_season_skill_states(
     engine: Engine, seasons: list[int], cache_dir: Path | None = None, force_rebuild: bool = False,
+    use_phase0_prior: bool = True,
 ) -> tuple[dict[int, dict[str, float]], pd.DataFrame]:
     """Cached wrapper around build_season_skill_states. The ~2h intra-season
     filtering pass is identical every time it's run against the same seasons
-    (deterministic given the same data) — there's no reason to pay that cost
-    once per caller (2b, 2c, 2d, and re-running 2a's own diagnostics all need
-    this exact output). Set force_rebuild=True after a real upstream data
-    change (e.g. another game-log backfill)."""
+    *and* the same prior-sourcing (deterministic given the same data) — there's
+    no reason to pay that cost once per caller (2b, 2c, 2d, and re-running 2a's
+    own diagnostics all need this exact output). `use_phase0_prior` is part of
+    the cache filename (Gap D, Issue #37 reconciliation) specifically so a
+    flat-prior cache and a Phase-0-prior cache can't collide — set
+    force_rebuild=True after a real upstream data change (e.g. another
+    game-log backfill), not needed just to flip this flag."""
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
-    states_path = cache_dir / "season_states.parquet"
-    q_path = cache_dir / "fitted_q_by_season.json"
+    prior_suffix = "phase0prior" if use_phase0_prior else "flatprior"
+    states_path = cache_dir / f"season_states_{prior_suffix}.parquet"
+    q_path = cache_dir / f"fitted_q_by_season_{prior_suffix}.json"
 
     if not force_rebuild and states_path.exists() and q_path.exists():
         log.info("Loading cached season skill states from %s", states_path)
@@ -157,7 +337,7 @@ def load_or_build_season_skill_states(
         fitted_q_by_season = {int(k): v for k, v in json.loads(q_path.read_text()).items()}
         return fitted_q_by_season, season_states
 
-    fitted_q_by_season, season_states = build_season_skill_states(engine, seasons)
+    fitted_q_by_season, season_states = build_season_skill_states(engine, seasons, use_phase0_prior=use_phase0_prior)
     cache_dir.mkdir(parents=True, exist_ok=True)
     season_states.to_parquet(states_path)
     q_path.write_text(json.dumps(fitted_q_by_season))
@@ -374,8 +554,12 @@ def estimate_rho_autocorrelation(
     return clipped_rho
 
 
+MAX_SEQUENCES_FOR_SEASON_SEARCH = 1000
+
+
 def fit_season_model(
     sequences: list[SeasonSequence], fixed_rho: float | None = None,
+    max_sequences_for_search: int | None = MAX_SEQUENCES_FOR_SEASON_SEARCH, random_state: int = 0,
 ) -> dict[str, float]:
     """Pooled MLE for one skill's season-grain sequences.
 
@@ -390,14 +574,32 @@ def fit_season_model(
     rho is free; all betas=0; Q from the empirical season-to-season variance —
     a flat/no-drift start the optimizer should move away from if the data
     supports real persistence/drift effects.
+
+    Performance note (2026-06-24): this is a pooled population-level fit
+    (beta_0..4, Q), the same shape of cost/identifiability tradeoff as
+    `player_projection_kalman.fit_q_mle`'s Q-search — found, via a live
+    `py-spy dump` of an actual stuck run, to be the *real* dominant cost in
+    Phase 2a's full pipeline (Nelder-Mead on 6 free dimensions needs far more
+    function evaluations than the 1-D Brent search that motivated the
+    original Q-search subsampling fix, and each evaluation loops over every
+    player's full sequence). Same fix, same justification: search on a
+    deterministic random subsample, since `beta_0..4`/`Q` are pooled
+    estimates that don't need the full population to converge to essentially
+    the same value.
     """
-    q_init = _q_init_from_diffs(sequences)
+    search_sequences = sequences
+    if max_sequences_for_search is not None and len(sequences) > max_sequences_for_search:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(len(sequences), size=max_sequences_for_search, replace=False)
+        search_sequences = [sequences[i] for i in idx]
+
+    q_init = _q_init_from_diffs(search_sequences)
 
     if fixed_rho is not None:
         def _nll_fixed(params: np.ndarray) -> float:
             beta_0, beta_1, beta_2, beta_3, beta_4, log_q = params
             full = np.array([fixed_rho, beta_0, beta_1, beta_2, beta_3, beta_4, log_q])
-            return _pooled_neg_log_likelihood(full, sequences)
+            return _pooled_neg_log_likelihood(full, search_sequences)
 
         x0 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, np.log(q_init)])
         result = minimize(
@@ -409,7 +611,7 @@ def fit_season_model(
     else:
         x0 = np.array([0.8, 0.0, 0.0, 0.0, 0.0, 0.0, np.log(q_init)])
         result = minimize(
-            _pooled_neg_log_likelihood, x0, args=(sequences,),
+            _pooled_neg_log_likelihood, x0, args=(search_sequences,),
             method="Nelder-Mead",
             options={"maxiter": 2000, "xatol": 1e-5, "fatol": 1e-5},
         )
@@ -460,13 +662,36 @@ def smooth_season_skill(
     return fitted, pd.DataFrame(rows)
 
 
-def fit_all_skills(skill_df: pd.DataFrame, covariates: pd.DataFrame) -> tuple[dict[str, dict], pd.DataFrame]:
+def fit_all_skills(
+    skill_df: pd.DataFrame, covariates: pd.DataFrame, max_workers: int | None = None,
+) -> tuple[dict[str, dict], pd.DataFrame]:
     """Runs smooth_season_skill for every skill, merges into one per
-    (player_id, season_rank) frame."""
+    (player_id, season_rank) frame.
+
+    Performance (2026-06-24): each skill's `smooth_season_skill` fit is fully
+    independent (different column slice of `skill_df`, no shared state) —
+    confirmed via `py-spy dump` to be the actual dominant cost in the full
+    pipeline (see `fit_season_model`'s docstring). Runs all `len(SKILLS)`
+    fits through one `ProcessPoolExecutor` (`max_workers=None` uses every
+    available core) instead of the original serial loop. Results are
+    collected into a dict first and reassembled in canonical `SKILLS` order
+    before merging — `as_completed()`'s order is non-deterministic across
+    runs, and the merge order/output must stay reproducible regardless of
+    which worker finishes first.
+    """
+    results: dict[str, tuple[dict, pd.DataFrame]] = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_skill = {
+            executor.submit(smooth_season_skill, skill_df, covariates, skill): skill for skill in SKILLS
+        }
+        for future in concurrent.futures.as_completed(future_to_skill):
+            skill = future_to_skill[future]
+            results[skill] = future.result()
+
     fitted_params: dict[str, dict] = {}
     merged: pd.DataFrame | None = None
     for skill in SKILLS:
-        fitted, skill_df_result = smooth_season_skill(skill_df, covariates, skill)
+        fitted, skill_df_result = results[skill]
         fitted_params[skill] = fitted
         merged = (
             skill_df_result if merged is None
@@ -492,3 +717,66 @@ def compute_block_correlations(residual_df: pd.DataFrame) -> dict[str, pd.DataFr
             continue
         correlations[block_name] = residual_df[cols].corr()
     return correlations
+
+
+# Gap A (Issue #37 reconciliation, 2026-06-23): only the 2 blocks that
+# actually validated against §6's hypotheses (plan doc §22) — creation
+# (passing_creation vs turnover_avoidance resid corr 0.35) and rebounding
+# (offensive vs defensive rebounding resid corr 0.41). shooting_touch (weak/
+# mixed) and defensive_playmaking (near-zero) are deliberately excluded —
+# blending priors within an unvalidated block would manufacture a false
+# cross-skill signal, not capture a real one.
+VALIDATED_BLOCKS = ("creation", "rebounding")
+
+
+def blend_block_priors(
+    residual_df: pd.DataFrame,
+    block_correlations: dict[str, pd.DataFrame],
+    validated_blocks: tuple[str, ...] = VALIDATED_BLOCKS,
+) -> pd.DataFrame:
+    """Upgrades the block-correlation diagnostic into an actual shared-prior
+    mechanism, for validated blocks only (Gap A).
+
+    For each skill in a validated block, finds its most-correlated block-mate
+    and applies a simple linear (MMSE-style) adjustment:
+
+        adjusted_skill = phase2_skill
+                          + correlation * std_resid[block-mate]
+                            * sqrt(phase2_skill_var)
+
+    This nudges a skill's season-grain estimate using the correlated
+    block-mate's standardized one-step-ahead residual (how much that skill
+    over/under-performed its own model's expectation that season), scaled by
+    the empirical correlation and converted back into the skill's natural
+    units via its own forecast variance. This is the documented "shared
+    priors informed by correlated skills" version from plan doc §6's table —
+    not a joint multivariate Kalman update (full covariance filtering stays
+    deferred, see the implementation-time plan's "Explicitly Deferred"
+    section for the concrete triggers to revisit that).
+
+    Adds `phase2_skill_{skill}_blended` columns for skills in
+    `validated_blocks`; skills outside those blocks (or blocks missing from
+    `block_correlations`) are left unchanged — no `_blended` column is added
+    for them, so callers can tell which skills actually got this treatment.
+    """
+    out = residual_df.copy()
+    for block_name in validated_blocks:
+        skills_in_block = SKILL_BLOCKS.get(block_name, [])
+        corr = block_correlations.get(block_name)
+        if corr is None or len(skills_in_block) < 2:
+            continue
+        for skill in skills_in_block:
+            other_skills = [s for s in skills_in_block if s != skill]
+            available = [s for s in other_skills if f"std_resid_{s}" in out.columns]
+            if not available:
+                continue
+            best_mate, best_corr = max(
+                ((s, corr.loc[f"std_resid_{skill}", f"std_resid_{s}"]) for s in available),
+                key=lambda pair: abs(pair[1]),
+            )
+            base_col, var_col = f"phase2_skill_{skill}", f"phase2_skill_var_{skill}"
+            if base_col not in out.columns or var_col not in out.columns:
+                continue
+            adjustment = best_corr * out[f"std_resid_{best_mate}"] * np.sqrt(out[var_col].clip(lower=0.0))
+            out[f"{base_col}_blended"] = out[base_col] + adjustment
+    return out

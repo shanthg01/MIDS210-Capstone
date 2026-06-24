@@ -176,3 +176,49 @@ def evaluate_cohort_slices(
         metrics = compute_regression_metrics(sub[target_col], sub[pred_col])
         rows.append({"slice": name, **metrics})
     return pd.DataFrame(rows)
+
+
+def join_archetype_metadata(df: pd.DataFrame, archetypes_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-joins `player_archetypes` (archetype_id/archetype_label/
+    confidence) onto a projection/eval frame by (player_id, season) — Issue
+    #37's Gap E (Issue #37 reconciliation): archetypes as evaluation/
+    explanation/comparable-player metadata only.
+
+    Deliberately a pure function taking `archetypes_df` as a plain frame, not
+    an engine — the caller queries `player_archetypes` (e.g.
+    `SELECT player_id, season, archetype_id, archetype_label, confidence
+    FROM player_archetypes`), this function never touches the DB itself,
+    same convention as the rest of this module.
+
+    Left join, not inner: a player missing an archetype row must not be
+    dropped or block evaluation — per Issue #37, "Missing archetype labels
+    do not block projections for players with sufficient statistical
+    history." Their archetype columns are simply NaN.
+    """
+    cols = ["player_id", "season", "archetype_id", "archetype_label", "confidence"]
+    missing = [c for c in cols if c not in archetypes_df.columns]
+    if missing:
+        raise ValueError(f"archetypes_df missing expected columns: {missing}")
+    return df.merge(archetypes_df[cols], on=["player_id", "season"], how="left")
+
+
+def find_comparable_players(
+    df: pd.DataFrame, player_id: int, season: int, skill_cols: list[str], n: int = 5,
+) -> pd.DataFrame:
+    """Nearest neighbors by Euclidean distance over `skill_cols` (the shared
+    neutral skill-state representation — never archetype, even though
+    archetype_label is reported alongside for context if present). Issue
+    #37 Gap E: archetype is explanation metadata here, not part of the
+    similarity metric itself — two players can be "comparable" by skill
+    profile regardless of which archetype cluster they fell into.
+    """
+    target_row = df[(df["player_id"] == player_id) & (df["season"] == season)]
+    if target_row.empty:
+        raise ValueError(f"No row for player_id={player_id}, season={season}")
+    target_vec = target_row[skill_cols].to_numpy(dtype=np.float64)[0]
+
+    candidates = df[~((df["player_id"] == player_id) & (df["season"] == season))].dropna(subset=skill_cols).copy()
+    diffs = candidates[skill_cols].to_numpy(dtype=np.float64) - target_vec
+    candidates["_distance"] = np.sqrt((diffs**2).sum(axis=1))
+    result_cols = ["player_id", "season", "_distance"] + [c for c in ("archetype_label",) if c in candidates.columns]
+    return candidates.nsmallest(n, "_distance")[result_cols].reset_index(drop=True)

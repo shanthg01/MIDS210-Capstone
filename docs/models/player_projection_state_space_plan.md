@@ -377,9 +377,11 @@ Some skills should inform other skills. The model can support this in three leve
 
 | Option | Description | Recommendation |
 |---|---|---|
-| Shared priors only | Position, class, height, FT%, archetype, and prior stats inform multiple skill priors | MVP-friendly |
+| Shared priors only | Position, class, height, FT%, and prior stats inform multiple skill priors | MVP-friendly |
 | Block covariance | Correlated state noise within skill groups like shooting, creation, rebounding, defense | Preferred full v1 |
 | Full covariance | Every latent skill can correlate with every other skill | Powerful but harder to fit |
+
+**Correction (Issue #37, 2026-06-23): `archetype` removed from the shared-priors list above.** The original row listed it alongside position/class/height/FT% as a prior input — never actually implemented that way, and Issue #37 now makes it an explicit constraint: `player_archetypes` is evaluation/explanation/comparable-player metadata only, never a model feature, prior, or input to any state equation or value head. Verified compliant as of this correction — zero archetype references anywhere in `player_projection*.py`.
 
 Recommended skill blocks:
 
@@ -1179,9 +1181,11 @@ Not part of the modeling plan itself, but surfaced while grounding this doc agai
 
 **Status: 2a implemented and validated-with-caveats, then paused for consolidation. 2b-2e not started.** This section is the resume-here record — read it before picking Phase 2 back up.
 
+**Reconciled against Issue #37 (2026-06-23):** [GitHub Issue #37](https://github.com/shanthg01/MIDS210-Capstone/issues/37), written after #36 (Phase 0/1) merged, is the authoritative scope document for the rest of Phase 2 — it supersedes the informal 2b-2e staging below in several concrete ways (most importantly: `player_archetypes` is explicit evaluation/explanation metadata only, never a model feature — see §6's correction above). The 2a work recorded below is reconciled against Issue #37's 8 scope items as real gaps (A-G), sequenced and tracked separately — see the implementation-time plan, not duplicated here. `scripts/validate_phase2_season_model.py` referenced below has been folded into the notebook and deleted as part of that reconciliation — do not look for it standalone going forward.
+
 ### 2a — Cross-season, block-aware state-space
 
-Files: `src/portalpoint/modeling/player_projection_phase2.py`, `scripts/validate_phase2_season_model.py`, `tests/test_player_projection_phase2.py` (7 tests, all passing).
+Files: `src/portalpoint/modeling/player_projection_phase2.py`, `tests/test_player_projection_phase2.py` (7 tests, all passing). Validation now lives in `notebooks/models/player_projection_state_space.ipynb` (folded in from the original standalone script, since deleted).
 
 **Design:** two-level hierarchical Kalman, not one combined model. Phase 1's intra-season filter (`player_projection_kalman.py`, unchanged) runs once per season across 2020-2026, producing one end-of-season smoothed state per player per season per skill. A new season-grain Kalman layer fits cross-season persistence (`rho`) and development-curve/transfer/level-change drift on top of those season-ending estimates, per §7's state evolution equation. `career_season_index` (rank among a player's own observed seasons) replaces literal `class_year` as the drift covariate — `players.class_year` only holds the most-recently-ingested value, not a per-season history (see the module docstring for the full reasoning).
 
@@ -1222,10 +1226,31 @@ Files: `src/portalpoint/modeling/player_projection_phase2.py`, `scripts/validate
 - `load_or_build_season_skill_states()` / `load_or_build_season_covariates()` — parquet-cached wrappers (gitignored under `data/features/player_projection_phase2/`, same convention as `feature_eng_m1_m2_m3.ipynb`'s caches) so 2b/2c/2d don't re-pay the ~2h intra-season filtering cost.
 - `estimate_rho_autocorrelation()` now logs the raw pre-clip value whenever clipping changes it (or confirms it didn't), closing the `shooting_3p` transparency gap for future runs.
 
+### Issue #37 Reconciliation — Gaps A-G Progress (2026-06-24)
+
+The informal 2b-2e staging above was superseded by reconciling 2a against Issue #37's 8 scope items, producing 7 concrete gaps (A-G — see the implementation-time plan, not duplicated here). Status:
+
+| Gap | What | Code | Real-data applied |
+|---|---|---|---|
+| A | Shared-prior blending for the 2 validated blocks (creation, rebounding) only | ✅ done, tested | Not yet run on real `residual_df` |
+| B | Observation-layer context adjustment (opponent `adj_d`/pace, competition tier, home/away) | ✅ done, tested | Not yet integrated into the pipeline |
+| C | Real Stage 2A/2B possession-outcome + conditional rate model → `projected_rates`/`projected_box_score` | ❌ not started | — |
+| D | Feed Phase 0's shrinkage prior into 2a's intra-season filter (`external_priors` on `player_projection_kalman.build_player_sequences`/`smooth_skill`), refit value heads | ✅ done, tested | ⏳ real-data run in progress (see below) |
+| E | `player_archetypes` join for evaluation/explanation metadata + comparable-players helper — never a model feature, per Issue #37's explicit constraint | ✅ done, tested | Not yet run on real archetype data |
+| F | Wire `skill_states`/`uncertainty`/`projected_rates` into actual `player_projections` writes (currently empty `{}` placeholders) | ❌ not started — Phase 2 has no write path to the DB at all yet | — |
+| G | Point `player_projection_eval.py`'s rolling-origin CV at Gap D's output, add 2 new competition-tier transfer cohort slices, compare to Phase 0 | ✅ done, tested | ⏳ same real-data run as D |
+
+**Real performance findings while trying to get Gap D/G's real numbers (2026-06-24) — two distinct bottlenecks, found the hard way:**
+
+1. **First attempt:** restarted the full notebook top-to-bottom with Gap D's prior-wiring change. Killed it after 3h44min (vs. the original 2a benchmark's ~2h15min) on the hypothesis that a per-row pandas column relookup inside the new `external_priors` lookup loop (`build_player_sequences` in `player_projection_kalman.py`) was the cause. Benchmarked the fix in isolation: **only ~5s of the 3h44min** — real bug (20x speedup on that one loop, kept the fix), but not remotely the explanation. Wrong diagnosis.
+2. **Found the real bottleneck via a live `py-spy dump` of the actual stuck process** (not a guess) — the call stack showed execution in `fit_season_model`'s **Nelder-Mead search** (`player_projection_phase2.py`, the season-grain `rho`-fixed/drift-terms fit), not the intra-season Q-search that the first round of optimization had targeted. Nelder-Mead on 6 free dimensions needs far more function evaluations than the 1-D Brent search used for the intra-season Q fit, and each evaluation re-loops over every player's full multi-season sequence — a separate, bigger cost nobody had profiled before.
+3. **Fix, same pattern as the (correct, but insufficient on its own) earlier optimization:** added population-subsampling to `fit_season_model`'s search (`max_sequences_for_search`, same `weight/(weight+k)`-style justification as `player_projection_kalman.fit_q_mle`'s subsampling — these are pooled population-level parameters, not per-player estimates, so a deterministic random subsample converges to essentially the same fit) and parallelized `fit_all_skills`'s 10-skill loop across a `ProcessPoolExecutor` (the skills are fully independent fits). Also flattened `build_season_skill_states`'s season x skill loop into one flat process pool (up to 70 independent tasks) instead of a nested seasons-loop-of-skills-loop, since nested process pools are fragile on their own. All changes tested against synthetic data first (11 new tests across `test_player_projection_kalman.py`/`test_player_projection_phase2.py`), full suite green (181 passing) before any real-data restart.
+4. **Before committing to a third multi-hour real run, built a fast proxy:** added an optional `player_id_subset` parameter to `build_season_skill_states` (filters game logs + the Phase 0 prior lookup to a given player set before any fitting happens — not a change to the math, just a smaller population through the same unchanged pipeline) and ran the full `build_season_skill_states` → `build_season_covariates` → `fit_all_skills` → `compute_block_correlations` chain on a random 500-player sample across all 7 seasons. This is exactly what TODO item 4 below (written 2026-06-23, before any of this happened) had predicted should happen: *"validate on a smaller sample before committing to a multi-hour full run, rather than discovering problems after a 2+ hour fit."* Results pending as of this doc update — see the next revision of this section for the proxy's fitted params and whether the full real-data run was worth re-launching.
+
 ### TODO before resuming Phase 2
 
-1. **Move `scripts/validate_phase2_season_model.py` into the notebook**, matching Phase 1's precedent exactly: `validate_phase1_kalman.py` was built standalone first, then folded into `notebooks/models/player_projection_state_space.ipynb` once it was stable, and the standalone script deleted (see this notebook's own intro markdown, which already documents that supersession for Phase 1). **Not yet done for 2a** — the script still exists standalone and should not be treated as the long-term home for this validation.
+1. ✅ **Done.** Moved `scripts/validate_phase2_season_model.py` into the notebook, matching Phase 1's precedent exactly (`validate_phase1_kalman.py` was folded in and deleted the same way). The script no longer exists standalone.
 2. Re-confirm `shooting_3p`'s raw autocorrelation once the cache is warm and a future run actually executes the new logging — current real-data results predate that fix.
 3. Investigate the shooting-touch block's weak correlation result specifically before relying on cross-skill prior-blending for those 3 skills.
-4. **2b-2e not started.** Hybrid possession-outcome + conditional rate model (Stage 2A/2B), role/usage adapter (Stage 2C), Stage 2D value-model refit, and the full §12 validation suite (2e) remain exactly as scoped when Phase 2 was approved. Re-scope/re-confirm sequencing when resuming — 2a's real findings here (the rho-identifiability trap, the cost of a full real-data run) should inform how 2b is built, particularly: budget for an identifiability check early, and validate on a smaller sample before committing to a multi-hour full run, rather than discovering problems after a 2+ hour fit the way 2a did.
-5. Phase 2a's code (`player_projection_phase2.py`, its tests, the validation script) is implemented and passing but **not yet committed** — exists only in the working tree as of this pause point.
+4. ✅ **Followed, 2026-06-24.** "Validate on a smaller sample before committing to a multi-hour full run" — see the proxy-run paragraph immediately above. 2b-2e's informal staging is superseded by Gaps A-G (table above); C and F remain unstarted, B is coded but not pipeline-integrated.
+5. Phase 2a's code (`player_projection_phase2.py`, its tests, the validation script) is implemented and passing but **not yet committed** — exists only in the working tree as of this pause point. This is now also true of all Gap A/B/D/E/G code from 2026-06-24.

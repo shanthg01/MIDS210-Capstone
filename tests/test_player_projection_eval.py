@@ -125,3 +125,45 @@ def test_evaluate_cohort_slices_skips_small_slices_and_reports_real_ones():
     result = ppe.evaluate_cohort_slices(df, "target", "pred", slice_defs, min_n=5)
     assert "bigs" in result["slice"].tolist()
     assert "tiny" not in result["slice"].tolist()  # below min_n, correctly skipped
+
+
+def test_join_archetype_metadata_left_join_does_not_drop_missing_rows():
+    # Issue #37: missing archetype labels must not block evaluation for
+    # players with sufficient statistical history.
+    df = pd.DataFrame({"player_id": [1, 2, 3], "season": [2026, 2026, 2026], "value": [1.0, 2.0, 3.0]})
+    archetypes_df = pd.DataFrame({
+        "player_id": [1, 3], "season": [2026, 2026],
+        "archetype_id": [0, 2], "archetype_label": ["3&D Wing", "Post Scoring Big"], "confidence": [0.9, 0.7],
+    })
+    joined = ppe.join_archetype_metadata(df, archetypes_df)
+    assert len(joined) == 3  # player 2 (no archetype row) is not dropped
+    assert joined.loc[joined["player_id"] == 2, "archetype_label"].isna().all()
+    assert joined.loc[joined["player_id"] == 1, "archetype_label"].iloc[0] == "3&D Wing"
+
+
+def test_join_archetype_metadata_raises_on_missing_columns():
+    df = pd.DataFrame({"player_id": [1], "season": [2026]})
+    bad_archetypes_df = pd.DataFrame({"player_id": [1], "season": [2026]})  # missing archetype_id etc.
+    with pytest.raises(ValueError, match="missing expected columns"):
+        ppe.join_archetype_metadata(df, bad_archetypes_df)
+
+
+def test_find_comparable_players_returns_nearest_by_skill_distance_not_archetype():
+    df = pd.DataFrame({
+        "player_id": [1, 2, 3, 4],
+        "season": [2026, 2026, 2026, 2026],
+        "skill_a": [0.0, 0.1, 5.0, 0.05],
+        "skill_b": [0.0, 0.1, 5.0, 0.05],
+        "archetype_label": ["Wing", "Big", "Big", "Wing"],
+    })
+    result = ppe.find_comparable_players(df, player_id=1, season=2026, skill_cols=["skill_a", "skill_b"], n=2)
+    # nearest by skill distance should be players 2 and 4 (close in skill space),
+    # not player 3 (far in skill space despite no archetype filter applied)
+    assert set(result["player_id"].tolist()) == {2, 4}
+    assert 3 not in result["player_id"].tolist()
+
+
+def test_find_comparable_players_raises_for_unknown_player_season():
+    df = pd.DataFrame({"player_id": [1], "season": [2026], "skill_a": [0.0]})
+    with pytest.raises(ValueError, match="No row for"):
+        ppe.find_comparable_players(df, player_id=99, season=2026, skill_cols=["skill_a"])

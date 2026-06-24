@@ -104,6 +104,41 @@ def test_joint_rho_and_drift_fit_is_not_identifiable_on_short_sequences_alone():
     assert nll_at_fit <= nll_at_truth
 
 
+def test_fit_season_model_subsampling_is_deterministic_given_fixed_random_state():
+    # Performance change (2026-06-24): a py-spy dump of an actual stuck real
+    # run showed fit_season_model's Nelder-Mead search (not the intra-season
+    # Q-search) was the true dominant cost. Same fix as fit_q_mle's
+    # subsampling: same random_state must always pick the same subsample.
+    rng = np.random.default_rng(1)
+    sequences = [_synthetic_sequence(rng, rng.integers(2, 6), 0.7, 0.05) for _ in range(2000)]
+    fit_a = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=200, random_state=42)
+    fit_b = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=200, random_state=42)
+    assert fit_a["beta_1"] == fit_b["beta_1"]
+    assert fit_a["Q"] == fit_b["Q"]
+
+
+def test_fit_season_model_subsample_recovers_similar_drift_to_full_population():
+    # The actual performance claim: beta_0..4/Q are pooled population-level
+    # estimates -- a few-hundred-sequence subsample should land close to the
+    # full-population fit's drift direction/magnitude, not meaningfully off.
+    rng = np.random.default_rng(2)
+    sequences = [_synthetic_sequence(rng, rng.integers(2, 6), 0.7, 0.05) for _ in range(2000)]
+    fit_full = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=None)
+    fit_sub = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=300, random_state=3)
+    assert fit_sub["beta_1"] == pytest.approx(fit_full["beta_1"], abs=0.02)
+
+
+def test_fit_season_model_no_subsampling_below_threshold():
+    # Population smaller than max_sequences_for_search must use every
+    # sequence -- no silent subsampling of an already-small population.
+    rng = np.random.default_rng(3)
+    sequences = [_synthetic_sequence(rng, rng.integers(2, 6), 0.7, 0.05) for _ in range(50)]
+    fit_a = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=1000)
+    fit_b = pp2.fit_season_model(sequences, fixed_rho=0.7, max_sequences_for_search=None)
+    assert fit_a["beta_1"] == pytest.approx(fit_b["beta_1"])
+    assert fit_a["neg_log_likelihood"] == pytest.approx(fit_b["neg_log_likelihood"])
+
+
 def _synthetic_skill_and_covariates_frames(rng, n_players, true_rho, true_beta1, skill="shooting_3p"):
     """Builds skill_df/covariates frames (the real shape smooth_season_skill
     consumes) from the same generating process as _synthetic_sequence, with
@@ -168,3 +203,135 @@ def test_compute_block_correlations_skips_blocks_with_insufficient_columns():
     block_corrs = pp2.compute_block_correlations(residual_df)
     # rebounding block needs 2 columns (offensive + defensive); only 1 present
     assert "rebounding" not in block_corrs
+
+
+def _rebounding_residual_frame():
+    n = 30
+    rng = np.random.default_rng(0)
+    off_resid = rng.normal(0, 1, n)
+    def_resid = 0.6 * off_resid + rng.normal(0, 0.5, n)  # genuinely correlated
+    return pd.DataFrame({
+        "phase2_skill_offensive_rebounding": np.full(n, 5.0),
+        "phase2_skill_var_offensive_rebounding": np.full(n, 1.0),
+        "std_resid_offensive_rebounding": off_resid,
+        "phase2_skill_defensive_rebounding": np.full(n, 8.0),
+        "phase2_skill_var_defensive_rebounding": np.full(n, 1.0),
+        "std_resid_defensive_rebounding": def_resid,
+    })
+
+
+def test_blend_block_priors_only_touches_validated_blocks():
+    residual_df = _rebounding_residual_frame()
+    # shooting_touch is not a validated block — add columns for it too, and
+    # confirm it gets no _blended column even though it's structurally present.
+    residual_df["phase2_skill_shooting_3p"] = 0.35
+    residual_df["phase2_skill_var_shooting_3p"] = 0.01
+    residual_df["std_resid_shooting_3p"] = 0.5
+    residual_df["phase2_skill_2p_finishing"] = 0.5  # deliberately not matching SKILL_COLUMNS naming
+    block_corrs = pp2.compute_block_correlations(residual_df)
+
+    blended = pp2.blend_block_priors(residual_df, block_corrs)
+    assert "phase2_skill_offensive_rebounding_blended" in blended.columns
+    assert "phase2_skill_defensive_rebounding_blended" in blended.columns
+    assert "phase2_skill_shooting_3p_blended" not in blended.columns  # not a validated block
+
+
+def test_blend_block_priors_adjustment_direction_matches_correlation_sign():
+    residual_df = _rebounding_residual_frame()
+    block_corrs = pp2.compute_block_correlations(residual_df)
+    blended = pp2.blend_block_priors(residual_df, block_corrs)
+
+    # offensive_rebounding's blended estimate should move in the same
+    # direction as defensive_rebounding's residual sign (positive correlation)
+    high_def_resid_rows = blended[blended["std_resid_defensive_rebounding"] > 1.0]
+    low_def_resid_rows = blended[blended["std_resid_defensive_rebounding"] < -1.0]
+    assert len(high_def_resid_rows) > 0 and len(low_def_resid_rows) > 0
+    assert (
+        high_def_resid_rows["phase2_skill_offensive_rebounding_blended"].mean()
+        > low_def_resid_rows["phase2_skill_offensive_rebounding_blended"].mean()
+    )
+
+
+def test_blend_block_priors_handles_missing_block_correlation_gracefully():
+    residual_df = _rebounding_residual_frame()
+    blended = pp2.blend_block_priors(residual_df, block_correlations={})  # no correlations computed at all
+    assert "phase2_skill_offensive_rebounding_blended" not in blended.columns
+    # should not raise, should just pass through unchanged
+    assert len(blended) == len(residual_df)
+
+
+def test_attach_game_context_joins_own_and_opponent_correctly():
+    game_logs = pd.DataFrame({
+        "player_id": [1, 2],
+        "school_id": [101, 102],
+        "opponent_school_id": [102, 101],
+        "home_away": ["home", "away"],
+    })
+    team_context = pd.DataFrame({
+        "school_id": [101, 102],
+        "season": [2026, 2026],
+        "adj_d": [95.0, 100.0],  # lower adj_d = better defense, by barttorvik convention
+        "adj_tempo": [68.0, 72.0],
+        "tier": [4, 2],
+    })
+    result = pp2.attach_game_context(game_logs, team_context)
+
+    # player 1 is on school 101, facing opponent 102 -> own pace/tier from 101, opponent_adj_d from 102
+    row1 = result[result["player_id"] == 1].iloc[0]
+    assert row1["team_pace"] == pytest.approx(68.0)
+    assert row1["tier"] == 4
+    assert row1["opponent_adj_d"] == pytest.approx(100.0)
+    assert row1["home_flag"] == pytest.approx(1.0)
+
+    row2 = result[result["player_id"] == 2].iloc[0]
+    assert row2["team_pace"] == pytest.approx(72.0)
+    assert row2["opponent_adj_d"] == pytest.approx(95.0)
+    assert row2["home_flag"] == pytest.approx(0.0)
+
+
+def test_fit_context_adjustment_returns_none_on_too_little_data():
+    obs_df = pd.DataFrame({
+        "y_shooting_3p": [0.3, 0.4],
+        "weight_shooting_3p": [5.0, 6.0],
+        "opponent_adj_d": [95.0, 100.0],
+        "team_pace": [68.0, 70.0],
+        "tier": [3, 2],
+        "home_flag": [1.0, 0.0],
+    })
+    model = pp2.fit_context_adjustment(obs_df, "shooting_3p")
+    assert model is None  # below the 30-row floor
+
+
+def test_apply_context_adjustment_recovers_known_opponent_effect():
+    # Synthetic: true rate = baseline + 0.01 * (opponent_adj_d - 100), no other effects.
+    rng = np.random.default_rng(0)
+    n = 200
+    opponent_adj_d = rng.uniform(85.0, 115.0, n)
+    baseline = 0.35
+    true_effect = 0.01 * (opponent_adj_d - 100.0)
+    y = baseline + true_effect + rng.normal(0, 0.01, n)
+    obs_df = pd.DataFrame({
+        "y_shooting_3p": y,
+        "weight_shooting_3p": np.full(n, 10.0),
+        "opponent_adj_d": opponent_adj_d,
+        "team_pace": np.full(n, 68.0),  # no variation -> no confound
+        "tier": np.full(n, 3),
+        "home_flag": rng.integers(0, 2, n).astype(float),
+    })
+    model = pp2.fit_context_adjustment(obs_df, "shooting_3p")
+    assert model is not None
+    adjusted = pp2.apply_context_adjustment(obs_df, "shooting_3p", model)
+
+    # adjusted series should have much less correlation with opponent_adj_d
+    # than the raw series did, since the opponent effect has been removed.
+    raw_corr = np.corrcoef(obs_df["y_shooting_3p"], opponent_adj_d)[0, 1]
+    adjusted_corr = np.corrcoef(adjusted, opponent_adj_d)[0, 1]
+    assert abs(adjusted_corr) < abs(raw_corr)
+    # re-centered on the same population mean, not shifted wholesale
+    assert adjusted.mean() == pytest.approx(obs_df["y_shooting_3p"].mean(), abs=0.02)
+
+
+def test_apply_context_adjustment_passes_through_unchanged_when_model_is_none():
+    obs_df = pd.DataFrame({"y_shooting_3p": [0.3, 0.4, 0.5]})
+    result = pp2.apply_context_adjustment(obs_df, "shooting_3p", None)
+    pd.testing.assert_series_equal(result, obs_df["y_shooting_3p"])

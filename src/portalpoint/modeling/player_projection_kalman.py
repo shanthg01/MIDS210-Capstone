@@ -158,10 +158,39 @@ def pooled_neg_log_likelihood(q_value: float, sequences: list[Sequence]) -> floa
     return _pooled_neg_log_likelihood(q_value, sequences)
 
 
-def fit_q_mle(sequences: list[Sequence], bounds: tuple[float, float] = Q_BOUNDS) -> tuple[float, float]:
+MAX_SEQUENCES_FOR_Q_SEARCH = 1000
+
+
+def fit_q_mle(
+    sequences: list[Sequence], bounds: tuple[float, float] = Q_BOUNDS,
+    max_sequences_for_search: int | None = MAX_SEQUENCES_FOR_Q_SEARCH, random_state: int = 0,
+) -> tuple[float, float]:
     """Pooled MLE fit of one global process variance Q for a skill, across
-    every player's game sequence. Returns (Q, neg_log_likelihood_at_Q)."""
-    result = minimize_scalar(_pooled_neg_log_likelihood, bounds=bounds, args=(sequences,), method="bounded")
+    every player's game sequence. Returns (Q, neg_log_likelihood_at_Q).
+
+    Performance note (2026-06-24): `Q` is a single population-level nuisance
+    parameter, not a per-player estimate — it doesn't need the full
+    population to converge to essentially the same value, only enough
+    players for the pooled likelihood to be stable. `minimize_scalar` calls
+    the pooled likelihood ~20-30 times (Brent's method), and each call was
+    looping over every one of ~5,000 players in pure Python — the dominant
+    cost in the real ~2h+ run. When `len(sequences)` exceeds
+    `max_sequences_for_search`, the *search* runs on a deterministic random
+    subsample (fixed `random_state`, so reruns are reproducible); the
+    returned `Q` is then used to filter/smooth the *full* population exactly
+    as before (`smooth_skill` calls this once, then loops over all players
+    with the fitted `Q` — that loop is unaffected by this change). The
+    returned `neg_log_likelihood_at_Q` is computed on the search subsample,
+    not the full population — not meaningful to compare across calls with
+    different sample sizes, but no caller currently uses this value (only
+    `Q` itself is consumed downstream).
+    """
+    search_sequences = sequences
+    if max_sequences_for_search is not None and len(sequences) > max_sequences_for_search:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(len(sequences), size=max_sequences_for_search, replace=False)
+        search_sequences = [sequences[i] for i in idx]
+    result = minimize_scalar(_pooled_neg_log_likelihood, bounds=bounds, args=(search_sequences,), method="bounded")
     return float(result.x), float(result.fun)
 
 
@@ -193,35 +222,92 @@ def _r_numerator(skill: str, prior_mean: float) -> float:
     return max(prior_mean, 1e-3) * 40.0
 
 
-def build_player_sequences(obs_df: pd.DataFrame, skill: str) -> dict[int, Sequence]:
+PRIOR_VAR_SHRINK_K = 8.0  # matches player_projection.SHRINKAGE_K — same shrinkage
+# shape (weight/(weight+k)) applied to prior *variance* here instead of mean,
+# since the mean itself now comes pre-shrunk from external_priors (Gap D).
+
+
+def build_player_sequences(
+    obs_df: pd.DataFrame, skill: str, external_priors: pd.DataFrame | None = None,
+) -> dict[int, Sequence]:
     """One Sequence per player_id for the given skill. Observation noise
     R_t = numerator / weight_t — see _r_numerator for the Bernoulli vs.
     Poisson-rate derivation. This is still an approximation (population-mean
     numerator, not per-player), but fixes the order-of-magnitude scale error
-    that previously pinned count-rate skills' Q at its upper bound."""
+    that previously pinned count-rate skills' Q at its upper bound.
+
+    `external_priors` (Gap D, Issue #37 reconciliation, 2026-06-23): an
+    optional frame with columns `player_id`, `skill_{skill}`, `_weight` —
+    Phase 0's `player_projection.shrink_skills()` output for the same season.
+    When given, each player's `prior_mean` becomes their Phase 0
+    position x season shrinkage estimate instead of the flat population
+    mean, and `prior_var` is shrunk toward more confidence in proportion to
+    their Phase 0 sample weight (same `weight/(weight+k)` shape Phase 0
+    itself uses for the mean, applied here to variance). Players absent from
+    `external_priors` (e.g. below Phase 0's games-played floor) fall back to
+    the flat population prior — this was the only behavior before Gap D, so
+    it remains a real fallback, not a placeholder.
+    """
     y_col, w_col = f"y_{skill}", f"weight_{skill}"
     valid_mask_all = obs_df[w_col] > 0
-    prior_mean = float(obs_df.loc[valid_mask_all, y_col].mean())
-    prior_var = float(obs_df.loc[valid_mask_all, y_col].var(ddof=1)) * 4.0
-    if not np.isfinite(prior_var) or prior_var <= 0:
-        prior_var = 1.0
-    r_numerator = _r_numerator(skill, prior_mean)
+    population_prior_mean = float(obs_df.loc[valid_mask_all, y_col].mean())
+    population_prior_var = float(obs_df.loc[valid_mask_all, y_col].var(ddof=1)) * 4.0
+    if not np.isfinite(population_prior_var) or population_prior_var <= 0:
+        population_prior_var = 1.0
+    r_numerator = _r_numerator(skill, population_prior_mean)
+
+    external_lookup: dict[int, tuple[float, float]] = {}
+    if external_priors is not None and f"skill_{skill}" in external_priors.columns:
+        # NOT itertuples()/_asdict() — pandas can't give a namedtuple field
+        # literally called "_weight" (leading underscore is reserved for
+        # namedtuple internals), so it silently renames it and the lookup
+        # would go missing for every row. Direct column access avoids that.
+        #
+        # Performance fix (2026-06-24): the original version re-looked-up
+        # `external_priors[f"skill_{skill}"]` (a fresh column access) on
+        # *every* loop iteration via `.iloc[i]`, instead of pulling each
+        # column out once as a plain numpy array first. With ~5,000 players
+        # per season x 70 (season, skill) calls, that repeated per-row
+        # pandas column/Series overhead was a real, avoidable cost in the
+        # first real-data run of this code path — pull everything to numpy
+        # once, then build the dict via zip (no pandas indexing inside the
+        # loop at all).
+        pid_arr = external_priors["player_id"].to_numpy()
+        skill_arr = external_priors[f"skill_{skill}"].to_numpy(dtype=np.float64)
+        weight_arr = (
+            external_priors["_weight"].to_numpy(dtype=np.float64)
+            if "_weight" in external_priors.columns
+            else np.zeros(len(external_priors), dtype=np.float64)
+        )
+        external_lookup = {
+            int(pid): (float(sk), float(w)) for pid, sk, w in zip(pid_arr, skill_arr, weight_arr)
+        }
 
     sequences: dict[int, Sequence] = {}
     for player_id, g in obs_df.groupby("player_id"):
+        pid = int(player_id)
+        if pid in external_lookup:
+            prior_mean, weight = external_lookup[pid]
+            prior_var = population_prior_var * (PRIOR_VAR_SHRINK_K / (PRIOR_VAR_SHRINK_K + max(weight, 0.0)))
+        else:
+            prior_mean, prior_var = population_prior_mean, population_prior_var
+
         mask = (g[w_col] > 0).to_numpy()
         y = g[y_col].fillna(prior_mean).to_numpy(dtype=np.float64)
-        weight = g[w_col].clip(lower=1e-6).to_numpy(dtype=np.float64)
-        R = r_numerator / weight
-        sequences[int(player_id)] = (y, R, mask, prior_mean, prior_var)
+        weight_arr = g[w_col].clip(lower=1e-6).to_numpy(dtype=np.float64)
+        R = r_numerator / weight_arr
+        sequences[pid] = (y, R, mask, prior_mean, prior_var)
     return sequences
 
 
-def smooth_skill(obs_df: pd.DataFrame, skill: str) -> tuple[float, pd.DataFrame]:
+def smooth_skill(
+    obs_df: pd.DataFrame, skill: str, external_priors: pd.DataFrame | None = None,
+) -> tuple[float, pd.DataFrame]:
     """Fit Q for one skill, then filter+smooth every player's sequence.
     Returns (fitted_Q, frame with one row per player: end-of-season smoothed
-    mean/var = the last smoothed state, used as the Phase 1 skill estimate)."""
-    sequences = build_player_sequences(obs_df, skill)
+    mean/var = the last smoothed state, used as the Phase 1 skill estimate).
+    `external_priors`: see build_player_sequences (Gap D)."""
+    sequences = build_player_sequences(obs_df, skill, external_priors=external_priors)
     q_value, _ = fit_q_mle(list(sequences.values()))
 
     rows = []
@@ -237,13 +323,19 @@ def smooth_skill(obs_df: pd.DataFrame, skill: str) -> tuple[float, pd.DataFrame]
     return q_value, pd.DataFrame(rows)
 
 
-def smooth_all_skills(obs_df: pd.DataFrame) -> tuple[dict[str, float], pd.DataFrame]:
+def smooth_all_skills(
+    obs_df: pd.DataFrame, external_priors_df: pd.DataFrame | None = None,
+) -> tuple[dict[str, float], pd.DataFrame]:
     """Runs smooth_skill for every skill in SKILLS, merges into one
-    per-player frame. Returns (fitted_Q_per_skill, merged frame)."""
+    per-player frame. Returns (fitted_Q_per_skill, merged frame).
+    `external_priors_df`: Phase 0's full shrink_skills() output for this
+    season (all skill_<skill>/_weight columns at once) — see
+    build_player_sequences for the Gap D reasoning. None preserves the
+    original flat-population-prior behavior."""
     fitted_q: dict[str, float] = {}
     merged: pd.DataFrame | None = None
     for skill in SKILLS:
-        q_value, skill_df = smooth_skill(obs_df, skill)
+        q_value, skill_df = smooth_skill(obs_df, skill, external_priors=external_priors_df)
         fitted_q[skill] = q_value
         skill_df = skill_df.drop(columns=["_n_games_observed"])
         merged = skill_df if merged is None else merged.merge(skill_df, on="player_id", how="outer")
