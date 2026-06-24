@@ -62,3 +62,50 @@ def test_score_gap_matches_scores_all_pairs_and_preserves_scheme_context():
     unseeded_breakdown = json.loads(unseeded[5])
     assert "scheme" not in unseeded_breakdown
     assert "gap" in unseeded_breakdown
+
+
+def test_delete_stale_gap_scores_deletes_only_prior_gap_versions():
+    class Cursor:
+        rowcount = 7
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+
+    class Connection:
+        def __init__(self):
+            self.cursor_obj = Cursor()
+            self.committed = False
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_obj
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            self.closed = True
+
+    class Engine:
+        def __init__(self):
+            self.conn = Connection()
+
+        def raw_connection(self):
+            return self.conn
+
+    engine = Engine()
+
+    deleted = gm.delete_stale_gap_scores(engine, [2021, 2022], "gap-cos-v4")
+
+    assert deleted == 7
+    assert "model_version LIKE 'gap-cos-%%'" in engine.conn.cursor_obj.sql
+    assert engine.conn.cursor_obj.params == ([2021, 2022], "gap-cos-v4")
+    assert engine.conn.committed is True
+    assert engine.conn.closed is True

@@ -208,6 +208,9 @@ def main() -> None:
     log.info("Total rows upserted to player_team_fit_scores: %s", f"{total_upserted:,}")
     conn.close()
 
+    stale_deleted = gm.delete_stale_gap_scores(engine, SEASONS_IN_DATA)
+    log.info("Stale prior gap-cos rows deleted: %s", f"{stale_deleted:,}")
+
     if args.include_player_ids:
         overridden = apply_portal_candidate_override(
             engine, args.include_player_ids, current_season

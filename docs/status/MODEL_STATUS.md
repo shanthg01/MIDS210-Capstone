@@ -1,6 +1,6 @@
 # PortalPoint Model Status
 
-**Last updated:** June 22, 2026 (Scheme Fit all-pairs — `scheme-cos-v3`; Gap Matching now `gap-cos-v4` with shared roster baseline; PR #33 portal-scope follow-ups landed — `is_portal_candidate` flag, `available_only` search filter, `is_current_school`/`is_roster_baseline_member` fit-score fields)
+**Last updated:** June 23, 2026 (Gap Matching `gap-cos-v4` DB refresh complete — 9,756,718 all-pairs rows, shared roster baseline persisted, stale prior `gap-cos-*` rows cleaned up)
 **Scope:** Model notebooks, model outputs, feature/data dependencies, and next modeling work.
 
 Use this file as the model handoff. Architecture and deployment context live in
@@ -18,7 +18,7 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | M1 Player Clustering | ✅ Complete baseline — script-backed tuned group-weighted `k9-tuned-v1-2026`; 18,769 player-seasons (min_pct ≥ 20); 85.4% HE-covered in latest local run. **Critical bugfix:** added semantic cluster reordering (was silently scrambling all 9 labels on every rerun — see Known Follow-Ups). Current archetype labels are accepted for MVP. | None for MVP beyond keeping local artifacts/DB refreshed from the script. | Add HE `pos_confidence_*` for position-aware archetypes; richer P&R role inference; optional product-copy refinement if coaches prefer different wording. | [`../../scripts/run_player_clustering.py`](../../scripts/run_player_clustering.py); [`../../notebooks/models/player_clustering.ipynb`](../../notebooks/models/player_clustering.ipynb); this doc's M1 section |
 | M2 Team System Clustering | ✅ Complete baseline — script-backed two-layer tuned group-weighted `team-v4-2026`; 2,158 team-seasons. Offense/defense memberships populated. Current offense/defense labels are accepted for MVP. Confidence (~0.2 avg) confirmed structural via 2 ruled-out experiments, not a tuning bug — see Known Follow-Ups. | None for MVP beyond keeping local artifacts/DB refreshed from the script. | Later evaluate hoopR spatial zones and defensive PPP/four-factor quality overlays; optional product-copy refinement if coaches prefer different wording. | [`../../scripts/run_team_clustering.py`](../../scripts/run_team_clustering.py); [`../../notebooks/models/team_clustering.ipynb`](../../notebooks/models/team_clustering.ipynb); this doc's M2 section |
 | M3 Scheme Fit | ✅ `scheme-cos-v3` (2026-06-22) — **all-pairs** (was top-50-per-player): every eligible player×school×season, all 6 seasons (2021-2026), 9,666,119 records. School-chunked score+write loop in both script and notebook (in sync). `player_team_fit_scores` has `season` column and API reads current-season rows. | None for MVP. | M3 v4 with hoopR spatial zones; normalization/rescaling of scheme_fit for UI display. | [`../../scripts/run_scheme_fit.py`](../../scripts/run_scheme_fit.py); [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
-| Gap Matching | ✅ `gap-cos-v4` (2026-06-22) — **all-pairs** scoring remains, but roster gap vectors now consume `portalpoint.modeling.roster_baseline` instead of only subtracting portal departures. Historical seasons use `player_season_stats(S+1)` as the roster-outlook source; latest season uses latest `roster_snapshots` where available, with same-season stats minus expected departures (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) as fallback for schools without usable snapshots. `player_team_fit_scores.is_portal_candidate` still scopes recommendations separately. | Re-run script/notebook after this branch merges so stored rows move from `gap-cos-v3` to `gap-cos-v4`. | Add roster-baseline confidence into breakdowns; include unmatched/new snapshot players as depth-only priors; add coach-adjustable needs and hoopR play-type gap features. | [`../../scripts/run_gap_matching.py`](../../scripts/run_gap_matching.py); [`../../src/portalpoint/modeling/roster_baseline.py`](../../src/portalpoint/modeling/roster_baseline.py); [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
+| Gap Matching | ✅ `gap-cos-v4` (2026-06-23 refresh) — **all-pairs** scoring remains, but roster gap vectors now consume `portalpoint.modeling.roster_baseline` instead of only subtracting portal departures. Historical seasons use `player_season_stats(S+1)` as the roster-outlook source; latest season uses latest `roster_snapshots` where available, with same-season stats minus expected departures (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) as fallback for schools without usable snapshots. `player_team_fit_scores.is_portal_candidate` still scopes recommendations separately. Local DB now has 9,756,718 `gap-cos-v4` fit-score rows and 16,367 `roster_baseline_members`. | None for MVP after the 2026-06-23 script refresh; rerun only when source data changes. | Add roster-baseline confidence into breakdowns; include unmatched/new snapshot players as depth-only priors; add coach-adjustable needs and hoopR play-type gap features. | [`../../scripts/run_gap_matching.py`](../../scripts/run_gap_matching.py); [`../../src/portalpoint/modeling/roster_baseline.py`](../../src/portalpoint/modeling/roster_baseline.py); [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
 | M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; consume `portalpoint.modeling.roster_baseline` for current roster/outlook membership before estimating minutes or displaced usage. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md); [`../../src/portalpoint/modeling/roster_baseline.py`](../../src/portalpoint/modeling/roster_baseline.py) |
 | Program Fit | Not started. | Define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities. | `APPLICATION_STATUS.md`; future program-fit plan needed |
 | Replace proxies with better public/partner data; expose configurable program priorities and learn from feedback. | [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md); `APPLICATION_STATUS.md` |
@@ -33,7 +33,7 @@ Immediate modeling order:
 ✅ M1 player_clustering          (tuned group-weighted k9-tuned-v1-2026; top-three memberships populated)
 ✅ M2 team_clustering            (two-layer team-v4-2026 notebook/DB/artifacts populated)
 ✅ M3 scheme_fit_scorer          (scheme-cos-v3; all-pairs, all 6 seasons; 9,666,119 rows; migration b5d2e9f4 applied)
-✅ Gap Matching                  (gap-cos-v4 code path; all-pairs; shared roster_baseline; is_portal_candidate synced separately)
+✅ Gap Matching                  (gap-cos-v4; all-pairs; 9,756,718 rows; shared roster_baseline; is_portal_candidate synced separately)
 ✅ fit_scores.py partial real scoring (scheme + gap, dynamic current-season resolution)
 →  Neutral Player Projection
 →  Role Fit / Playing Time
@@ -285,11 +285,11 @@ HE extended fit (breakdown only): `off_style_transition_pct`, `off_style_post_up
 | Item | Current state |
 |---|---|
 | Notebook | `notebooks/models/gap_matching.ipynb` |
-| Status | ✅ Code updated — `gap-cos-v4`, all-pairs with shared roster baseline; DB rows need rerun |
+| Status | ✅ Complete — `gap-cos-v4`, all-pairs with shared roster baseline; DB refreshed locally 2026-06-23 |
 | Model type | Deterministic cosine similarity (player stats vs roster gap vector) + shared roster baseline + reliability calibration |
-| Model version | `gap-cos-v4` in `scripts/run_gap_matching.py`; notebook sync pending after this branch |
+| Model version | `gap-cos-v4` in `scripts/run_gap_matching.py`; notebook code imports `gap_matching.MODEL_VERSION` |
 | Seasons scored | 2021-2026 (season-matched), all eligible player×school pairs — no longer scoped to whatever M3 pre-seeded |
-| Output table | `player_team_fit_scores.gap_match` (9,731,957 rows) |
+| Output table | `player_team_fit_scores.gap_match` (9,756,718 `gap-cos-v4` rows) |
 
 ### Feature Contract
 
@@ -299,16 +299,16 @@ Position weights: `hoop_explorer_player_stats.pos_confidence_pg/sg/sf/pf/c` (sof
 
 ### Run Results
 
-**Last stored `gap-cos-v3` run (2026-06-22, all-pairs; rerun needed for `gap-cos-v4`):**
+**Last stored `gap-cos-v4` run (2026-06-23, all-pairs; MLflow `gap-matching-scorer` v12 promoted):**
 
 | Season | Rows | Mean | Std | Min | Max |
 |---:|---:|---:|---:|---:|---:|
-| 2021 | 1,476,036 | 14.59 | 12.57 | 0.00 | 89.25 |
-| 2022 | 1,624,604 | 14.68 | 13.46 | 0.00 | 92.53 |
-| 2023 | 1,653,828 | 14.56 | 13.41 | 0.00 | 94.03 |
-| 2024 | 1,652,530 | 14.81 | 13.68 | 0.00 | 90.93 |
-| 2025 | 1,663,844 | 15.02 | 13.89 | 0.00 | 90.55 |
-| 2026 | 1,661,115 | 15.78 | 14.65 | 0.00 | 91.97 |
+| 2021 | 1,497,366 | 15.30 | 13.34 | 0.00 | 90.89 |
+| 2022 | 1,633,680 | 15.39 | 14.27 | 0.00 | 92.81 |
+| 2023 | 1,649,272 | 15.35 | 14.34 | 0.00 | 93.99 |
+| 2024 | 1,647,965 | 15.77 | 14.83 | 0.00 | 92.86 |
+| 2025 | 1,668,415 | 16.25 | 15.00 | 0.00 | 95.43 |
+| 2026 | 1,660,020 | 17.03 | 15.89 | 0.00 | 95.03 |
 
 Means are lower than the old `gap-cos-v2` top-50-only numbers (~6-7) for a structural reason, not a regression: all-pairs includes every player against every school, including plenty of genuinely poor-fit pairs that the old top-50-per-player scoping would never have surfaced. Mean naturally drops when the denominator widens to "everyone," not just each player's already-good-fit subset.
 
@@ -318,22 +318,22 @@ Means are lower than the old `gap-cos-v2` top-50-only numbers (~6-7) for a struc
 
 Gap_match is **intentionally sparse and right-skewed** — this is correct behavior, not compression:
 
-- Mean ~15 reflects that most player-school pairs have low gap alignment (player offers what the school already has)
+- Mean ~16 reflects that most player-school pairs have low gap alignment (player offers what the school already has)
 - High scores (80+) only appear when a player's stat profile closely matches the specific dimensions a school is deficient in
-- std ~13-15 vs scheme_fit's ~12 — gap_match still provides better differentiation between pairs
+- std ~13-16 vs scheme_fit's ~12 — gap_match still provides better differentiation between pairs
 - Schools with highest mean gap_match = programs with the most roster holes across positions
 
 Contrast with scheme_fit: compressed high (mean ~85) because cosine similarity on non-negative proportions summing to 1 naturally clusters near 1. Gap_match gap vectors are sparse (zeroed out where school is at/above benchmark), so cosine sim is low for most pairs.
 
 **Combined overall_fit impact:** With 2 real components:
 ```
-overall_fit ≈ 0.30 × 85.2 + 0.20 × 14.9 + 0.50 × 50.0 = 25.6 + 3.0 + 25.0 = 53.6
+overall_fit ≈ 0.30 × 85.2 + 0.20 × 15.9 + 0.50 × 50.0 = 25.6 + 3.2 + 25.0 = 53.8
 ```
 Range remains narrow until role_fit and program_fit are real. Do not surface overall_fit to users yet.
 
 ### Known Issues / Limitations
 
-- **All-pairs (`gap-cos-v3` -> `gap-cos-v4`):** was scoped to whatever M3 pre-seeded (top-50-per-player); now scores every eligible player×school pair — see CLAUDE.md Process Improvement TODO #5. Two consequences worth knowing: (1) the 2021-2025/2026 mean/std numbers above aren't comparable to the old `gap-cos-v2` table — different denominator (everyone, not each player's already-good-fit top-50) — don't read the drop as a quality regression; (2) the "preserve existing Scheme Fit context" step (`gm.load_existing_scheme_context()`) now queries per school-chunk instead of preloading the whole table — preloading ~9.6M scheme_fit rows into one python dict took ~64 minutes once Scheme Fit went all-pairs too.
+- **All-pairs (`gap-cos-v3` -> `gap-cos-v4`):** was scoped to whatever M3 pre-seeded (top-50-per-player); now scores every eligible player×school pair — see CLAUDE.md Process Improvement TODO #5. Two consequences worth knowing: (1) the 2021-2026 mean/std numbers above aren't comparable to the old `gap-cos-v2` table — different denominator (everyone, not each player's already-good-fit top-50) — don't read the drop as a quality regression; (2) the "preserve existing Scheme Fit context" step (`gm.load_existing_scheme_context()`) now queries per school-chunk instead of preloading the whole table — preloading ~9.6M scheme_fit rows into one python dict took ~64 minutes once Scheme Fit went all-pairs too. The script now deletes stale prior `gap-cos-*` rows after a successful rebuild so schools that fall out of the valid roster-baseline scope do not keep old gap scores.
 - **Shared roster baseline:** `scripts/run_gap_matching.py` now builds roster gap vectors from `portalpoint.modeling.roster_baseline`. Historical seasons use next-season `player_season_stats` to infer the target roster outlook; the latest season uses latest `roster_snapshots` when available, with expected-departure subtraction as fallback. This separates roster membership from portal availability and gives Role Fit / Team Rating Projection a single baseline contract to consume.
 - **player_school_seasons empty:** Roster baseline now uses `player_season_stats` directly rather than waiting on the empty `player_school_seasons` table.
 - **is_portal_candidate:** `player_team_fit_scores.is_portal_candidate` flags rows whose player has a matched Entered/Committed `transfer_portal_events` row that season — the recommendation-surface scope decision (keep all-pairs scoring, filter at the query/API layer instead of restricting what gets scored). This is intentionally separate from `is_roster_baseline_member`.
