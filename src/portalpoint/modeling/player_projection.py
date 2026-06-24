@@ -32,7 +32,9 @@ upstream in the ingest pipeline.
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -217,3 +219,22 @@ def upsert_neutral_projections(engine: Engine, records: list[tuple]) -> int:
     Matching's no-delete upsert."""
     _, upserted = upsert_with_season_replace(engine, NEUTRAL_UPSERT_SQL, records, page_size=2000)
     return upserted
+
+
+def save_artifacts(models_dir: Path, off_model: Ridge, def_model: Ridge) -> dict[str, Path]:
+    """Pickles the fitted off/def Ridge models to models_dir, mirroring
+    player_clustering.py's save_artifacts — the local-pkl-then-S3-upload
+    path (s3://portalpoint-data/models/player-projection/), kept separate
+    from MLflow's own log_model/artifact store. Both the script and the
+    notebook call this, then upload each returned path, same convention as
+    M1/M2's save_artifacts + upload pair."""
+    models_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "off_model": models_dir / "player_projection_off_model.pkl",
+        "def_model": models_dir / "player_projection_def_model.pkl",
+    }
+    with open(paths["off_model"], "wb") as f:
+        pickle.dump(off_model, f)
+    with open(paths["def_model"], "wb") as f:
+        pickle.dump(def_model, f)
+    return paths

@@ -24,7 +24,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from portalpoint.modeling import player_projection as pp
-from portalpoint.modeling.io import get_sync_engine
+from portalpoint.modeling.io import find_repo_root, get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -84,6 +84,23 @@ def main() -> None:
         "Fit value models on %s HE-labeled rows: off_resid_std=%.3f def_resid_std=%.3f",
         f"{n_labeled:,}", off_resid_std, def_resid_std,
     )
+
+    # Local pkl + S3 upload — same convention as player_clustering.py /
+    # team_clustering.py (save_artifacts + s3_helpers.upload), separate from
+    # MLflow's own log_model/artifact store below.
+    root = find_repo_root()
+    models_dir = root / "data" / "models"
+    paths = pp.save_artifacts(models_dir, off_model, def_model)
+    for name, path in paths.items():
+        log.info("Saved %s: %s", name, path)
+    try:
+        sys.path.insert(0, str(root / "notebooks" / "utils"))
+        from s3_helpers import upload
+
+        for name, path in paths.items():
+            upload(path, f"models/player_projection/{path.name}")
+    except Exception as exc:
+        log.warning("S3 upload skipped: %s", exc)
 
     df = pp.project_value(df, off_model, def_model, off_resid_std, def_resid_std)
 
