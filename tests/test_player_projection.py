@@ -126,10 +126,46 @@ def test_fit_value_model_recovers_known_positive_relationship():
     shrunk = pp.shrink_skills(df)
     model, resid_std = pp.fit_value_model(shrunk, "off_adj_rapm")
 
-    skill_idx = pp.SKILLS.index("shooting_3p")
+    # off_adj_rapm's feature set is OFFENSE_SKILLS (2026-06-24 split), not
+    # the full SKILLS list -- index against the list actually used to fit.
+    skill_idx = pp.OFFENSE_SKILLS.index("shooting_3p")
     coef = model.named_steps["ridge"].coef_
     assert coef[skill_idx] > 0  # ground truth: off_adj_rapm increases with fg3_pct
     assert resid_std > 0
+
+
+def test_build_design_matrix_zero_pads_a_skill_column_missing_from_the_frame():
+    # Real bug (2026-06-24): DEFENSE_SKILLS includes foul_discipline, but
+    # Phase 0 frames never have skill_foul_discipline at all (no season-grain
+    # fouls column). Must zero-pad, not KeyError -- this is exactly what
+    # every Phase 0 def_adj_rapm fit does today.
+    df = pd.DataFrame({
+        "position": ["WG", "C"],
+        "skill_defensive_rebounding": [3.0, 8.0],
+        "skill_steal_disruption": [1.5, 0.5],
+        "skill_block_rim_protection": [0.2, 2.0],
+        # no skill_foul_discipline column at all
+    })
+    X = pp.build_design_matrix(df, skills=pp.DEFENSE_SKILLS)
+    assert "skill_foul_discipline" in X.columns
+    assert (X["skill_foul_discipline"] == 0.0).all()
+    assert (X["skill_defensive_rebounding"] == df["skill_defensive_rebounding"]).all()
+
+
+def test_fit_value_model_uses_disjoint_offense_defense_feature_sets():
+    # The actual point of the split: off_model literally cannot see
+    # defense-only skills, and vice versa -- different coefficient counts,
+    # not just different fitted values on the same features.
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    off_model, _ = pp.fit_value_model(shrunk, "off_adj_rapm")
+    def_model, _ = pp.fit_value_model(shrunk, "def_adj_rapm")
+
+    n_off_features = len(pp.OFFENSE_SKILLS) + len(pp.POSITIONS)
+    n_def_features = len(pp.DEFENSE_SKILLS) + len(pp.POSITIONS)
+    assert len(off_model.named_steps["ridge"].coef_) == n_off_features
+    assert len(def_model.named_steps["ridge"].coef_) == n_def_features
+    assert n_off_features != n_def_features  # genuinely different feature sets, not coincidentally equal-length
 
 
 def test_fit_value_model_raises_on_too_few_labeled_rows():
@@ -204,4 +240,6 @@ def test_save_artifacts_writes_replayable_bundle(tmp_path):
     assert bundle["metadata"]["model_version"] == pp.MODEL_VERSION
     assert bundle["metadata"]["off_resid_std"] == off_resid
     assert bundle["metadata"]["def_resid_std"] == def_resid
-    assert bundle["metadata"]["feature_columns"] == pp.build_design_matrix(shrunk).columns.tolist()
+    # Offense/defense split (2026-06-24): two feature-column lists, not one.
+    assert bundle["metadata"]["off_feature_columns"] == pp.build_design_matrix(shrunk, skills=pp.OFFENSE_SKILLS).columns.tolist()
+    assert bundle["metadata"]["def_feature_columns"] == pp.build_design_matrix(shrunk, skills=pp.DEFENSE_SKILLS).columns.tolist()

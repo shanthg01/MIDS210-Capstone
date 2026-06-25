@@ -68,12 +68,34 @@ def test_smooth_all_skills_external_priors_df_is_optional_and_backward_compatibl
         "steals": rng.integers(0, 3, size=n),
         "blocks": rng.integers(0, 3, size=n),
         "turnovers": rng.integers(0, 4, size=n),
+        "fouls": rng.integers(0, 5, size=n),
     })
     obs_df = ppk.build_game_observations(df)
     fitted_q_a, merged_a = ppk.smooth_all_skills(obs_df)
     fitted_q_b, merged_b = ppk.smooth_all_skills(obs_df, external_priors_df=None)
     assert fitted_q_a == fitted_q_b
     pd.testing.assert_frame_equal(merged_a, merged_b)
+
+
+def test_foul_discipline_is_a_count_rate_skill_built_from_raw_fouls():
+    # foul_discipline (2026-06-24): hoopr_player_game_logs.fouls exists at
+    # game grain and was never wired in. Same per-40 count-rate shape as
+    # turnover_avoidance -- not a special case in build_game_observations.
+    assert "foul_discipline" in ppk.SKILLS
+    df = pd.DataFrame({
+        "player_id": [1, 1],
+        "game_date": pd.to_datetime(["2026-01-01", "2026-01-03"]),
+        "minutes": [30.0, 20.0],
+        "field_goals_made": [5, 3], "field_goals_attempted": [10, 8],
+        "three_point_field_goals_made": [1, 1], "three_point_field_goals_attempted": [3, 3],
+        "free_throws_made": [2, 1], "free_throws_attempted": [3, 2],
+        "offensive_rebounds": [1, 0], "defensive_rebounds": [3, 2],
+        "assists": [2, 1], "steals": [1, 0], "blocks": [0, 1], "turnovers": [2, 1],
+        "fouls": [3, 2],
+    })
+    obs_df = ppk.build_game_observations(df)
+    assert obs_df["y_foul_discipline"].tolist() == pytest.approx([3.0 / 30.0 * 40.0, 2.0 / 20.0 * 40.0])
+    assert obs_df["weight_foul_discipline"].tolist() == pytest.approx([30.0, 20.0])
 
 
 def test_r_numerator_shooting_is_bernoulli_variance():

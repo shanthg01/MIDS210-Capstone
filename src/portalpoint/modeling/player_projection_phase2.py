@@ -91,7 +91,7 @@ SELECT
     three_point_field_goals_made, three_point_field_goals_attempted,
     free_throws_made, free_throws_attempted,
     offensive_rebounds, defensive_rebounds,
-    assists, steals, blocks, turnovers
+    assists, steals, blocks, turnovers, fouls
 FROM hoopr_player_game_logs
 WHERE season = :season AND player_id IS NOT NULL
 """

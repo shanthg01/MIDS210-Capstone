@@ -95,9 +95,12 @@ def main() -> None:
             self.def_model = def_model
 
         def predict(self, context, model_input):
-            X = pp.build_design_matrix(model_input)
-            off = self.off_model.predict(X)
-            defn = self.def_model.predict(X)
+            # Offense/defense split (2026-06-24): off_model/def_model expect
+            # different feature columns -- two design matrices, not one.
+            X_off = pp.build_design_matrix(model_input, skills=pp.OFFENSE_SKILLS)
+            X_def = pp.build_design_matrix(model_input, skills=pp.DEFENSE_SKILLS)
+            off = self.off_model.predict(X_off)
+            defn = self.def_model.predict(X_def)
             return [{"value_per_100": float(o + d)} for o, d in zip(off, defn)]
 
     with mlflow.start_run(run_name=f"player-projection-s{int(df['season'].max())}-script") as run:

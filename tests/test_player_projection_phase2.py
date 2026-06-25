@@ -443,7 +443,6 @@ def test_compute_attempt_rates_drops_near_zero_minutes_instead_of_blowing_up():
 
 def _synthetic_projected_df(n=20, seed=0):
     rng = np.random.default_rng(seed)
-    import portalpoint.modeling.player_projection as pp
     df = pd.DataFrame({
         "player_id": np.arange(n),
         "season": 2026,
@@ -452,7 +451,11 @@ def _synthetic_projected_df(n=20, seed=0):
         "value_ci_upper": rng.normal(5, 1, n),
         "_resid_std": 1.5,
     })
-    for s in pp.SKILLS:
+    # build_phase2_records iterates ppk.SKILLS (Phase 2a's 11-skill list,
+    # includes foul_discipline), not pp.SKILLS (Phase 0's 10, no fouls
+    # column at season grain) -- this fixture must match what it actually
+    # reads from a real Phase 2a frame.
+    for s in pp2.SKILLS:
         df[f"skill_{s}"] = rng.uniform(0.1, 5.0, n)
         df[f"skill_var_{s}"] = rng.uniform(0.01, 1.0, n)
         df[f"pctile_{s}"] = rng.uniform(0, 100, n)

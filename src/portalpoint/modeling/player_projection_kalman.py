@@ -46,6 +46,12 @@ RATE_PER_40_SKILLS = {
     "defensive_rebounding": lambda d: d["defensive_rebounds"],
     "steal_disruption": lambda d: d["steals"],
     "block_rim_protection": lambda d: d["blocks"],
+    # foul_discipline (2026-06-24): hoopr_player_game_logs.fouls exists at
+    # game grain and was simply never wired in -- inverted at use time, same
+    # as turnover_avoidance (fewer fouls is better). Phase 0 (season-grain)
+    # has no equivalent column in player_season_stats, so this skill only
+    # exists for Phase 1/2 -- see player_projection.INVERTED_SKILLS/SKILLS.
+    "foul_discipline": lambda d: d["fouls"],
 }
 SHOOTING_SKILLS = {
     "shooting_3p": ("three_point_field_goals_made", "three_point_field_goals_attempted"),

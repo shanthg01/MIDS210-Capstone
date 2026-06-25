@@ -17,9 +17,11 @@ Phase 0 design:
      not just the Hoop-Explorer-matched subset — that's what makes this a
      projection rather than a label lookup.
 
-foul_discipline is intentionally absent from the skill vector: no foul-rate
-column exists at season grain (only hoopr_player_game_logs has it, and only
-for 2026).
+foul_discipline is absent from this module's `SKILLS` (Phase 0, season-grain)
+because no foul-rate column exists in `player_season_stats` — `INVERTED_SKILLS`
+includes it anyway since Phase 1/2 (game-grain, `player_projection_kalman.py`)
+do have `hoopr_player_game_logs.fouls` and use this same sign convention
+(2026-06-24).
 
 Position grouping uses Hoop Explorer's `pos_class`, not `players.position`.
 Discovered while building this: every row in `players.position` is the
@@ -68,8 +70,25 @@ SKILL_COLUMNS = {
     "steal_disruption": "steal_pct",
     "block_rim_protection": "block_pct",
 }
-INVERTED_SKILLS = {"turnover_avoidance"}
+INVERTED_SKILLS = {"turnover_avoidance", "foul_discipline"}
 SKILLS = list(SKILL_COLUMNS)
+
+# Offense/defense feature-set split for the value-translation model
+# (2026-06-24, user-initiated). off_adj_rapm is regressed on OFFENSE_SKILLS
+# only, def_adj_rapm on DEFENSE_SKILLS only -- position dummies are the only
+# "shared" feature (informs both offensive and defensive role expectations),
+# already handled separately from skill_cols in build_design_matrix.
+# turnover_avoidance is classified Offense (a turnover is an offensive-
+# possession event by definition, not a defensive one). foul_discipline is
+# Phase 1/2-only (see INVERTED_SKILLS/module docstring) -- not present in
+# Phase 0's SKILLS at all, so it can never appear in a Phase 0 design matrix
+# regardless of this classification; the classification only matters once a
+# Phase 2a frame (which does have skill_foul_discipline) is fit/projected.
+OFFENSE_SKILLS = [
+    "shooting_3p", "shooting_2p_finishing", "free_throw_touch", "shot_creation_usage",
+    "passing_creation", "turnover_avoidance", "offensive_rebounding",
+]
+DEFENSE_SKILLS = ["defensive_rebounding", "steal_disruption", "block_rim_protection", "foul_discipline"]
 VALUE_TARGETS = ("off_adj_rapm", "def_adj_rapm")
 
 PLAYER_SEASON_SQL = """
@@ -173,11 +192,22 @@ def shrink_skills(
     return out
 
 
-def skill_percentiles(df: pd.DataFrame, season_col: str = "season") -> pd.DataFrame:
+def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list[str] = SKILLS) -> pd.DataFrame:
     """Within-season percentile rank (0-100) per shrunk skill. Percentile
-    direction is flipped for turnover_avoidance so 100 always means "better"."""
+    direction is flipped for turnover_avoidance (and any other
+    `INVERTED_SKILLS` member) so 100 always means "better".
+
+    `skills` defaults to Phase 0's `SKILLS` (10) for backward compatibility,
+    but Phase 2a's `phase2_states` frame has 11 (`player_projection_kalman.SKILLS`
+    includes `foul_discipline`, which Phase 0 structurally lacks) — callers
+    building percentiles for a Phase 2a frame must pass `ppk.SKILLS` explicitly
+    (real bug found 2026-06-24: this function silently used the hardcoded
+    10-skill module constant regardless of what the input frame actually had,
+    so a Phase 2a frame's `skill_foul_discipline` column was silently never
+    percentiled — `build_phase2_records` then KeyError'd looking for
+    `pctile_foul_discipline`)."""
     out = df.copy()
-    for skill in SKILLS:
+    for skill in skills:
         pct = df.groupby(season_col)[f"skill_{skill}"].rank(pct=True) * 100
         if skill in INVERTED_SKILLS:
             pct = 100 - pct
@@ -185,22 +215,52 @@ def skill_percentiles(df: pd.DataFrame, season_col: str = "season") -> pd.DataFr
     return out
 
 
-def build_design_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    skill_cols = [f"skill_{s}" for s in SKILLS]
+def build_design_matrix(df: pd.DataFrame, skills: list[str] = SKILLS) -> pd.DataFrame:
+    """`skills` defaults to `SKILLS` (Phase 0's full list) for backward
+    compatibility. `fit_value_model`/`project_value` pass `OFFENSE_SKILLS`/
+    `DEFENSE_SKILLS` explicitly (2026-06-24 offense/defense split) — any
+    other caller (e.g. Gap C's `_stage_2a_design_matrix`, which has its own
+    independent feature set) is unaffected.
+
+    A requested skill whose `skill_<s>` column doesn't exist in `df` (e.g.
+    `foul_discipline` — in `DEFENSE_SKILLS`, but absent from every Phase 0
+    frame, which has no season-grain fouls column at all) is zero-padded via
+    the `reindex` below rather than raising — Phase 0's def-model gets an
+    always-0 `foul_discipline` feature (a real but harmless dead coefficient
+    slot, no information, fits to ~0), Phase 2a's def-model gets the real
+    column. Found as a real bug 2026-06-24: the original version selected
+    `df[skill_cols]` directly, which `KeyError`'d on every Phase 0 call to
+    `fit_value_model("def_adj_rapm")` the moment `DEFENSE_SKILLS` gained
+    `foul_discipline`."""
+    skill_cols = [f"skill_{s}" for s in skills]
+    available_cols = [c for c in skill_cols if c in df.columns]
     pos_dummies = pd.get_dummies(df["position"], prefix="pos")
-    X = pd.concat([df[skill_cols].fillna(0.0), pos_dummies], axis=1)
+    X = pd.concat([df[available_cols].fillna(0.0), pos_dummies], axis=1)
     return X.reindex(columns=skill_cols + [f"pos_{p}" for p in POSITIONS], fill_value=0.0)
+
+
+def _skills_for_target(target: str) -> list[str]:
+    """off_adj_rapm -> OFFENSE_SKILLS, def_adj_rapm -> DEFENSE_SKILLS. The
+    target name already disambiguates which feature set to use at every
+    real call site (Phase 0, Gap D refit, Gap G per-fold fit, the MLflow
+    pyfunc wrapper all call fit_value_model/project_value per-target) --
+    no caller-visible signature change needed for this split."""
+    return OFFENSE_SKILLS if target == "off_adj_rapm" else DEFENSE_SKILLS
 
 
 def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -> tuple[Pipeline, float]:
     """Ridge-regress a Hoop Explorer adjusted-RAPM label on shrunk skill
     rates + position dummies, using only rows with a non-null label. Returns
     (fitted model, residual std) — residual std is the Phase 0 uncertainty
-    proxy; real cross-validated intervals are Phase 1+ work."""
+    proxy; real cross-validated intervals are Phase 1+ work.
+
+    Offense/defense split (2026-06-24): `target` picks `OFFENSE_SKILLS` or
+    `DEFENSE_SKILLS` as the feature set (see `_skills_for_target`) -- the
+    off and def models are no longer trained on the same feature matrix."""
     train = df.dropna(subset=[target])
     if len(train) < 30:
         raise ValueError(f"Too few labeled rows ({len(train)}) to fit a value model for {target}")
-    X = build_design_matrix(train)
+    X = build_design_matrix(train, skills=_skills_for_target(target))
     y = train[target].to_numpy()
     model = Pipeline([
         ("scale", StandardScaler()),
@@ -225,11 +285,16 @@ def project_value(
 ) -> pd.DataFrame:
     """Apply fitted off/def value models to every player with season stats —
     including players with no Hoop Explorer match, which is the point of
-    fitting a regression instead of just copying the label through."""
-    X = build_design_matrix(df)
+    fitting a regression instead of just copying the label through.
+
+    Offense/defense split (2026-06-24): `off_model`/`def_model` were each
+    fit on a different feature set (see `fit_value_model`) -- builds two
+    design matrices, not one shared `X`."""
+    X_off = build_design_matrix(df, skills=OFFENSE_SKILLS)
+    X_def = build_design_matrix(df, skills=DEFENSE_SKILLS)
     out = df.copy()
-    out["off_value_per_100"] = off_model.predict(X)
-    out["def_value_per_100"] = def_model.predict(X)
+    out["off_value_per_100"] = off_model.predict(X_off)
+    out["def_value_per_100"] = def_model.predict(X_def)
     out["value_per_100"] = out["off_value_per_100"] + out["def_value_per_100"]
     total_resid_std = float(np.sqrt(off_resid_std**2 + def_resid_std**2))
     out["value_ci_lower"] = out["value_per_100"] - CI_Z * total_resid_std
@@ -295,10 +360,16 @@ def save_artifacts(
         "min_games": MIN_GAMES,
         "shrinkage_k": SHRINKAGE_K,
         "ridge_alpha": RIDGE_ALPHA,
-        "feature_columns": build_design_matrix(pd.DataFrame({
+        # Offense/defense split (2026-06-24): off_model/def_model no longer
+        # share one feature matrix -- two separate column lists.
+        "off_feature_columns": build_design_matrix(pd.DataFrame({
             "position": POSITIONS,
-            **{f"skill_{s}": [0.0] * len(POSITIONS) for s in SKILLS},
-        })).columns.tolist(),
+            **{f"skill_{s}": [0.0] * len(POSITIONS) for s in OFFENSE_SKILLS},
+        }), skills=OFFENSE_SKILLS).columns.tolist(),
+        "def_feature_columns": build_design_matrix(pd.DataFrame({
+            "position": POSITIONS,
+            **{f"skill_{s}": [0.0] * len(POSITIONS) for s in DEFENSE_SKILLS},
+        }), skills=DEFENSE_SKILLS).columns.tolist(),
         "skill_columns": SKILL_COLUMNS,
         "inverted_skills": sorted(INVERTED_SKILLS),
         "value_targets": VALUE_TARGETS,
