@@ -859,6 +859,24 @@ Suggested style/skill translation examples:
 - Rim protection / defensive rebounding should translate more at destinations with frontcourt need.
 - Destination pace changes per-game box score more than per-100 value.
 
+Concrete data sources for the first destination adapter:
+
+| Input | Source table/artifact | Key fields / metrics |
+|---|---|---|
+| Neutral projection | `player_projections` | Neutral rows with `school_id IS NULL`, `model_version="player-proj-phase2a-fcast-v1"`, target `season`; use `value_per_100`, CI bounds, `projected_rates`, `projected_box_score`, `skill_states`, `skill_percentiles`, `uncertainty`, `explanation.source_observed_season` |
+| Playing time / role | `player_team_fit_scores` initially, future `playing_time_projections` | `role_fit` plus breakdown JSON for MVP; future fields: `expected_minutes`, `expected_usage`, `usage_role`, `usage_role_confidence`, `displaced_minutes`, minutes intervals, model version |
+| Destination roster context | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | current roster membership, returning/transfer-in/new flags, snapshot freshness, open/departing/returning minutes and usage by position |
+| Destination team quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`; use `adj_tempo` for per-game stat translation and `adj_em` percentile for level/tier |
+| Destination style / system | `team_system_profiles`; `data/features/team_style_vectors.parquet`; `hoop_explorer_team_stats` | offense/defense labels, style memberships, team 3PA/rim/mid profile, HE `off_style_*_pct` / `def_style_*_pct` where covered |
+| Player style context | `hoop_explorer_player_stats`, `player_archetypes` | `pos_confidence_*`, `off_style_*_pct`, archetype label/confidence; use as explanation/context, not as a replacement for neutral projection |
+| Pairwise fit context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON; use as interaction/explanation inputs, not direct value by itself |
+| Transfer/source context | `transfers`, `transfer_portal_events`, source-season `player_season_stats` | source/destination school IDs, status, pre/post usage/minutes where available, source school/tier |
+
+Destination rows should be written back to `player_projections` with `school_id` populated,
+`projection_mode="destination"`, and a distinct destination-adjusted `model_version`. The partial
+unique index on `(player_id, school_id, season, model_version)` handles reruns separately from
+neutral rows.
+
 ### Current API compatibility — corrected
 
 The original idea of staging into `predictions` and migrating to `player_projections` later does not work and should be dropped. `predictions` (`src/portalpoint/db/models.py` `Prediction`) has `school_id: nullable=False` and a unique constraint on only `(player_id, school_id)` — no `season` column at all. That means:

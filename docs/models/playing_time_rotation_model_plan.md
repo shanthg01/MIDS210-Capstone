@@ -324,6 +324,25 @@ These interaction features are the bridge to destination-adjusted projection. Pl
 them to estimate role and opportunity; the destination adapter later uses the resulting role/minutes
 to translate neutral rates into school-specific production.
 
+### Concrete data sources
+
+| Feature group | Source table/artifact | Key fields / metrics |
+|---|---|---|
+| Neutral talent | `player_projections` | Production neutral rows where `model_version="player-proj-phase2a-fcast-v1"` and `school_id IS NULL`; use `value_per_100`, CI bounds, `skill_states`, `skill_percentiles`, `projected_rates`, `projected_box_score`, `uncertainty` |
+| Prior role / historical minutes | `player_season_stats` | `school_id`, `season`, `games_played`, `minutes`, `min_pct`, `usage_rate`, `position`, shooting/rebounding/assist/turnover rates |
+| Historical actual playing-time labels | `player_season_stats` plus team totals | Derive `actual_minutes_share = player_minutes / team_available_minutes`; derive minutes buckets and starter/rotation flags |
+| RAPM / soft position / HE style | `hoop_explorer_player_stats` | `off_adj_rapm`, `def_adj_rapm`, `pos_confidence_*`, `off_style_*_pct`, `transfer_dest` |
+| Archetype / player role texture | `player_archetypes` | `archetype_label`, `confidence`, membership JSON where available |
+| Destination quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`, shot profile/style fields where populated |
+| Team systems / style clusters | `team_system_profiles`; `data/features/team_style_vectors.parquet` | offense/defense labels, memberships, style vectors, pace/shot/play-style dimensions |
+| Scheme and gap context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON, `is_portal_candidate`, `is_roster_baseline_member` |
+| Current roster state | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | roster membership, returning status, transfer-in/new flags, snapshot date, open/departing/returning minutes and usage by position |
+| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_minutes_per_game`, `post_minutes_per_game`, `pre_usage_rate`, `post_usage_rate` |
+
+Do not use `player_school_seasons` as a required dependency for this model; it is empty in the
+current local stack. Use `player_season_stats`, transfer events, and roster snapshots for
+player-team-season membership.
+
 ---
 
 ## 7. Recommended Model Shape

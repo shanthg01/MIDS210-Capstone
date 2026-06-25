@@ -133,13 +133,16 @@ The local stack already has enough to design the contract, but not enough to run
 | `player_archetypes` | Populated | Canonical player-role vocabulary |
 | `team_system_profiles` | Populated | Destination system context |
 | `player_team_fit_scores.scheme_fit` | Real | Helpful context, not a hard dependency |
-| `player_team_fit_scores.gap_match` | Real baseline | Helpful context, v2 improves after roster data |
-| `transfers` | Empty | Hard blocker for departure-aware opportunity |
-| `player_school_seasons` | Empty | Hard blocker unless replaced by derived `player_team_seasons` |
-| roster snapshots | Not implemented | Hard blocker for current-roster Role Fit |
+| `player_team_fit_scores.gap_match` | Real baseline | Helpful context, v2 improves after richer roster data |
+| `transfers` / `transfer_portal_events` | Populated for 2021-2026 from 247Sports ingest | Transfer source/destination and availability context |
+| `player_school_seasons` | Empty | Do not depend on it; use `player_season_stats` and roster snapshots instead |
+| `roster_snapshots` / `roster_snapshot_players` | Implemented; refresh coverage still operationally important | Current-roster state, returning/transfer-in/new flags, snapshot freshness |
 | `role_fit` | Flat `50.0` | Placeholder to replace |
 
-Decision: wait for data ingestion before presenting Role Fit as real. It is acceptable to implement a dry-run dataset audit before full modeling, but any baseline before roster snapshots should be labeled `playing-time-baseline-v0` and should not overwrite production-facing `role_fit`.
+Decision: the blocking source tables now exist, so the next step is a coverage audit and model build.
+Do not present Role Fit as real until the model writes validated outputs; any dry-run baseline before
+that should be labeled `playing-time-baseline-v0` and should not overwrite production-facing
+`role_fit`.
 
 ---
 
@@ -303,6 +306,20 @@ This view supports transfer inference, historical roster reconstruction, and tra
 | System | scheme_fit, team offense label, team defense label, pace, shot profile |
 | Program tier | AdjEM tier, conference tier, recent wins, rotation size |
 | Volatility | roster snapshot age, unknown-status players, unmatched roster rows |
+
+### Concrete Data Sources
+
+| Feature group | Source table/artifact | Key fields / metrics |
+|---|---|---|
+| Neutral talent | `player_projections` | `value_per_100`, `value_ci_lower`, `value_ci_upper`, `skill_states`, `skill_percentiles`, `projected_rates`, `projected_box_score`, `model_version="player-proj-phase2a-fcast-v1"` |
+| Prior role / history | `player_season_stats` | `school_id`, `season`, `games_played`, `minutes`, `min_pct`, `usage_rate`, `position`, shot/rebound/assist/turnover rates |
+| RAPM / soft position / HE style | `hoop_explorer_player_stats` | `off_adj_rapm`, `def_adj_rapm`, `pos_confidence_*`, `off_style_*_pct`, `transfer_dest` |
+| Archetype | `player_archetypes` | `archetype_label`, `confidence`, memberships where available |
+| Destination quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`, shot profile / style fields where populated |
+| Team systems | `team_system_profiles` | offense/defense labels, memberships, style vector |
+| Scheme context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON, `is_portal_candidate`, `is_roster_baseline_member` |
+| Current roster | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | roster membership, returning status, transfer-in/new flags, snapshot date, open/departing/returning minutes by position |
+| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_usage_rate`, `post_usage_rate`, `pre_minutes_per_game`, `post_minutes_per_game` |
 
 ### Interaction Features
 
