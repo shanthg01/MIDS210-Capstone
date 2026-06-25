@@ -57,12 +57,14 @@ def test_build_season_sequences_orders_by_season_and_aligns_covariates():
     sequences = pp2.build_season_sequences(skill_df, covariates, "shooting_3p")
     assert set(sequences.keys()) == {1, 2}
 
-    y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var = sequences[1]
+    y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var, seasons_arr = sequences[1]
     assert len(y) == 2
     assert y[0] == pytest.approx(0.35)  # 2021 comes first despite skill_df's row order
     assert y[1] == pytest.approx(0.40)  # 2022 second
     assert csi.tolist() == [1, 2]
     assert transfer_flag.tolist() == [0.0, 1.0]
+    # the real season, not just positional order -- 2026-06-25 fix's whole point
+    assert seasons_arr.tolist() == [2021, 2022]
 
 
 def _synthetic_sequence(rng, n, true_rho, true_beta1):
@@ -76,7 +78,8 @@ def _synthetic_sequence(rng, n, true_rho, true_beta1):
     y = np.array(ys)
     r_arr = np.full(n, 0.01**2)
     mask = np.ones(n, dtype=bool)
-    return (y, r_arr, mask, csi, np.zeros(n), np.zeros(n), 0.3, 0.05)
+    seasons_arr = (2020 + csi).astype(np.int64)  # placeholder real seasons, value unused by these fits
+    return (y, r_arr, mask, csi, np.zeros(n), np.zeros(n), 0.3, 0.05, seasons_arr)
 
 
 def test_joint_rho_and_drift_fit_is_not_identifiable_on_short_sequences_alone():
@@ -149,7 +152,7 @@ def _synthetic_skill_and_covariates_frames(rng, n_players, true_rho, true_beta1,
     for player_id in range(n_players):
         n = int(rng.integers(2, 5))
         seq = _synthetic_sequence(rng, n, true_rho, true_beta1)
-        y, _, _, csi, transfer_flag, level_change, _, _ = seq
+        y, _, _, csi, transfer_flag, level_change, _, _, _ = seq
         for i in range(n):
             season = 2020 + i
             rows.append({

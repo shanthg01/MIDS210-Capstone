@@ -362,12 +362,19 @@ def load_or_build_season_skill_states(
     flat-prior cache and a Phase-0-prior cache can't collide — set
     force_rebuild=True after a real upstream data change (e.g. another
     game-log backfill), not needed just to flip this flag. `use_context_adjustment`
-    (Gap B) is part of the cache filename for the same reason."""
+    (Gap B) is part of the cache filename for the same reason.
+
+    `seasons` is part of the cache filename too (real bug, found 2026-06-25):
+    the original version only varied by prior/context suffix, so calling
+    this with a *different* `seasons` list (e.g. a quick 2-season check after
+    a full 2020-2026 run) would silently load the wrong cached states —
+    same data shape, wrong season coverage, no error."""
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     prior_suffix = "phase0prior" if use_phase0_prior else "flatprior"
     context_suffix = "ctxadj" if use_context_adjustment else "noctx"
-    states_path = cache_dir / f"season_states_{prior_suffix}_{context_suffix}.parquet"
-    q_path = cache_dir / f"fitted_q_by_season_{prior_suffix}_{context_suffix}.json"
+    seasons_suffix = "-".join(str(s) for s in sorted(seasons))
+    states_path = cache_dir / f"season_states_{prior_suffix}_{context_suffix}_{seasons_suffix}.parquet"
+    q_path = cache_dir / f"fitted_q_by_season_{prior_suffix}_{context_suffix}_{seasons_suffix}.json"
 
     if not force_rebuild and states_path.exists() and q_path.exists():
         log.info("Loading cached season skill states from %s", states_path)
@@ -426,9 +433,15 @@ def load_or_build_season_covariates(
     load_or_build_season_skill_states, though this step is cheap on its own
     (a few DB queries, not 2h of filtering); cached mainly so a full
     load_or_build_season_skill_states + load_or_build_season_covariates pair
-    is a single fast no-op call once both are warm."""
+    is a single fast no-op call once both are warm.
+
+    Cache filename includes the seasons actually present in `season_states`
+    (same real-bug fix as `load_or_build_season_skill_states` — a constant
+    `"covariates.parquet"` filename would silently return covariates built
+    for a different season range)."""
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
-    covariates_path = cache_dir / "covariates.parquet"
+    seasons_suffix = "-".join(str(s) for s in sorted(season_states["season"].unique().tolist()))
+    covariates_path = cache_dir / f"covariates_{seasons_suffix}.parquet"
 
     if not force_rebuild and covariates_path.exists():
         log.info("Loading cached season covariates from %s", covariates_path)
@@ -473,8 +486,23 @@ def kalman_filter_with_drift(
     return a, p_var, pred_mean, pred_var
 
 
-SeasonSequence = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]
-# y, R, mask, career_season_index, transfer_flag, level_change, prior_mean, prior_var
+SeasonSequence = tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, np.ndarray,
+]
+# y, R, mask, career_season_index, transfer_flag, level_change, prior_mean, prior_var, seasons
+#
+# `seasons` (2026-06-25): the real season year per row, same order as `y` --
+# added because `smooth_season_skill`'s output previously carried only a
+# synthetic positional `season_rank` (np.arange(1, len(y)+1)), independently
+# re-derived from this same sequence rather than reading the real value that
+# was already in scope here. That's a real risk, not just style: if any
+# skill's `dropna(subset=[y_col, var_col])` above drops a *different* season
+# for a player than another skill does (plausible — different skills can
+# have different per-season data availability), their `season_rank`
+# sequences silently desync relative to each other, and `fit_all_skills`'
+# merge (previously keyed on `season_rank`) would merge mismatched seasons
+# across skills with no error. Carrying the real season through removes that
+# whole class of risk — merges can key on `season` directly.
 
 PARAM_NAMES = ["rho", "beta_0", "beta_1", "beta_2", "beta_3", "beta_4", "log_Q"]
 
@@ -504,7 +532,10 @@ def build_season_sequences(
         csi = g["career_season_index"].to_numpy(dtype=np.float64)
         transfer_flag = g["transfer_flag"].to_numpy(dtype=np.float64)
         level_change = g["level_change"].to_numpy(dtype=np.float64)
-        sequences[int(player_id)] = (y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var)
+        seasons_arr = g["season"].to_numpy(dtype=np.int64)
+        sequences[int(player_id)] = (
+            y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var, seasons_arr,
+        )
     return sequences
 
 
@@ -514,7 +545,7 @@ def _pooled_neg_log_likelihood(params: np.ndarray, sequences: list[SeasonSequenc
     if not (0.0 <= rho <= 1.2) or q_value <= 0:
         return np.inf
     total = 0.0
-    for y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var in sequences:
+    for y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var, _ in sequences:
         mu = beta_0 + beta_1 * csi + beta_2 * csi**2 + beta_3 * transfer_flag + beta_4 * level_change
         _, _, pred_mean, pred_var = kalman_filter_with_drift(
             y, r_arr, rho, mu, q_value, mask, prior_mean, prior_var,
@@ -529,7 +560,7 @@ def _pooled_neg_log_likelihood(params: np.ndarray, sequences: list[SeasonSequenc
 
 def _q_init_from_diffs(sequences: list[SeasonSequence]) -> float:
     y_diffs = []
-    for y, _, mask, _, _, _, _, _ in sequences:
+    for y, _, mask, _, _, _, _, _, _ in sequences:
         obs = y[mask]
         if len(obs) > 1:
             y_diffs.extend(np.diff(obs).tolist())
@@ -684,16 +715,17 @@ def smooth_season_skill(
     q_value = fitted["Q"]
 
     rows = []
-    for player_id, (y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var) in sequences.items():
+    for player_id, (y, r_arr, mask, csi, transfer_flag, level_change, prior_mean, prior_var, seasons_arr) in sequences.items():
         mu = beta_0 + beta_1 * csi + beta_2 * csi**2 + beta_3 * transfer_flag + beta_4 * level_change
         a, p_var, pred_mean, pred_var = kalman_filter_with_drift(
             y, r_arr, rho, mu, q_value, mask, prior_mean, prior_var,
         )
         std_resid = (y - pred_mean) / np.sqrt(pred_var)
-        seasons_for_player = np.arange(1, len(y) + 1)  # positional; joined back by caller if needed
+        seasons_for_player = np.arange(1, len(y) + 1)  # positional ordering only -- see "season" below for the real key
         for i in range(len(y)):
             rows.append({
                 "player_id": player_id,
+                "season": int(seasons_arr[i]),
                 "season_rank": int(seasons_for_player[i]),
                 f"phase2_skill_{skill}": float(a[i]),
                 f"phase2_skill_var_{skill}": float(p_var[i]),
@@ -706,7 +738,8 @@ def fit_all_skills(
     skill_df: pd.DataFrame, covariates: pd.DataFrame, max_workers: int | None = None,
 ) -> tuple[dict[str, dict], pd.DataFrame]:
     """Runs smooth_season_skill for every skill, merges into one per
-    (player_id, season_rank) frame.
+    (player_id, season) frame (season, not season_rank — see SeasonSequence's
+    docstring for why season is the more reliable merge key).
 
     Performance (2026-06-24): each skill's `smooth_season_skill` fit is fully
     independent (different column slice of `skill_df`, no shared state) —
@@ -733,9 +766,20 @@ def fit_all_skills(
     for skill in SKILLS:
         fitted, skill_df_result = results[skill]
         fitted_params[skill] = fitted
+        # Merge key is the real "season" (2026-06-25), not "season_rank" --
+        # season_rank is computed independently inside each skill's own
+        # build_season_sequences call, and two skills can drop different
+        # seasons for the same player (different per-skill data
+        # availability), desyncing their season_rank sequences relative to
+        # each other. "season" doesn't have that risk. Each skill's own
+        # season_rank column is dropped before merging (not a reliable
+        # cross-skill value once it's no longer the join key) -- callers
+        # needing season_rank should recompute it from `covariates`'
+        # `career_season_index` after joining on (player_id, season).
+        skill_df_result = skill_df_result.drop(columns=["season_rank"])
         merged = (
             skill_df_result if merged is None
-            else merged.merge(skill_df_result, on=["player_id", "season_rank"], how="outer")
+            else merged.merge(skill_df_result, on=["player_id", "season"], how="outer")
         )
         log.info(
             "Skill %-24s rho=%.3f (fixed=%s) beta=[%.3f %.3f %.3f %.3f %.3f] Q=%.4f converged=%s",

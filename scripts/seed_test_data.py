@@ -14,6 +14,18 @@ model run always wins over the seed placeholder.
 
 Usage:
   uv run python scripts/seed_test_data.py
+
+`player_projections`' seed row is the one exception to "every insert is
+ON CONFLICT DO NOTHING" below — it has a time-dependent `expires_at`
+(`now() + 30 days` at seed time), and `/api/players/{id}/projection`
+filters on `expires_at > now()`. A plain DO NOTHING would let an old seed
+row go stale on any dev DB more than 30 days old, silently breaking the
+projection tests with no code change (real bug, found 2026-06-25 via a
+teammate's CI-adjacent run — confirmed by checking player_id=101, which
+turns out to be a real ingested player, not just a seed fixture: a real
+model run upserting that same row coincidentally kept the test passing
+locally, masking the underlying staleness bug). Refreshes
+`expires_at`/`computed_at` on conflict instead.
 """
 from __future__ import annotations
 
@@ -65,7 +77,8 @@ VALUES (
       "steal_disruption": 45.0, "block_rim_protection": 35.0}'::jsonb,
     'player-projection-shrinkage-v1', now() + interval '30 days'
 )
-ON CONFLICT (player_id, season, model_version) WHERE school_id IS NULL DO NOTHING;
+ON CONFLICT (player_id, season, model_version) WHERE school_id IS NULL
+DO UPDATE SET expires_at = EXCLUDED.expires_at, computed_at = now();
 """
 
 
