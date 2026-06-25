@@ -175,7 +175,7 @@ def test_fit_value_model_raises_on_too_few_labeled_rows():
         pp.fit_value_model(shrunk, "off_adj_rapm")
 
 
-def test_project_value_combines_offense_and_defense_with_symmetric_ci():
+def test_project_value_combines_offense_minus_raw_defense_with_symmetric_ci():
     df = _synthetic_training_frame(n=80)
     shrunk = pp.shrink_skills(df)
     off_model, off_resid = pp.fit_value_model(shrunk, "off_adj_rapm")
@@ -183,11 +183,56 @@ def test_project_value_combines_offense_and_defense_with_symmetric_ci():
 
     out = pp.project_value(shrunk, off_model, def_model, off_resid, def_resid)
 
-    assert np.allclose(out["value_per_100"], out["off_value_per_100"] + out["def_value_per_100"])
+    # Hoop Explorer raw def_adj_rapm is lower-is-better, and its published
+    # total identity is adj_rapm_margin = off_adj_rapm - def_adj_rapm.
+    assert np.allclose(
+        out["value_per_100"],
+        pp.combine_total_value(out["off_value_per_100"], out["def_value_per_100"]),
+    )
     half_width = (out["value_ci_upper"] - out["value_ci_lower"]) / 2.0
     assert np.allclose(out["value_per_100"] - out["value_ci_lower"], half_width)
     assert np.allclose(out["value_ci_upper"] - out["value_per_100"], half_width)
     assert (out["value_ci_upper"] > out["value_ci_lower"]).all()
+
+
+def test_project_value_ci_width_varies_with_skill_state_uncertainty():
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    off_model, off_resid = pp.fit_value_model(shrunk, "off_adj_rapm")
+    def_model, def_resid = pp.fit_value_model(shrunk, "def_adj_rapm")
+
+    scored = shrunk.copy()
+    for skill in set(pp.OFFENSE_SKILLS + pp.DEFENSE_SKILLS):
+        scored[f"skill_var_{skill}"] = np.linspace(0.0, 4.0, len(scored))
+
+    out = pp.project_value(scored, off_model, def_model, off_resid, def_resid)
+    widths = out["value_ci_upper"] - out["value_ci_lower"]
+
+    assert widths.nunique() > 1
+    assert out["_value_std"].iloc[-1] > out["_value_std"].iloc[0]
+    assert out["_skill_state_value_std"].iloc[-1] > out["_skill_state_value_std"].iloc[0]
+
+
+def test_value_model_extra_features_can_drive_forecast_translation():
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    shrunk["source_value_per_100"] = np.linspace(-4.0, 4.0, len(shrunk))
+    shrunk["off_adj_rapm"] = shrunk["off_adj_rapm"] + 0.8 * shrunk["source_value_per_100"]
+
+    base_model, base_resid = pp.fit_value_model(shrunk, "off_adj_rapm")
+    extra_model, extra_resid = pp.fit_value_model(
+        shrunk, "off_adj_rapm", extra_features=["source_value_per_100"],
+    )
+
+    base_pred = base_model.predict(pp.build_design_matrix(shrunk, skills=pp.OFFENSE_SKILLS))
+    extra_pred = extra_model.predict(
+        pp.build_design_matrix(shrunk, skills=pp.OFFENSE_SKILLS, extra_features=["source_value_per_100"])
+    )
+
+    assert extra_resid < base_resid
+    assert np.corrcoef(extra_pred, shrunk["source_value_per_100"])[0, 1] > np.corrcoef(
+        base_pred, shrunk["source_value_per_100"]
+    )[0, 1]
 
 
 def test_build_neutral_records_shape_and_neutral_mode():
@@ -240,6 +285,8 @@ def test_save_artifacts_writes_replayable_bundle(tmp_path):
     assert bundle["metadata"]["model_version"] == pp.MODEL_VERSION
     assert bundle["metadata"]["off_resid_std"] == off_resid
     assert bundle["metadata"]["def_resid_std"] == def_resid
+    assert bundle["metadata"]["def_value_target_direction"] == pp.DEF_VALUE_TARGET_DIRECTION
+    assert bundle["metadata"]["total_value_formula"] == pp.TOTAL_VALUE_FORMULA
     # Offense/defense split (2026-06-24): two feature-column lists, not one.
     assert bundle["metadata"]["off_feature_columns"] == pp.build_design_matrix(shrunk, skills=pp.OFFENSE_SKILLS).columns.tolist()
     assert bundle["metadata"]["def_feature_columns"] == pp.build_design_matrix(shrunk, skills=pp.DEFENSE_SKILLS).columns.tolist()

@@ -67,6 +67,45 @@ def test_build_season_sequences_orders_by_season_and_aligns_covariates():
     assert seasons_arr.tolist() == [2021, 2022]
 
 
+def test_forecast_next_season_states_advances_target_season_and_transition():
+    states = pd.DataFrame({
+        "player_id": [1],
+        "season": [2024],
+        "position": ["WG"],
+    })
+    for skill in pp2.SKILLS:
+        states[f"skill_{skill}"] = 10.0
+        states[f"skill_var_{skill}"] = 4.0
+
+    covariates = pd.DataFrame({
+        "player_id": [1, 1],
+        "season": [2024, 2025],
+        "career_season_index": [2, 3],
+        "transfer_flag": [0.0, 1.0],
+        "level_change": [0.0, -1.0],
+    })
+    fitted_params = {
+        skill: {
+            "rho": 0.5,
+            "beta_0": 1.0,
+            "beta_1": 0.1,
+            "beta_2": 0.0,
+            "beta_3": 2.0,
+            "beta_4": -0.5,
+            "Q": 0.25,
+        }
+        for skill in pp2.SKILLS
+    }
+
+    out = pp2.forecast_next_season_states(states, covariates, fitted_params)
+
+    assert out.loc[0, "season"] == 2025
+    assert out.loc[0, "source_observed_season"] == 2024
+    # 0.5*10 + (1 + 0.1*3 + 2*1 + -0.5*-1)
+    assert out.loc[0, "skill_shooting_3p"] == pytest.approx(8.8)
+    assert out.loc[0, "skill_var_shooting_3p"] == pytest.approx(1.25)
+
+
 def _synthetic_sequence(rng, n, true_rho, true_beta1):
     csi = np.arange(1, n + 1, dtype=np.float64)
     alpha = 0.3
@@ -476,10 +515,47 @@ def test_build_phase2_records_inverts_turnover_avoidance_sign():
 
 def test_build_phase2_records_uses_distinct_model_version_and_neutral_school_id():
     df = _synthetic_projected_df(n=3)
+    df["_residual_std"] = 1.2
+    df["_value_std"] = [1.2, 1.5, 1.8]
+    df["_skill_state_value_std"] = [0.0, 0.9, 1.34]
     records = pp2.build_phase2_records(df)
     for r in records:
         assert r[1] is None  # school_id -- neutral mode
         assert r[15] == pp2.MODEL_VERSION_PHASE2A
+    uncertainty = json.loads(records[2][13])
+    assert uncertainty["residual_std"] == pytest.approx(1.2)
+    assert uncertainty["value_std"] == pytest.approx(1.8)
+    assert uncertainty["skill_state_value_std"] == pytest.approx(1.34)
+
+
+def test_build_phase2_records_marks_next_season_forecast_explanation():
+    df = _synthetic_projected_df(n=1)
+    df["source_observed_season"] = 2025
+    df["season"] = 2026
+    df["source_value_per_100"] = 4.2
+    df["source_off_value_per_100"] = 3.1
+    df["source_def_value_per_100"] = -1.1
+    df["off_value_per_100"] = 3.5
+    df["def_value_per_100"] = -0.7
+    df["_value_drivers"] = [{
+        "top_positive": [{"feature": "source_value_per_100", "component": "offense", "total_value_contribution": 2.1}],
+        "top_negative": [{"feature": "skill_turnover_avoidance", "component": "offense", "total_value_contribution": -0.4}],
+    }]
+    records = pp2.build_phase2_records(df, model_version=pp2.MODEL_VERSION_PHASE2A_FORECAST)
+
+    explanation = json.loads(records[0][14])
+    assert records[0][2] == 2026
+    assert records[0][15] == pp2.MODEL_VERSION_PHASE2A_FORECAST
+    assert explanation["source"] == "phase2a_next_season_forecast"
+    assert explanation["source_observed_season"] == 2025
+    assert explanation["target_projected_season"] == 2026
+    assert explanation["forecast_horizon_seasons"] == 1
+    assert explanation["source_internal_value_prior"]["source_value_per_100"] == pytest.approx(4.2)
+    assert explanation["source_internal_value_prior"]["source_off_value_per_100"] == pytest.approx(3.1)
+    assert explanation["source_internal_value_prior"]["source_def_value_per_100"] == pytest.approx(-1.1)
+    assert explanation["value_components"]["off_value_per_100"] == pytest.approx(3.5)
+    assert explanation["value_components"]["raw_def_value_per_100"] == pytest.approx(-0.7)
+    assert explanation["value_drivers"]["top_positive"][0]["feature"] == "source_value_per_100"
 
 
 def test_build_phase2_records_populates_rates_when_given_else_empty():

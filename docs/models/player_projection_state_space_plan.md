@@ -1,25 +1,38 @@
 # Player Projection Model Plan
 ## State-Space Player Skill and Value Projection System
 
-**Status (2026-06-25): Phase 0 in production. Phase 1 validated and calibrated. Phase 2a implemented, real-data validated, real numbers beat Phase 0 on offense — production-integration decision still pending.**
-Phase 0 (`player-projection-shrinkage-v1`) writes real rows to `player_projections`, served by
-`GET /api/players/{id}/projection`. Phase 1 (single-season Kalman, `player_projection_kalman.py`)
+**Status (2026-06-25): Phase 2a next-season forecast is the API default by product decision. Phase 1 validated and calibrated. Phase 0 remains the baseline comparator.**
+Phase 2a production rows use observed college season `S` to forecast target projected season `S+1`
+under `model_version="player-proj-phase2a-fcast-v1"`, served by
+`GET /api/players/{id}/projection`. Same-season Phase 2a rows (`player-projection-phase2a-v2`) remain
+diagnostic state estimates, not the production row consumed by downstream Role Fit / destination
+projection work. Phase 1 (single-season Kalman, `player_projection_kalman.py`)
 is implemented, its `R_t`-scaling bug found and fixed, and its defense-label sign question
 investigated and resolved as a real (non-bug) finding — see §15 and the notebook's §13 for the
 full record. **Phase 2a (cross-season persistence, block covariance) is implemented and reconciled
 against [Issue #37](https://github.com/shanthg01/MIDS210-Capstone/issues/37)** — Gaps A/D/E/G coded,
 tested, and validated against real data (Phase 2a beats Phase 0 on offense every fold, ties on
-defense); Gap B (context adjustment) is coded but found to *regress* accuracy on real data, flagged
-TBD pending root-cause work, not rejected; Gap C (rate projections) and Gap F (real DB write under
-`model_version="player-projection-phase2a-v1"`) are both done. Two follow-on additions landed
+defense); Gap B (context adjustment) is coded but found to *regress* accuracy on real data, with
+root cause documented as weak current context signals, so it is not enabled; Gap C (rate projections)
+and Gap F (real DB write; now productionized as the `S -> S+1` forecast model version above) are both done. Two follow-on additions landed
 2026-06-24/25: an 11th skill (`foul_discipline`, Phase 1/2-only) and an offense/defense
 feature-set split for the value-translation model (kept despite a real, measured defense-accuracy
-cost — see §22). Production integration (replacing Phase 0 as the default) remains an explicit,
-not-yet-made decision, gated on Gap B's resolution. Full real-data record, all real bugs found and
-fixed, and the teammate-review response are all in §22.
+cost — see §22). Production integration decision: `scripts/run_player_projection.py --phase both`
+writes Phase 0 plus the Phase 2a next-season forecast version, and
+`GET /api/players/{id}/projection` serves that forecast version by explicit
+product/architecture preference despite the automatic MLflow gate keeping Phase 0 as champion.
+Confidence intervals are no longer static across every player in Phase 2a forecasts: the value
+translation adds a player-specific skill/source-value variance component to the residual error floor
+and applies rolling conformal scaling for the nominal 80% target. The production forecast value
+layer also includes source-season internal off/def/total value priors so elite returning players are
+not over-mean-reverted by skill transitions alone. Final script rerun wrote 30,304 forecast rows
+for target seasons 2022-2027; every row carries projected rates/box-score payloads, with per-100
+rates using source-season team pace from `player_season_stats` because `player_school_seasons` is
+empty in the current local data stack.
+Full real-data record, all real bugs found and fixed, and the teammate-review response are all in §22.
 
 **Notebook:** `notebooks/models/player_projection_state_space.ipynb` (built, executed, both phases)
-**Script:** `scripts/run_player_projection.py` (Phase 0 only — Phase 1 has no production script, it's notebook-only validation)
+**Script:** `scripts/run_player_projection.py` (`--phase {0,2a,both}`; Phase 1 remains notebook-only validation)
 **Module:** `src/portalpoint/modeling/player_projection.py` (Phase 0), `player_projection_kalman.py` (Phase 1)
 **Model family:** Game-level state-space model + hybrid basketball rate model  
 **Primary output table:** `player_projections` (migration `e6a2c8f1b734`) — the original plan to stage through `predictions` was dropped, see §10
@@ -652,16 +665,22 @@ Translate projected rates into generic player value trained against RAPM-style i
 ```text
 player_value_per_100
 = offensive_value_per_100
-  + defensive_value_per_100
+  - defensive_value_per_100_raw
 ```
 
 Primary MVP labels:
 
 ```text
 offensive_value_per_100 target = Hoop Explorer off_adj_rapm
-defensive_value_per_100 target = Hoop Explorer def_adj_rapm
+defensive_value_per_100_raw target = Hoop Explorer def_adj_rapm  # lower is better
 total_value_per_100 target     = Hoop Explorer adj_rapm_margin
 ```
+
+**Sign convention correction (2026-06-25):** Hoop Explorer's raw defensive
+adjusted RAPM is lower-is-better. The raw source and local DB both satisfy
+`adj_rapm_margin = off_adj_rapm - def_adj_rapm`, so `value_per_100` must
+subtract the defensive model prediction unless the defensive training target is
+explicitly flipped to a positive defensive-value scale.
 
 `adj_rtg_margin` (unadjusted on-court net efficiency) is the secondary/robustness label — see corrected hierarchy in §5. The production-weighted variant (`off_adj_rapm_prod`/`adj_rapm_prod_margin`) is now ingested (§19) and wired in as a robustness check in `scripts/run_player_projection.py` and the notebook — correlated against, not retrained on (corr 0.643/0.433 against `off_value_per_100`/`value_per_100`, sane for a playing-time-weighted secondary label). `def_adj_prod_rapm` has no def-side equivalent currently available — empty in the raw HE export (§19). `off_team_poss_pct` (fraction of team possessions played) is the closest existing ingested column to a playing-time-share weight, and should be used directly as the observation-weight (`ss_TPS`) input at season grain.
 
@@ -876,7 +895,7 @@ For tree or nonlinear challenger models, SHAP can be added later. For the core p
 
 | Metric | Use | Status |
 |---|---|---|
-| RAPM target RMSE | Accuracy against Hoop Explorer `off_adj_rapm`, `def_adj_rapm`, and `adj_rapm_margin` | ✅ done for `off_adj_rapm`/`def_adj_rapm`; `adj_rapm_margin` not separately evaluated (off+def combined is a reasonable proxy, not yet checked directly) |
+| RAPM target RMSE | Accuracy against Hoop Explorer `off_adj_rapm`, `def_adj_rapm`, and `adj_rapm_margin` | ✅ done for `off_adj_rapm`/`def_adj_rapm`; total value now follows Hoop Explorer's sign identity (`off_adj_rapm - def_adj_rapm`) and robustness-checks against `adj_rapm_prod_margin` |
 | Impact rank correlation | Whether projected player value orders players similarly to RAPM-style labels | ✅ done — Spearman, see above |
 | Team-level lift | Whether player values improve team AdjEM projection | ❌ not done — needs Team Rating Projection (Model 6), not built |
 | Transfer holdout error | Performance on players changing teams | ✅ done — see cohort slice below (transfers: rmse=1.596, r²=0.370 vs. returning: rmse=1.763, r²=0.474 — transfers have lower error but the model explains less of their variance, a mixed signal worth a closer look, not yet investigated further) |
@@ -1084,8 +1103,9 @@ Sequenced to match `docs/models/model_dependency_graph.md`'s execution order, wi
     - Cell 1 coverage audit reports per-season game-log row counts; confirmed full
       2020-2026 coverage as of the step-0 backfill above.
 
-4.  ✅ DONE. scripts/run_player_projection.py — Phase 0 only, no production script
-    for Phase 1 (notebook-only validation, by design — see §15).
+4.  ✅ DONE. scripts/run_player_projection.py — Phase 0 and Phase 2a both
+    have scriptable rerun paths via `--phase {0,2a,both}`. Phase 1 remains
+    notebook-only validation by design — see §15 and §22.
 
 5.  ✅ DONE. Validation against the corrected RAPM labels (off_adj_rapm_prod/
     adj_rapm_prod_margin robustness check, corr 0.643/0.433). Role Fit's hard
@@ -1299,7 +1319,7 @@ Context adjustment substantially hurts both offense and defense — worse than e
 
 Added `pp2.build_phase2_records()`/`pp2.MODEL_VERSION_PHASE2A` and a new notebook Cell 18-1, reusing `pp.upsert_neutral_projections` as-is (it's generic on `model_version`, no new SQL needed). Two real bugs found getting the write to succeed, both fixed and verified:
 1. A `CardinalityViolation` (`ON CONFLICT DO UPDATE command cannot affect row a second time`) — `phase2_states` had a small number of duplicate `(player_id, season)` rows (33,540 season-states rows → 33,542 phase2_states rows) from a join fan-out in Cell 15-1, never fatal for fitting/eval but fatal for a uniqueness-constrained write. Fixed with `drop_duplicates(subset=["player_id","season"])`, the same defensive pattern Phase 0's own Cell 2 already uses after its HE left-join.
-2. After that fix: **33,540 rows successfully upserted** under `model_version="player-projection-phase2a-v1"` (distinct from Phase 0's `"player-projection-shrinkage-v1"` — the partial unique index on `(player_id, season, model_version) WHERE school_id IS NULL` means these can never collide). Spot-checked real, non-empty `projected_rates`/`projected_box_score` — sane per-40 box-score lines (e.g. pts_per_40 ~20-30, ast ~2-6, reb ~3-7).
+2. After that fix: **33,540 rows successfully upserted** under `model_version="player-projection-phase2a-v1"` (distinct from Phase 0's `"player-projection-shrinkage-v1"` — the partial unique index on `(player_id, season, model_version) WHERE school_id IS NULL` means these can never collide). The next rerun writes the defensive-sign-fixed generation as `player-projection-phase2a-v2` / `player-projection-shrinkage-v2`. Spot-checked real, non-empty `projected_rates`/`projected_box_score` — sane per-40 box-score lines (e.g. pts_per_40 ~20-30, ast ~2-6, reb ~3-7).
 
 **Caveat carried over from Gap B**: this write used the still-active `use_context_adjustment=True` run (the regression). Re-write (same model_version, safe to rerun) once Gap B is resolved or once the no-context configuration is re-run for any other reason.
 
@@ -1370,7 +1390,8 @@ All three fixed:
 - Wiring `--phase both` into a weekly Airflow cadence — no Airflow DAGs exist anywhere in this repo yet, for any model.
 - Feature-drift/accuracy-decay monitoring — no Prometheus/Grafana exists yet. Noted as a TODO to build for **all models**, not just this one, once real monitoring infra exists (or as a lighter MLflow-history-only pilot, if picked up before then).
 
-195 tests passing throughout.
+At this point in the implementation log, 195 tests were passing. The current
+forecast-ready branch later passes 199 tests; see the status docs above.
 
 ### TODO before resuming Phase 2
 
@@ -1390,4 +1411,8 @@ A teammate's comment on the issue flagged 5 items. Verified each against the act
 4. **"Gap B is TBD, not rejected"** — fair wording correction, adopted. The no-context configuration remains the *reference* result for any current comparison, not a final verdict on context-adjustment — it stays a real, open, root-cause-pending question.
 5. **Production integration stays an explicit decision after the Gap B question is settled** — already this doc's stance, no change needed.
 
-194 tests passing throughout (no new test count change — fixes landed inside already-existing test coverage plus two newly-caught unpacking-site fixes in `test_player_projection_phase2.py`'s own synthetic-sequence helpers).
+At this point in the implementation log, 194 tests were passing (no new test
+count change — fixes landed inside already-existing test coverage plus two
+newly-caught unpacking-site fixes in `test_player_projection_phase2.py`'s own
+synthetic-sequence helpers). The current forecast-ready branch later passes
+199 tests; see the status docs above.

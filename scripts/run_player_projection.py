@@ -2,10 +2,10 @@
 scripts/run_player_projection.py
 
 Non-interactive rerun of the Player Projection model — both phases:
-  --phase 0    Phase 0 only (player-projection-shrinkage-v1, season-grain
+  --phase 0    Phase 0 only (player-projection-shrinkage-v2, season-grain
                shrinkage + Ridge, seconds to run).
-  --phase 2a   Phase 2a only (player-projection-phase2a-v1, two-level
-               cross-season Kalman state-space, ~10 minutes — see
+  --phase 2a   Phase 2a forecast only (player-proj-phase2a-fcast-v1,
+               two-level cross-season Kalman state-space, ~10 minutes — see
                docs/models/player_projection_state_space_plan.md §22).
   --phase both Both, sequentially (default).
 
@@ -122,7 +122,8 @@ def run_phase0(engine) -> None:
             X_def = pp.build_design_matrix(model_input, skills=pp.DEFENSE_SKILLS)
             off = self.off_model.predict(X_off)
             defn = self.def_model.predict(X_def)
-            return [{"value_per_100": float(o + d)} for o, d in zip(off, defn)]
+            value = pp.combine_total_value(off, defn)
+            return [{"value_per_100": float(v)} for v in value]
 
     with mlflow.start_run(run_name=f"player-projection-s{int(df['season'].max())}-script") as run:
         mlflow.log_params({
@@ -211,7 +212,7 @@ def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float
     (combined_rmse, off_rmse, def_rmse, calibration) for fold 3 (test season
     2026). `calibration` (added 2026-06-25 — the notebook's Gap G section
     already computed this, the script never did) is empirical 80%-CI
-    coverage on the combined off+def value, via `compute_calibration`."""
+    coverage on the total margin value, via `compute_calibration`."""
     folds = ppe.make_rolling_origin_folds(phase2_states)
     fold3 = folds[2]
     train_df, val_df, test_df = fold3["train"], fold3["val"], fold3["test"]
@@ -224,7 +225,7 @@ def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float
     off_metrics = ppe.compute_regression_metrics(labeled_test["off_adj_rapm"], labeled_test["off_value_per_100"])
     def_metrics = ppe.compute_regression_metrics(labeled_test["def_adj_rapm"], labeled_test["def_value_per_100"])
     phase2a_combined = float(np.sqrt(off_metrics["rmse"] ** 2 + def_metrics["rmse"] ** 2))
-    total_actual = labeled_test["off_adj_rapm"] + labeled_test["def_adj_rapm"]
+    total_actual = labeled_test["off_adj_rapm"] - labeled_test["def_adj_rapm"]
     calibration = ppe.compute_calibration(total_actual, labeled_test["value_ci_lower"], labeled_test["value_ci_upper"])
 
     # Phase 0 reference, same fold, same held-out test season -- recomputed
@@ -234,6 +235,91 @@ def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float
     # registered* Production metric directly from MLflow for the actual
     # gate decision -- this function only needs to produce Phase 2a's side.
     return phase2a_combined, off_metrics["rmse"], def_metrics["rmse"], calibration
+
+
+def _forecast_rolling_metrics(
+    forecast_states: pd.DataFrame,
+    off_extra_features: list[str] | None = None,
+    def_extra_features: list[str] | None = None,
+    ci_scale: float = 1.0,
+) -> pd.DataFrame:
+    """Rolling-origin validation for next-season forecast rows.
+
+    Rows are keyed by target projected season, so fold 3 means value models
+    train on forecast targets through 2025 and evaluate forecasts for 2026.
+    The season-transition parameters and source-value priors are still the
+    production full-history objects at this stage; this validation primarily
+    checks the served forecast frame and value translation under the same
+    temporal split used elsewhere in Player Projection. It is intentionally not
+    a fully leak-free refit of every upstream state-space component at each
+    historical cutoff.
+    """
+    rows: list[dict] = []
+    for fold_idx, fold in enumerate(ppe.make_rolling_origin_folds(forecast_states), start=1):
+        train_df, val_df, test_df = fold["train"], fold["val"], fold["test"]
+        if train_df.empty or val_df.empty or test_df.empty:
+            continue
+        _, alpha, _ = ppe.tune_hyperparameters(train_df, val_df, skip_shrinkage=True)
+        train_val_df = pd.concat([train_df, val_df], ignore_index=True)
+        try:
+            off_m, off_r = pp.fit_value_model(
+                train_val_df, "off_adj_rapm", alpha=alpha, extra_features=off_extra_features,
+            )
+            def_m, def_r = pp.fit_value_model(
+                train_val_df, "def_adj_rapm", alpha=alpha, extra_features=def_extra_features,
+            )
+        except ValueError:
+            continue
+
+        projected_test = pp.project_value(
+            test_df, off_m, def_m, off_r, def_r,
+            off_extra_features=off_extra_features,
+            def_extra_features=def_extra_features,
+            ci_scale=ci_scale,
+        )
+        labeled_test = projected_test.dropna(subset=["off_adj_rapm", "def_adj_rapm"])
+        if len(labeled_test) < ppe.MIN_LABELED_ROWS:
+            continue
+
+        off_metrics = ppe.compute_regression_metrics(labeled_test["off_adj_rapm"], labeled_test["off_value_per_100"])
+        def_metrics = ppe.compute_regression_metrics(labeled_test["def_adj_rapm"], labeled_test["def_value_per_100"])
+        total_actual = labeled_test["off_adj_rapm"] - labeled_test["def_adj_rapm"]
+        total_metrics = ppe.compute_regression_metrics(total_actual, labeled_test["value_per_100"])
+        calibration = ppe.compute_calibration(total_actual, labeled_test["value_ci_lower"], labeled_test["value_ci_upper"])
+        half_width = (labeled_test["value_ci_upper"] - labeled_test["value_ci_lower"]) / 2.0
+        required_scale_80 = float(np.quantile((total_actual - labeled_test["value_per_100"]).abs() / half_width, 0.80))
+        rows.append({
+            "fold": fold_idx,
+            "test_season": int(fold["fold_def"]["test"][0]),
+            "alpha": alpha,
+            "n_labeled": len(labeled_test),
+            "total_rmse": total_metrics["rmse"],
+            "total_r2": total_metrics["r2"],
+            "off_rmse": off_metrics["rmse"],
+            "def_rmse": def_metrics["rmse"],
+            "calibration_80pct_target": calibration,
+            "required_ci_scale_80pct": required_scale_80 * ci_scale,
+        })
+    return pd.DataFrame(rows)
+
+
+def _load_source_team_pace(engine) -> pd.DataFrame:
+    """Per-player source-season pace for projected rate conversions.
+
+    `player_school_seasons` is still empty in the local data stack; the real
+    player-team-season linkage lives in `player_season_stats`, so use that for
+    production rate payloads instead of falling back to the global default pace
+    for every row.
+    """
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text(
+                "SELECT pss.player_id, pss.season AS source_observed_season, t.adj_tempo "
+                "FROM player_season_stats pss "
+                "JOIN team_season_stats t ON pss.school_id = t.school_id AND pss.season = t.season"
+            ),
+            conn,
+        ).drop_duplicates(subset=["player_id", "source_observed_season"], keep="first")
 
 
 def run_phase2a(engine) -> None:
@@ -253,10 +339,14 @@ def run_phase2a(engine) -> None:
     # fit_all_skills already merges on the real "season" (2026-06-25 fix —
     # see SeasonSequence's docstring), so no season_rank<->career_season_index
     # reconstruction is needed here.
-    rename_map = {f"phase2_skill_{s}": f"skill_{s}" for s in pp2.SKILLS}
+    rename_map = {
+        **{f"phase2_skill_{s}": f"skill_{s}" for s in pp2.SKILLS},
+        **{f"phase2_skill_var_{s}": f"skill_var_{s}" for s in pp2.SKILLS},
+    }
     phase2_states = residual_df.rename(columns=rename_map)
 
-    phase0_context = pp.load_player_season_frame(engine)[["player_id", "season", "position"]].drop_duplicates()
+    phase0_frame = pp.load_player_season_frame(engine)
+    phase0_context = phase0_frame[["player_id", "season", "position"]].drop_duplicates()
     with engine.connect() as conn:
         he_labels_raw = pd.read_sql(
             text(
@@ -265,16 +355,47 @@ def run_phase2a(engine) -> None:
             ),
             conn,
         )
-    he_labels = phase0_context.merge(he_labels_raw, on=["player_id", "season"], how="left")
-    phase0_weight = pp.shrink_skills(pp.load_player_season_frame(engine))[["player_id", "season", "_weight"]]
+    phase0_weight = pp.shrink_skills(phase0_frame)[["player_id", "season", "_weight"]]
     phase2_states = (
         phase2_states
-        .merge(he_labels, on=["player_id", "season"], how="left")
-        .merge(phase0_weight, on=["player_id", "season"], how="left")
+        .merge(phase0_context, on=["player_id", "season"], how="left")
         .drop_duplicates(subset=["player_id", "season"], keep="first")
         .reset_index(drop=True)
     )
-    log.info("Phase 2a state frame: %s rows", f"{len(phase2_states):,}")
+    log.info("Phase 2a observed state frame: %s rows", f"{len(phase2_states):,}")
+
+    observed_labeled = (
+        phase2_states
+        .merge(he_labels_raw[["player_id", "season", "off_adj_rapm", "def_adj_rapm"]], on=["player_id", "season"], how="left")
+        .merge(phase0_weight, on=["player_id", "season"], how="left")
+    )
+    source_off_model, source_off_resid = pp.fit_value_model(observed_labeled, "off_adj_rapm")
+    source_def_model, source_def_resid = pp.fit_value_model(observed_labeled, "def_adj_rapm")
+    source_projected = pp.project_value(
+        observed_labeled, source_off_model, source_def_model, source_off_resid, source_def_resid,
+    )[["player_id", "season", "off_value_per_100", "def_value_per_100", "value_per_100", "_value_std"]].rename(columns={
+        "season": "source_observed_season",
+        "off_value_per_100": "source_off_value_per_100",
+        "def_value_per_100": "source_def_value_per_100",
+        "value_per_100": "source_value_per_100",
+        "_value_std": "source_value_per_100_var",
+    })
+    source_projected["source_value_per_100_var"] = source_projected["source_value_per_100_var"] ** 2
+
+    forecast_states = pp2.forecast_next_season_states(phase2_states, covariates, fitted_params)
+    forecast_states = (
+        forecast_states
+        .merge(he_labels_raw, on=["player_id", "season"], how="left")
+        .merge(phase0_weight, on=["player_id", "season"], how="left")
+        .merge(source_projected, on=["player_id", "source_observed_season"], how="left")
+        .drop_duplicates(subset=["player_id", "season", "source_observed_season"], keep="first")
+        .reset_index(drop=True)
+    )
+    log.info(
+        "Phase 2a forecast frame: %s rows, target seasons %s",
+        f"{len(forecast_states):,}",
+        sorted(forecast_states["season"].unique().tolist()),
+    )
 
     # Gap C: attempt-rate decomposition, fed the Gap-A-blended states.
     attempt_targets = pp2.build_attempt_rate_targets(engine, PHASE2_SEASONS)
@@ -282,26 +403,48 @@ def run_phase2a(engine) -> None:
     attempt_models = pp2.fit_attempt_rate_models(stage2a_states)
     log.info("Gap C: fitted attempt-rate models: %s", list(attempt_models.keys()))
 
-    with engine.connect() as conn:
-        team_pace = pd.read_sql(
-            text(
-                "SELECT player_id, adj_tempo FROM team_season_stats t "
-                "JOIN player_school_seasons pss ON pss.school_id = t.school_id AND pss.season = t.season "
-                "WHERE t.season = 2026"
-            ),
-            conn,
-        )
-    pace_lookup = stage2a_states[["player_id"]].merge(team_pace, on="player_id", how="left")["adj_tempo"]
-    projected_rates = pp2.project_rates(stage2a_states, attempt_models, pace=pace_lookup)
+    source_team_pace = _load_source_team_pace(engine)
+    pace_lookup = (
+        forecast_states[["player_id", "source_observed_season"]]
+        .merge(source_team_pace, on=["player_id", "source_observed_season"], how="left")["adj_tempo"]
+    )
+    projected_rates = pp2.project_rates(forecast_states, attempt_models, pace=pace_lookup)
 
-    off_model_p2, off_resid_std_p2 = pp.fit_value_model(phase2_states, "off_adj_rapm")
-    def_model_p2, def_resid_std_p2 = pp.fit_value_model(phase2_states, "def_adj_rapm")
+    off_model_p2, off_resid_std_p2 = pp.fit_value_model(
+        forecast_states, "off_adj_rapm", extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+    )
+    def_model_p2, def_resid_std_p2 = pp.fit_value_model(
+        forecast_states, "def_adj_rapm", extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+    )
     log.info(
-        "Phase 2a in-sample: off_resid_std=%.3f def_resid_std=%.3f", off_resid_std_p2, def_resid_std_p2,
+        "Phase 2a forecast fit: off_resid_std=%.3f def_resid_std=%.3f", off_resid_std_p2, def_resid_std_p2,
     )
 
-    phase2_pctile = pp.skill_percentiles(phase2_states, skills=ppk.SKILLS)
-    phase2_projected = pp.project_value(phase2_pctile, off_model_p2, def_model_p2, off_resid_std_p2, def_resid_std_p2)
+    phase2_pctile = pp.skill_percentiles(forecast_states, skills=ppk.SKILLS)
+    rolling_metrics_unscaled = _forecast_rolling_metrics(
+        phase2_pctile,
+        off_extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+        def_extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+        ci_scale=1.0,
+    )
+    forecast_ci_scale = 1.0
+    if not rolling_metrics_unscaled.empty:
+        forecast_ci_scale = max(1.0, float(rolling_metrics_unscaled["required_ci_scale_80pct"].max()))
+        log.info("Forecast CI conformal scale selected from rolling folds: %.3f", forecast_ci_scale)
+
+    phase2_projected = pp.project_value(
+        phase2_pctile, off_model_p2, def_model_p2, off_resid_std_p2, def_resid_std_p2,
+        off_extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+        def_extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+        ci_scale=forecast_ci_scale,
+    )
+    phase2_projected = pp.attach_value_drivers(
+        phase2_projected,
+        off_model_p2,
+        def_model_p2,
+        off_extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+        def_extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+    )
 
     # Secondary-label robustness check (Issue #37 item 4 — "validate total
     # against adj_rapm_margin... as robustness only"), same pattern as
@@ -322,48 +465,82 @@ def run_phase2a(engine) -> None:
         )
 
     # Gap E: real archetype metadata, evaluation/explanation only.
-    archetypes_df = _load_real_archetypes(engine, PHASE2_SEASONS)
+    forecast_target_seasons = sorted(phase2_projected["season"].unique().tolist())
+    archetypes_df = _load_real_archetypes(engine, forecast_target_seasons)
     log.info("Gap E: loaded %s real archetype rows", f"{len(archetypes_df):,}")
 
-    records = pp2.build_phase2_records(phase2_projected, projected_rates_df=projected_rates, archetypes_df=archetypes_df)
+    records = pp2.build_phase2_records(
+        phase2_projected,
+        projected_rates_df=projected_rates,
+        archetypes_df=archetypes_df,
+        model_version=pp2.MODEL_VERSION_PHASE2A_FORECAST,
+    )
     upserted = pp.upsert_neutral_projections(engine, records)
-    log.info("Upserted %s rows into player_projections (%s)", f"{upserted:,}", pp2.MODEL_VERSION_PHASE2A)
+    log.info("Upserted %s rows into player_projections (%s)", f"{upserted:,}", pp2.MODEL_VERSION_PHASE2A_FORECAST)
 
     if not records:
-        raise RuntimeError("No Phase 2a player projection records were scored")
+        raise RuntimeError("No Phase 2a forecast projection records were scored")
 
-    # Gap G: real held-out metric for the MLflow promotion gate -- not
-    # in-sample resid_std (see _gap_g_real_metric's docstring).
-    phase2a_combined_rmse, off_rmse, def_rmse, calibration = _gap_g_real_metric(phase2_states)
-    log.info(
-        "Gap G real held-out fold-3 metric: combined_rmse=%.4f (off=%.4f def=%.4f) calibration_80pct_target=%.3f",
-        phase2a_combined_rmse, off_rmse, def_rmse, calibration,
+    labeled_forecasts = phase2_projected.dropna(subset=["off_adj_rapm", "def_adj_rapm"])
+    off_metrics = ppe.compute_regression_metrics(labeled_forecasts["off_adj_rapm"], labeled_forecasts["off_value_per_100"])
+    def_metrics = ppe.compute_regression_metrics(labeled_forecasts["def_adj_rapm"], labeled_forecasts["def_value_per_100"])
+    total_actual = labeled_forecasts["off_adj_rapm"] - labeled_forecasts["def_adj_rapm"]
+    total_metrics = ppe.compute_regression_metrics(total_actual, labeled_forecasts["value_per_100"])
+    calibration = ppe.compute_calibration(
+        total_actual, labeled_forecasts["value_ci_lower"], labeled_forecasts["value_ci_upper"],
     )
+    log.info(
+        "Forecast full-fit check: total_rmse=%.4f total_r2=%.4f off_rmse=%.4f def_rmse=%.4f calibration_80pct_target=%.3f (n=%s)",
+        total_metrics["rmse"], total_metrics["r2"], off_metrics["rmse"], def_metrics["rmse"],
+        calibration, f"{len(labeled_forecasts):,}",
+    )
+    rolling_metrics = _forecast_rolling_metrics(
+        phase2_pctile,
+        off_extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+        def_extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+        ci_scale=forecast_ci_scale,
+    )
+    if not rolling_metrics.empty:
+        log.info("Rolling next-season forecast validation:\n%s", rolling_metrics.round(4).to_string(index=False))
+        headline = rolling_metrics.iloc[-1]
+    else:
+        headline = pd.Series(dtype=float)
+        log.warning("Rolling next-season forecast validation skipped: no labeled folds")
 
     values = np.fromiter((r[4] for r in records), dtype=np.float64, count=len(records))
     client = setup_mlflow("player-projection")
     import mlflow
     import mlflow.pyfunc
 
-    class Phase2aPyfunc(mlflow.pyfunc.PythonModel):
+    class Phase2aForecastPyfunc(mlflow.pyfunc.PythonModel):
         def __init__(self, off_model, def_model):
             self.off_model = off_model
             self.def_model = def_model
 
         def predict(self, context, model_input):
-            X_off = pp.build_design_matrix(model_input, skills=pp.OFFENSE_SKILLS)
-            X_def = pp.build_design_matrix(model_input, skills=pp.DEFENSE_SKILLS)
+            X_off = pp.build_design_matrix(
+                model_input, skills=pp.OFFENSE_SKILLS, extra_features=pp2.FORECAST_OFF_EXTRA_FEATURES,
+            )
+            X_def = pp.build_design_matrix(
+                model_input, skills=pp.DEFENSE_SKILLS, extra_features=pp2.FORECAST_DEF_EXTRA_FEATURES,
+            )
             off = self.off_model.predict(X_off)
             defn = self.def_model.predict(X_def)
-            return [{"value_per_100": float(o + d)} for o, d in zip(off, defn)]
+            value = pp.combine_total_value(off, defn)
+            return [{"value_per_100": float(v)} for v in value]
 
-    with mlflow.start_run(run_name=f"player-projection-phase2a-s{max(PHASE2_SEASONS)}-script") as run:
+    with mlflow.start_run(run_name=f"player-projection-phase2a-forecast-s{max(forecast_target_seasons)}-script") as run:
         mlflow.log_params({
-            "seasons": ",".join(str(s) for s in PHASE2_SEASONS),
-            "model_version": pp2.MODEL_VERSION_PHASE2A,
+            "source_observed_seasons": ",".join(str(s) for s in PHASE2_SEASONS),
+            "target_projected_seasons": ",".join(str(s) for s in forecast_target_seasons),
+            "model_version": pp2.MODEL_VERSION_PHASE2A_FORECAST,
             "use_context_adjustment": False,
             "gap_a_applied": True,
             "gap_e_applied": True,
+            "forecast_horizon_seasons": 1,
+            "forecast_value_extra_features_off": ",".join(pp2.FORECAST_OFF_EXTRA_FEATURES),
+            "forecast_value_extra_features_def": ",".join(pp2.FORECAST_DEF_EXTRA_FEATURES),
+            "forecast_ci_scale": forecast_ci_scale,
             "source": "script",
         })
         mlflow.log_metrics({
@@ -373,13 +550,24 @@ def run_phase2a(engine) -> None:
             "def_resid_std": def_resid_std_p2,
             "total_resid_std": float(np.sqrt(off_resid_std_p2**2 + def_resid_std_p2**2)),
             "n_records_written": float(len(records)),
-            "fold3_combined_rmse": phase2a_combined_rmse,
-            "fold3_off_rmse": off_rmse,
-            "fold3_def_rmse": def_rmse,
-            "fold3_calibration_80pct_target": calibration,
+            "forecast_full_fit_total_rmse": total_metrics["rmse"],
+            "forecast_full_fit_total_r2": total_metrics["r2"],
+            "forecast_full_fit_off_rmse": off_metrics["rmse"],
+            "forecast_full_fit_def_rmse": def_metrics["rmse"],
+            "forecast_full_fit_calibration_80pct_target": calibration,
+            "n_labeled_forecast_rows": float(len(labeled_forecasts)),
         })
+        if not headline.empty:
+            mlflow.log_metrics({
+                "forecast_fold_headline_test_season": float(headline["test_season"]),
+                "forecast_fold_headline_total_rmse": float(headline["total_rmse"]),
+                "forecast_fold_headline_total_r2": float(headline["total_r2"]),
+                "forecast_fold_headline_off_rmse": float(headline["off_rmse"]),
+                "forecast_fold_headline_def_rmse": float(headline["def_rmse"]),
+                "forecast_fold_headline_calibration_80pct_target": float(headline["calibration_80pct_target"]),
+            })
         mlflow.pyfunc.log_model(
-            artifact_path="player_projection_model", python_model=Phase2aPyfunc(off_model_p2, def_model_p2),
+            artifact_path="player_projection_model", python_model=Phase2aForecastPyfunc(off_model_p2, def_model_p2),
         )
         run_id = run.info.run_id
 

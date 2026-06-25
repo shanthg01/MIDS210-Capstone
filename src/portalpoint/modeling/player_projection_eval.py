@@ -136,8 +136,8 @@ def tune_hyperparameters(
     skip_shrinkage: bool = False,
 ) -> tuple[float | None, float, pd.DataFrame]:
     """Grid search over (SHRINKAGE_K, RIDGE_ALPHA) on this fold's validation
-    season only — selection criterion is the combined off+def RMSE
-    (sqrt(off_rmse^2 + def_rmse^2), the same combination
+    season only — selection criterion is the combined off/def target RMSE
+    (sqrt(off_rmse^2 + def_rmse^2), the same two-target summary
     scripts/run_player_projection.py already uses for its MLflow promotion
     metric). Falls back to production's current defaults
     (pp.SHRINKAGE_K, pp.RIDGE_ALPHA) if no grid cell has enough labeled rows

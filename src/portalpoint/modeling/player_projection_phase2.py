@@ -1044,7 +1044,86 @@ def project_rates(
 # Phase 0's. `pp.upsert_neutral_projections` is fully generic (keyed off
 # model_version, not the row content), so it's reused as-is here, not
 # duplicated.
-MODEL_VERSION_PHASE2A = "player-projection-phase2a-v1"
+MODEL_VERSION_PHASE2A = "player-projection-phase2a-v2"
+MODEL_VERSION_PHASE2A_FORECAST = "player-proj-phase2a-fcast-v1"
+FORECAST_OFF_EXTRA_FEATURES = ["source_off_value_per_100", "source_value_per_100"]
+FORECAST_DEF_EXTRA_FEATURES = ["source_def_value_per_100", "source_value_per_100"]
+
+
+def forecast_next_season_states(
+    phase2_states: pd.DataFrame,
+    covariates: pd.DataFrame,
+    fitted_params: dict[str, dict],
+) -> pd.DataFrame:
+    """One-step-ahead neutral forecasts from observed season states.
+
+    The same-season Phase 2a state rows answer "what did this player's
+    observed season imply about his skill state?" Production player
+    projection needs the next question: "given that observed state, what is
+    the best estimate for the target season?" This applies the fitted
+    season-grain transition equation once:
+
+        alpha[t+1|t] = rho * alpha[t] + mu[t+1]
+
+    `season` in the returned frame is the target/projected season, while
+    `source_observed_season` records the season used to forecast it. Historical
+    target seasons use known target-season transfer/level-change covariates
+    when available; future rows without a known destination default to neutral
+    no-transfer/no-level-change covariates.
+    """
+    source = phase2_states.copy()
+    source["source_observed_season"] = source["season"].astype(int)
+    source["season"] = source["source_observed_season"] + 1
+
+    observed_cov = covariates.rename(columns={
+        "season": "source_observed_season",
+        "career_season_index": "source_career_season_index",
+    })
+    target_cov = covariates.rename(columns={
+        "career_season_index": "target_career_season_index",
+        "transfer_flag": "target_transfer_flag",
+        "level_change": "target_level_change",
+    })
+    out = (
+        source
+        .merge(
+            observed_cov[["player_id", "source_observed_season", "source_career_season_index"]],
+            on=["player_id", "source_observed_season"], how="left",
+        )
+        .merge(
+            target_cov[["player_id", "season", "target_career_season_index", "target_transfer_flag", "target_level_change"]],
+            on=["player_id", "season"], how="left",
+        )
+    )
+    out["target_career_season_index"] = out["target_career_season_index"].fillna(out["source_career_season_index"] + 1)
+    out["target_transfer_flag"] = out["target_transfer_flag"].fillna(0.0)
+    out["target_level_change"] = out["target_level_change"].fillna(0.0)
+
+    for skill in SKILLS:
+        skill_col = f"skill_{skill}"
+        var_col = f"skill_var_{skill}"
+        if skill_col not in out.columns or var_col not in out.columns:
+            continue
+        params = fitted_params[skill]
+        csi = out["target_career_season_index"].to_numpy(dtype=np.float64)
+        transfer = out["target_transfer_flag"].to_numpy(dtype=np.float64)
+        level = out["target_level_change"].to_numpy(dtype=np.float64)
+        mu = (
+            params["beta_0"]
+            + params["beta_1"] * csi
+            + params["beta_2"] * csi**2
+            + params["beta_3"] * transfer
+            + params["beta_4"] * level
+        )
+        rho = float(params["rho"])
+        out[skill_col] = rho * out[skill_col].to_numpy(dtype=np.float64) + mu
+        out[var_col] = rho * rho * out[var_col].clip(lower=0.0).to_numpy(dtype=np.float64) + float(params["Q"])
+
+    drop_cols = [
+        "source_career_season_index", "target_career_season_index",
+        "target_transfer_flag", "target_level_change",
+    ]
+    return out.drop(columns=[c for c in drop_cols if c in out.columns])
 
 
 def build_phase2_records(
@@ -1105,20 +1184,47 @@ def build_phase2_records(
             for s in ppk.SKILLS
         }
         skill_pcts = {s: float(r[f"pctile_{s}"]) for s in ppk.SKILLS}
+        residual_std = float(r.get("_residual_std", r.get("_resid_std", 0.0)))
+        value_std = float(r.get("_value_std", r.get("_resid_std", residual_std)))
+        skill_state_value_std = float(r.get("_skill_state_value_std", 0.0))
         uncertainty = {
-            "residual_std": round(float(r["_resid_std"]), 3),
+            "residual_std": round(residual_std, 3),
+            "value_std": round(value_std, 3),
+            "skill_state_value_std": round(skill_state_value_std, 3),
+            "ci_scale": round(float(r.get("_ci_scale", 1.0)), 3),
             "skill_state_var": {
                 s: round(float(r[f"skill_var_{s}"]), 4) for s in ppk.SKILLS if f"skill_var_{s}" in r.index
             },
         }
         explanation = {
-            "source": "phase2a_season_grain_state_space",
+            "source": "phase2a_next_season_forecast" if "source_observed_season" in r.index else "phase2a_season_grain_state_space",
             "skill_state_direction": {
                 s: "higher_is_better" if s not in pp.INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
                 for s in ppk.SKILLS
             },
             **archetype_lookup.get((int(r["player_id"]), int(r["season"])), {}),
         }
+        if "source_observed_season" in r.index and pd.notna(r["source_observed_season"]):
+            explanation["source_observed_season"] = int(r["source_observed_season"])
+            explanation["target_projected_season"] = int(r["season"])
+            explanation["forecast_horizon_seasons"] = int(r["season"] - r["source_observed_season"])
+        source_value_fields = [
+            "source_value_per_100", "source_off_value_per_100", "source_def_value_per_100",
+        ]
+        source_values = {
+            field: round(float(r[field]), 3)
+            for field in source_value_fields
+            if field in r.index and pd.notna(r[field])
+        }
+        if source_values:
+            explanation["source_internal_value_prior"] = source_values
+        if "_value_drivers" in r.index and isinstance(r["_value_drivers"], dict):
+            explanation["value_components"] = {
+                "off_value_per_100": round(float(r["off_value_per_100"]), 3),
+                "raw_def_value_per_100": round(float(r["def_value_per_100"]), 3),
+                "total_value_formula": pp.TOTAL_VALUE_FORMULA,
+            }
+            explanation["value_drivers"] = r["_value_drivers"]
 
         rates = rates_lookup.get((int(r["player_id"]), int(r["season"])), {})
         box_score: dict = {}

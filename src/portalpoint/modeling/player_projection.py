@@ -12,7 +12,9 @@ Phase 0 design:
   2. A regularized (Ridge) value-translation model trained against Hoop
      Explorer adjusted RAPM labels (off_adj_rapm/def_adj_rapm — see plan
      doc §5 for why those are the only real RAPM columns, not the
-     `_prod`/`_pred`-split fields the doc originally assumed).
+     `_prod`/`_pred`-split fields the doc originally assumed). Hoop
+     Explorer's defensive adjusted RAPM is lower-is-better; total value
+     follows adj_rapm_margin = off_adj_rapm - def_adj_rapm.
   3. The fitted value model is applied to every player with season stats,
      not just the Hoop-Explorer-matched subset — that's what makes this a
      projection rather than a label lookup.
@@ -48,7 +50,7 @@ from sqlalchemy import Engine, text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
 
-MODEL_VERSION = "player-projection-shrinkage-v1"
+MODEL_VERSION = "player-projection-shrinkage-v2"
 EXPIRES_DAYS = 30
 MIN_GAMES = 5
 SHRINKAGE_K = 8.0  # "effective games" of prior strength blended in per skill
@@ -90,6 +92,8 @@ OFFENSE_SKILLS = [
 ]
 DEFENSE_SKILLS = ["defensive_rebounding", "steal_disruption", "block_rim_protection", "foul_discipline"]
 VALUE_TARGETS = ("off_adj_rapm", "def_adj_rapm")
+DEF_VALUE_TARGET_DIRECTION = "raw_hoop_explorer_lower_is_better"
+TOTAL_VALUE_FORMULA = "off_value_per_100 - def_value_per_100"
 
 PLAYER_SEASON_SQL = """
 SELECT
@@ -146,6 +150,8 @@ DO UPDATE SET
     value_per_100     = EXCLUDED.value_per_100,
     value_ci_lower    = EXCLUDED.value_ci_lower,
     value_ci_upper    = EXCLUDED.value_ci_upper,
+    projected_box_score = EXCLUDED.projected_box_score,
+    projected_rates   = EXCLUDED.projected_rates,
     skill_states      = EXCLUDED.skill_states,
     skill_percentiles = EXCLUDED.skill_percentiles,
     uncertainty       = EXCLUDED.uncertainty,
@@ -215,7 +221,11 @@ def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list
     return out
 
 
-def build_design_matrix(df: pd.DataFrame, skills: list[str] = SKILLS) -> pd.DataFrame:
+def build_design_matrix(
+    df: pd.DataFrame,
+    skills: list[str] = SKILLS,
+    extra_features: list[str] | None = None,
+) -> pd.DataFrame:
     """`skills` defaults to `SKILLS` (Phase 0's full list) for backward
     compatibility. `fit_value_model`/`project_value` pass `OFFENSE_SKILLS`/
     `DEFENSE_SKILLS` explicitly (2026-06-24 offense/defense split) — any
@@ -236,7 +246,12 @@ def build_design_matrix(df: pd.DataFrame, skills: list[str] = SKILLS) -> pd.Data
     available_cols = [c for c in skill_cols if c in df.columns]
     pos_dummies = pd.get_dummies(df["position"], prefix="pos")
     X = pd.concat([df[available_cols].fillna(0.0), pos_dummies], axis=1)
-    return X.reindex(columns=skill_cols + [f"pos_{p}" for p in POSITIONS], fill_value=0.0)
+    columns = skill_cols + [f"pos_{p}" for p in POSITIONS]
+    if extra_features:
+        extras = df.reindex(columns=extra_features, fill_value=0.0).fillna(0.0)
+        X = pd.concat([X, extras], axis=1)
+        columns += extra_features
+    return X.reindex(columns=columns, fill_value=0.0)
 
 
 def _skills_for_target(target: str) -> list[str]:
@@ -248,7 +263,23 @@ def _skills_for_target(target: str) -> list[str]:
     return OFFENSE_SKILLS if target == "off_adj_rapm" else DEFENSE_SKILLS
 
 
-def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -> tuple[Pipeline, float]:
+def combine_total_value(off_value: Any, def_value_raw: Any) -> Any:
+    """Combine offensive value with raw Hoop Explorer defensive adjusted RAPM.
+
+    Hoop Explorer's `def_adj_rapm` is lower-is-better, and the source identity
+    is `adj_rapm_margin = off_adj_rapm - def_adj_rapm`. Keep this tiny helper
+    as the single arithmetic contract for in-process scoring and MLflow
+    pyfunc wrappers.
+    """
+    return off_value - def_value_raw
+
+
+def fit_value_model(
+    df: pd.DataFrame,
+    target: str,
+    alpha: float = RIDGE_ALPHA,
+    extra_features: list[str] | None = None,
+) -> tuple[Pipeline, float]:
     """Ridge-regress a Hoop Explorer adjusted-RAPM label on shrunk skill
     rates + position dummies, using only rows with a non-null label. Returns
     (fitted model, residual std) — residual std is the Phase 0 uncertainty
@@ -260,7 +291,7 @@ def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -
     train = df.dropna(subset=[target])
     if len(train) < 30:
         raise ValueError(f"Too few labeled rows ({len(train)}) to fit a value model for {target}")
-    X = build_design_matrix(train, skills=_skills_for_target(target))
+    X = build_design_matrix(train, skills=_skills_for_target(target), extra_features=extra_features)
     y = train[target].to_numpy()
     model = Pipeline([
         ("scale", StandardScaler()),
@@ -276,12 +307,122 @@ def fit_value_model(df: pd.DataFrame, target: str, alpha: float = RIDGE_ALPHA) -
     return model, resid_std
 
 
+def _feature_prediction_variance(
+    df: pd.DataFrame,
+    model: Pipeline,
+    skills: list[str],
+    extra_features: list[str] | None = None,
+) -> np.ndarray:
+    """Propagate independent skill-state variances through a fitted linear
+    value model. Ridge is fit inside a StandardScaler pipeline, so convert
+    coefficients back to raw-feature scale before applying variance math.
+
+    Position dummies have no model-side uncertainty here; downstream Role
+    Fit/destination adapters own contextual roster uncertainty. If the frame
+    has no `skill_var_*` columns, this returns zeros and preserves Phase 0's
+    prior constant-width behavior.
+    """
+    if not len(df):
+        return np.array([], dtype=np.float64)
+
+    ridge = model.named_steps["ridge"]
+    scaler = model.named_steps["scale"]
+    coef = np.asarray(ridge.coef_, dtype=np.float64)
+    scale = np.asarray(scaler.scale_, dtype=np.float64)
+    raw_coef = np.divide(coef, scale, out=np.zeros_like(coef), where=scale != 0)
+
+    skill_cols = [f"skill_{s}" for s in skills]
+    feature_cols = skill_cols + [f"pos_{p}" for p in POSITIONS] + list(extra_features or [])
+    coef_by_feature = dict(zip(feature_cols, raw_coef))
+
+    pred_var = np.zeros(len(df), dtype=np.float64)
+    for skill in skills:
+        var_col = f"skill_var_{skill}"
+        if var_col not in df.columns:
+            continue
+        weight = float(coef_by_feature.get(f"skill_{skill}", 0.0))
+        skill_var = df[var_col].fillna(0.0).clip(lower=0.0).to_numpy(dtype=np.float64)
+        pred_var += (weight * weight) * skill_var
+    for feature in extra_features or []:
+        var_col = f"{feature}_var"
+        if var_col not in df.columns:
+            continue
+        weight = float(coef_by_feature.get(feature, 0.0))
+        feature_var = df[var_col].fillna(0.0).clip(lower=0.0).to_numpy(dtype=np.float64)
+        pred_var += (weight * weight) * feature_var
+    return pred_var
+
+
+def _raw_feature_coefficients(
+    model: Pipeline,
+    skills: list[str],
+    extra_features: list[str] | None = None,
+) -> dict[str, float]:
+    """Return linear-model coefficients on the original, unstandardized
+    feature scale for contribution/explanation math."""
+    ridge = model.named_steps["ridge"]
+    scaler = model.named_steps["scale"]
+    coef = np.asarray(ridge.coef_, dtype=np.float64)
+    scale = np.asarray(scaler.scale_, dtype=np.float64)
+    raw_coef = np.divide(coef, scale, out=np.zeros_like(coef), where=scale != 0)
+    feature_cols = [f"skill_{s}" for s in skills] + [f"pos_{p}" for p in POSITIONS] + list(extra_features or [])
+    return dict(zip(feature_cols, raw_coef))
+
+
+def attach_value_drivers(
+    df: pd.DataFrame,
+    off_model: Pipeline,
+    def_model: Pipeline,
+    off_extra_features: list[str] | None = None,
+    def_extra_features: list[str] | None = None,
+    top_n: int = 5,
+) -> pd.DataFrame:
+    """Attach compact per-row value-driver explanations.
+
+    Total value is offense minus raw defensive RAPM, so defensive model
+    feature contributions are subtracted when explaining total value.
+    """
+    out = df.copy()
+    X_off = build_design_matrix(out, skills=OFFENSE_SKILLS, extra_features=off_extra_features)
+    X_def = build_design_matrix(out, skills=DEFENSE_SKILLS, extra_features=def_extra_features)
+    off_coef = _raw_feature_coefficients(off_model, OFFENSE_SKILLS, off_extra_features)
+    def_coef = _raw_feature_coefficients(def_model, DEFENSE_SKILLS, def_extra_features)
+
+    drivers: list[dict] = []
+    for i in range(len(out)):
+        parts: list[dict] = []
+        for feature, value in X_off.iloc[i].items():
+            contribution = float(value) * float(off_coef.get(feature, 0.0))
+            if contribution:
+                parts.append({"feature": feature, "component": "offense", "total_value_contribution": contribution})
+        for feature, value in X_def.iloc[i].items():
+            raw_def_contribution = float(value) * float(def_coef.get(feature, 0.0))
+            contribution = -raw_def_contribution
+            if contribution:
+                parts.append({"feature": feature, "component": "defense", "total_value_contribution": contribution})
+        positive = sorted((p for p in parts if p["total_value_contribution"] > 0), key=lambda p: p["total_value_contribution"], reverse=True)[:top_n]
+        negative = sorted((p for p in parts if p["total_value_contribution"] < 0), key=lambda p: p["total_value_contribution"])[:top_n]
+        drivers.append({
+            "top_positive": [
+                {**p, "total_value_contribution": round(float(p["total_value_contribution"]), 3)} for p in positive
+            ],
+            "top_negative": [
+                {**p, "total_value_contribution": round(float(p["total_value_contribution"]), 3)} for p in negative
+            ],
+        })
+    out["_value_drivers"] = drivers
+    return out
+
+
 def project_value(
     df: pd.DataFrame,
     off_model: Pipeline,
     def_model: Pipeline,
     off_resid_std: float,
     def_resid_std: float,
+    off_extra_features: list[str] | None = None,
+    def_extra_features: list[str] | None = None,
+    ci_scale: float = 1.0,
 ) -> pd.DataFrame:
     """Apply fitted off/def value models to every player with season stats —
     including players with no Hoop Explorer match, which is the point of
@@ -289,17 +430,31 @@ def project_value(
 
     Offense/defense split (2026-06-24): `off_model`/`def_model` were each
     fit on a different feature set (see `fit_value_model`) -- builds two
-    design matrices, not one shared `X`."""
-    X_off = build_design_matrix(df, skills=OFFENSE_SKILLS)
-    X_def = build_design_matrix(df, skills=DEFENSE_SKILLS)
+    design matrices, not one shared `X`.
+
+    Defensive sign convention (2026-06-25): `def_model` predicts raw Hoop
+    Explorer `def_adj_rapm`, where lower/more negative is better. Hoop
+    Explorer's total margin identity is `adj_rapm_margin = off_adj_rapm -
+    def_adj_rapm`, so `value_per_100` subtracts the defensive prediction."""
+    X_off = build_design_matrix(df, skills=OFFENSE_SKILLS, extra_features=off_extra_features)
+    X_def = build_design_matrix(df, skills=DEFENSE_SKILLS, extra_features=def_extra_features)
     out = df.copy()
     out["off_value_per_100"] = off_model.predict(X_off)
     out["def_value_per_100"] = def_model.predict(X_def)
-    out["value_per_100"] = out["off_value_per_100"] + out["def_value_per_100"]
-    total_resid_std = float(np.sqrt(off_resid_std**2 + def_resid_std**2))
-    out["value_ci_lower"] = out["value_per_100"] - CI_Z * total_resid_std
-    out["value_ci_upper"] = out["value_per_100"] + CI_Z * total_resid_std
-    out["_resid_std"] = total_resid_std
+    out["value_per_100"] = combine_total_value(out["off_value_per_100"], out["def_value_per_100"])
+    residual_var = float(off_resid_std**2 + def_resid_std**2)
+    off_skill_var = _feature_prediction_variance(out, off_model, OFFENSE_SKILLS, off_extra_features)
+    def_skill_var = _feature_prediction_variance(out, def_model, DEFENSE_SKILLS, def_extra_features)
+    skill_value_var = off_skill_var + def_skill_var
+    value_std = np.sqrt(residual_var + skill_value_var) * float(ci_scale)
+
+    out["value_ci_lower"] = out["value_per_100"] - CI_Z * value_std
+    out["value_ci_upper"] = out["value_per_100"] + CI_Z * value_std
+    out["_residual_std"] = float(np.sqrt(residual_var))
+    out["_skill_state_value_std"] = np.sqrt(skill_value_var)
+    out["_ci_scale"] = float(ci_scale)
+    out["_value_std"] = value_std
+    out["_resid_std"] = value_std
     return out
 
 
@@ -323,6 +478,15 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
                 for s in SKILLS
             },
         }
+        residual_std = float(r.get("_residual_std", r.get("_resid_std", 0.0)))
+        value_std = float(r.get("_value_std", r.get("_resid_std", residual_std)))
+        skill_state_value_std = float(r.get("_skill_state_value_std", 0.0))
+        uncertainty = {
+            "residual_std": round(residual_std, 3),
+            "value_std": round(value_std, 3),
+            "skill_state_value_std": round(skill_state_value_std, 3),
+            "ci_scale": round(float(r.get("_ci_scale", 1.0)), 3),
+        }
         records.append((
             int(r["player_id"]), None, int(r["season"]), "neutral",
             round(float(r["value_per_100"]), 3),
@@ -331,7 +495,7 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
             None, None,
             json.dumps({}), json.dumps({}),
             json.dumps(skill_states), json.dumps(skill_pcts),
-            json.dumps({"residual_std": round(float(r["_resid_std"]), 3)}),
+            json.dumps(uncertainty),
             json.dumps(explanation),
             model_version, computed_at, expires_at,
         ))
@@ -373,6 +537,8 @@ def save_artifacts(
         "skill_columns": SKILL_COLUMNS,
         "inverted_skills": sorted(INVERTED_SKILLS),
         "value_targets": VALUE_TARGETS,
+        "def_value_target_direction": DEF_VALUE_TARGET_DIRECTION,
+        "total_value_formula": TOTAL_VALUE_FORMULA,
         "ci_z": CI_Z,
         "off_resid_std": off_resid_std,
         "def_resid_std": def_resid_std,

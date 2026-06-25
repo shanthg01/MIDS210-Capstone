@@ -32,6 +32,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from portalpoint.modeling.io import get_sync_engine
+from portalpoint.modeling.player_projection_phase2 import MODEL_VERSION_PHASE2A_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
 
 SEED_SQL = """
 INSERT INTO schools (id, name, conference, city, state, region)
@@ -64,28 +65,35 @@ ON CONFLICT (player_id, season) DO NOTHING;
 
 INSERT INTO player_projections
     (player_id, school_id, season, projection_mode, value_per_100, value_ci_lower, value_ci_upper,
-     skill_states, skill_percentiles, model_version, expires_at)
+     projected_box_score, projected_rates, skill_states, skill_percentiles, model_version, expires_at)
 VALUES (
     101, NULL, 2026, 'neutral', 2.5, 0.5, 4.5,
+    '{"pts_per_40": 15.0, "reb_per_40": 6.0, "ast_per_40": 4.0, "stl_per_40": 1.2,
+      "blk_per_40": 0.9, "tov_per_40": 2.5}'::jsonb,
+    '{"rate_assist": 4.0, "rate_stl": 1.2, "rate_blk": 0.9, "rate_tov": 2.5}'::jsonb,
     '{"shooting_3p": 0.35, "shooting_2p_finishing": 0.55, "free_throw_touch": 0.75,
       "shot_creation_usage": 22.0, "passing_creation": 15.0, "turnover_avoidance": -12.0,
       "offensive_rebounding": 5.0, "defensive_rebounding": 10.0,
-      "steal_disruption": 1.2, "block_rim_protection": 0.9}'::jsonb,
+      "steal_disruption": 1.2, "block_rim_protection": 0.9, "foul_discipline": -2.5}'::jsonb,
     '{"shooting_3p": 60.0, "shooting_2p_finishing": 65.0, "free_throw_touch": 70.0,
       "shot_creation_usage": 55.0, "passing_creation": 80.0, "turnover_avoidance": 50.0,
       "offensive_rebounding": 40.0, "defensive_rebounding": 60.0,
-      "steal_disruption": 45.0, "block_rim_protection": 35.0}'::jsonb,
-    'player-projection-shrinkage-v1', now() + interval '30 days'
+      "steal_disruption": 45.0, "block_rim_protection": 35.0, "foul_discipline": 55.0}'::jsonb,
+    :player_projection_model_version, now() + interval '30 days'
 )
 ON CONFLICT (player_id, season, model_version) WHERE school_id IS NULL
 DO UPDATE SET expires_at = EXCLUDED.expires_at, computed_at = now();
 """
 
 
-def main() -> None:
+def seed_test_data() -> None:
     engine = get_sync_engine()
     with engine.begin() as conn:
-        conn.execute(text(SEED_SQL))
+        conn.execute(text(SEED_SQL), {"player_projection_model_version": PLAYER_PROJECTION_MODEL_VERSION})
+
+
+def main() -> None:
+    seed_test_data()
     print("Seed data ready: school(301), players(1,2,3,42,101), player_season_stats, player_archetypes, player_projections")
 
 
