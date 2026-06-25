@@ -398,9 +398,9 @@
 │  │          t.from_school_id,                                   │        │
 │  │          t.to_school_id,                                     │        │
 │  │          pre.per as pre_per,                                 │        │
-│  │          pre.minutes_per_game as pre_mpg,                    │        │
+│  │          pre.min_pct * 0.4 as pre_mpg,                       │        │
 │  │          post.per as post_per,                               │        │
-│  │          post.minutes_per_game as post_mpg                   │        │
+│  │          post.min_pct * 0.4 as post_mpg                      │        │
 │  │      FROM transfers t                                        │        │
 │  │      JOIN player_features pre                                │        │
 │  │          ON t.player_id = pre.player_id                      │        │
@@ -475,10 +475,11 @@
 │  │  """, engine)                                                │        │
 │  │                                                               │        │
 │  │  # FEATURE 3: Minutes vacated at each position               │        │
-│  │  # Sum of departing players' MPG (graduated + transferred out│        │
+│  │  # Sum derived MPG from min_pct; legacy minutes_per_game is  │        │
+│  │  # not true MPG in local data                                │        │
 │  │  departing = pd.read_sql("""                                 │        │
 │  │      SELECT p.team_id, p.position,                          │        │
-│  │             SUM(s.minutes_per_game) as minutes_vacated       │        │
+│  │             SUM(s.min_pct * 0.4) as minutes_vacated          │        │
 │  │      FROM players p                                          │        │
 │  │      JOIN player_season_stats s ON p.player_id = s.player_id │        │
 │  │      WHERE p.status IN ('graduated', 'transferred_out')      │        │

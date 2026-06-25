@@ -242,19 +242,25 @@ For each school-season snapshot, build:
 Train on historical player-school-season outcomes:
 
 ```text
-actual_minutes_per_game
 actual_minutes_share
+derived_actual_minutes_per_game
 actual_usage_rate
 games_played
 ```
 
-Minutes share is often cleaner than raw minutes:
+Minutes share is the canonical target. Use `player_season_stats.min_pct` as the
+source of truth; older DBs may have legacy/mis-mapped
+`player_season_stats.minutes_per_game` values even though the current ingest
+derives MPG from `min_pct`:
 
 ```text
-actual_minutes_share = player_minutes / team_available_minutes
+actual_minutes_share = player_season_stats.min_pct / 100
+derived_actual_minutes_per_game = player_season_stats.min_pct * 0.4
 ```
 
-Raw minutes are still the product output because coaches think in minutes per game.
+Derived raw minutes are still the product output because coaches think in
+minutes per game. If exact player-game total minutes are needed later, prefer
+`hoopr_player_game_logs.minutes` aggregates over trusting legacy stored MPG.
 
 ### Usage role target
 
@@ -329,15 +335,15 @@ to translate neutral rates into school-specific production.
 | Feature group | Source table/artifact | Key fields / metrics |
 |---|---|---|
 | Neutral talent | `player_projections` | Production neutral rows where `model_version="player-proj-phase2a-fcast-v1"` and `school_id IS NULL`; use `value_per_100`, CI bounds, `skill_states`, `skill_percentiles`, `projected_rates`, `projected_box_score`, `uncertainty` |
-| Prior role / historical minutes | `player_season_stats` | `school_id`, `season`, `games_played`, `minutes`, `min_pct`, `usage_rate`, `position`, shooting/rebounding/assist/turnover rates |
-| Historical actual playing-time labels | `player_season_stats` plus team totals | Derive `actual_minutes_share = player_minutes / team_available_minutes`; derive minutes buckets and starter/rotation flags |
+| Prior role / historical minutes | `player_season_stats` | `school_id`, `season`, `games_played`, `min_pct`, derived MPG (`min_pct * 0.4`), `usage_rate`, `position`, shooting/rebounding/assist/turnover rates. Do not use legacy `minutes_per_game` as true MPG. |
+| Historical actual playing-time labels | `player_season_stats.min_pct`; optional `hoopr_player_game_logs.minutes` aggregate | Canonical label: `actual_minutes_share = min_pct / 100`; display MPG: `min_pct * 0.4`; derive minutes buckets and starter/rotation flags from derived MPG |
 | RAPM / soft position / HE style | `hoop_explorer_player_stats` | `off_adj_rapm`, `def_adj_rapm`, `pos_confidence_*`, `off_style_*_pct`, `transfer_dest` |
 | Archetype / player role texture | `player_archetypes` | `archetype_label`, `confidence`, membership JSON where available |
 | Destination quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`, shot profile/style fields where populated |
 | Team systems / style clusters | `team_system_profiles`; `data/features/team_style_vectors.parquet` | offense/defense labels, memberships, style vectors, pace/shot/play-style dimensions |
 | Scheme and gap context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON, `is_portal_candidate`, `is_roster_baseline_member` |
 | Current roster state | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | roster membership, returning status, transfer-in/new flags, snapshot date, open/departing/returning minutes and usage by position |
-| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_minutes_per_game`, `post_minutes_per_game`, `pre_usage_rate`, `post_usage_rate` |
+| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_usage_rate`, `post_usage_rate`; use transfer MPG fields only after they are derived from `player_season_stats.min_pct` or hoopR minutes |
 
 Do not use `player_school_seasons` as a required dependency for this model; it is empty in the
 current local stack. Use `player_season_stats`, transfer events, and roster snapshots for

@@ -270,8 +270,8 @@ player_id
 school_id
 season
 games_played
-minutes_per_game
 minutes_share
+derived_minutes_per_game
 usage_rate
 primary_team_flag
 first_game_date nullable
@@ -312,14 +312,14 @@ This view supports transfer inference, historical roster reconstruction, and tra
 | Feature group | Source table/artifact | Key fields / metrics |
 |---|---|---|
 | Neutral talent | `player_projections` | `value_per_100`, `value_ci_lower`, `value_ci_upper`, `skill_states`, `skill_percentiles`, `projected_rates`, `projected_box_score`, `model_version="player-proj-phase2a-fcast-v1"` |
-| Prior role / history | `player_season_stats` | `school_id`, `season`, `games_played`, `minutes`, `min_pct`, `usage_rate`, `position`, shot/rebound/assist/turnover rates |
+| Prior role / history | `player_season_stats` | `school_id`, `season`, `games_played`, `min_pct`, derived MPG (`min_pct * 0.4`), `usage_rate`, `position`, shot/rebound/assist/turnover rates. Do not use legacy `minutes_per_game` as true MPG. |
 | RAPM / soft position / HE style | `hoop_explorer_player_stats` | `off_adj_rapm`, `def_adj_rapm`, `pos_confidence_*`, `off_style_*_pct`, `transfer_dest` |
 | Archetype | `player_archetypes` | `archetype_label`, `confidence`, memberships where available |
 | Destination quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`, shot profile / style fields where populated |
 | Team systems | `team_system_profiles` | offense/defense labels, memberships, style vector |
 | Scheme context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON, `is_portal_candidate`, `is_roster_baseline_member` |
 | Current roster | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | roster membership, returning status, transfer-in/new flags, snapshot date, open/departing/returning minutes by position |
-| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_usage_rate`, `post_usage_rate`, `pre_minutes_per_game`, `post_minutes_per_game` |
+| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_usage_rate`, `post_usage_rate`; use transfer MPG fields only after confirming they were derived from `player_season_stats.min_pct` or hoopR minutes |
 
 ### Interaction Features
 
@@ -369,11 +369,17 @@ Minutes share is cleaner than raw minutes because team pace, overtime, injuries,
 Suggested derived labels:
 
 ```text
-actual_minutes_share = player_total_minutes / team_total_available_minutes
+actual_minutes_share = player_season_stats.min_pct / 100
+actual_minutes_per_game = player_season_stats.min_pct * 0.4
 starter_flag = actual_minutes_per_game >= 24
 rotation_flag = actual_minutes_per_game >= 10
 deep_bench_flag = actual_minutes_per_game < 10
 ```
+
+Treat `player_season_stats.min_pct` as the source of truth. The current ingest
+derives `minutes_per_game` from it, but older DBs may still contain
+legacy/mis-mapped stored MPG. If exact total minutes are needed, aggregate
+`hoopr_player_game_logs.minutes` and use `min_pct` as the fallback.
 
 Temporal rule: when training historical examples, only use roster/player information that would have been knowable before or early in that season. Do not leak end-of-season role outcomes into pre-season roster features.
 

@@ -26,6 +26,7 @@ from portalpoint.db.models import (
     TransferPortalEvent,
 )
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
+from portalpoint.modeling.minutes import resolved_minutes_per_game
 from portalpoint.modeling.player_projection_phase2 import MODEL_VERSION_PHASE2A_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
 
 router = APIRouter(prefix="/api/players", tags=["players"])
@@ -67,7 +68,7 @@ def _build_stats(s: PlayerSeasonStats) -> PlayerStats | None:
         return PlayerStats(
             season=_season_str(s.season),
             games_played=s.games_played,
-            minutes_per_game=s.minutes_per_game,
+            minutes_per_game=resolved_minutes_per_game(s.min_pct, s.minutes_per_game) or 0.0,
             points_per_game=s.points_per_game,
             rebounds_per_game=s.rebounds_per_game,
             assists_per_game=s.assists_per_game,

@@ -49,14 +49,14 @@ VALUES
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO player_season_stats
-    (player_id, school_id, season, games_played, minutes_per_game,
+    (player_id, school_id, season, games_played, minutes_per_game, min_pct,
      points_per_game, rebounds_per_game, assists_per_game, steals_per_game,
      blocks_per_game, turnovers_per_game, true_shooting_pct, usage_rate,
      three_point_rate, rim_rate, mid_range_rate, data_complete, minutes_threshold_met)
 VALUES
-    (1,   301, 2026, 20, 25.0, 12.0, 4.0, 3.0, 1.0, 0.5, 2.0, 55.0, 20.0, 0.30, 0.40, 0.20, true, true),
-    (2,   301, 2026, 22, 28.0, 18.0, 5.0, 2.0, 0.8, 0.3, 1.5, 58.0, 24.0, 0.45, 0.30, 0.20, true, true),
-    (101, 301, 2026, 25, 30.0, 15.0, 6.0, 4.0, 1.2, 0.9, 2.5, 56.0, 22.0, 0.35, 0.35, 0.25, true, true)
+    (1,   301, 2026, 20, 25.0, 62.5, 12.0, 4.0, 3.0, 1.0, 0.5, 2.0, 55.0, 20.0, 0.30, 0.40, 0.20, true, true),
+    (2,   301, 2026, 22, 28.0, 70.0, 18.0, 5.0, 2.0, 0.8, 0.3, 1.5, 58.0, 24.0, 0.45, 0.30, 0.20, true, true),
+    (101, 301, 2026, 25, 30.0, 75.0, 15.0, 6.0, 4.0, 1.2, 0.9, 2.5, 56.0, 22.0, 0.35, 0.35, 0.25, true, true)
 ON CONFLICT (player_id, school_id, season) DO NOTHING;
 
 INSERT INTO player_archetypes (player_id, season, archetype_id, archetype_label, confidence, model_version)

@@ -870,7 +870,7 @@ Concrete data sources for the first destination adapter:
 | Destination style / system | `team_system_profiles`; `data/features/team_style_vectors.parquet`; `hoop_explorer_team_stats` | offense/defense labels, style memberships, team 3PA/rim/mid profile, HE `off_style_*_pct` / `def_style_*_pct` where covered |
 | Player style context | `hoop_explorer_player_stats`, `player_archetypes` | `pos_confidence_*`, `off_style_*_pct`, archetype label/confidence; use as explanation/context, not as a replacement for neutral projection |
 | Pairwise fit context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON; use as interaction/explanation inputs, not direct value by itself |
-| Transfer/source context | `transfers`, `transfer_portal_events`, source-season `player_season_stats` | source/destination school IDs, status, pre/post usage/minutes where available, source school/tier |
+| Transfer/source context | `transfers`, `transfer_portal_events`, source-season `player_season_stats` | source/destination school IDs, status, pre/post usage, derived MPG from `player_season_stats.min_pct * 0.4` where available, source school/tier. Treat `min_pct` as the source of truth because older DBs may contain legacy stored MPG. |
 
 Destination rows should be written back to `player_projections` with `school_id` populated,
 `projection_mode="destination"`, and a distinct destination-adjusted `model_version`. The partial
