@@ -46,12 +46,15 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine, text
 
 from portalpoint.modeling import player_projection as pp
@@ -141,7 +144,7 @@ def _context_design_matrix(df: pd.DataFrame) -> pd.DataFrame:
     every game-row must stay in the panel the Kalman filter sees, even if its
     context adjustment ends up being a no-op (imputed-to-mean contributes ~0
     net adjustment once centered in apply_context_adjustment)."""
-    X = df[CONTEXT_COLS].copy()
+    X = df[CONTEXT_COLS].astype(np.float64)
     for col in CONTEXT_COLS:
         X[col] = X[col].fillna(X[col].mean())
         if X[col].isna().all():
@@ -209,7 +212,7 @@ def compute_level_tier(engine: Engine, seasons: list[int]) -> pd.DataFrame:
 
 def build_season_skill_states(
     engine: Engine, seasons: list[int], use_phase0_prior: bool = True, max_workers: int | None = None,
-    player_id_subset: set[int] | None = None,
+    player_id_subset: set[int] | None = None, use_context_adjustment: bool = False,
 ) -> tuple[dict[int, dict[str, float]], pd.DataFrame]:
     """Runs Phase 1's intra-season filter+smoother once per (season, skill)
     pair. Returns (fitted_Q per season per skill, one merged frame with
@@ -250,6 +253,18 @@ def build_season_skill_states(
     For getting a fast read on model behavior (sign/magnitude of fitted
     rho/beta/Q per skill, sanity of smoothed trajectories) before committing
     to a full real-data run — not used in the production path.
+
+    `use_context_adjustment` (Gap B, Issue #37 reconciliation, 2026-06-24):
+    when True, attaches opponent/pace/tier/home-away context to each
+    season's observations (`load_game_context`/`attach_game_context`) and,
+    per skill, fits a context-adjustment regression and subtracts the
+    explained context effect from that skill's `y_<skill>` column
+    (`fit_context_adjustment`/`apply_context_adjustment`) *before* it reaches
+    the Kalman filter — the additive `opponent_adjustment` term from the plan
+    doc's §7 observation equation. Each skill needs its own context-adjusted
+    copy of the season's observations (the fitted regression differs per
+    skill), so this branch builds one `obs_df` per (season, skill) instead of
+    sharing one per season across skills.
     """
     phase0_shrunk: pd.DataFrame | None = None
     if use_phase0_prior:
@@ -266,7 +281,11 @@ def build_season_skill_states(
         if game_logs.empty:
             log.warning("No game logs for season %d, skipping", season)
             continue
-        season_obs[season] = ppk.build_game_observations(game_logs)
+        obs_df = ppk.build_game_observations(game_logs)
+        if use_context_adjustment:
+            team_context = load_game_context(engine, season)
+            obs_df = attach_game_context(obs_df, team_context)
+        season_obs[season] = obs_df
 
     tasks: list[tuple[int, str, pd.DataFrame, pd.DataFrame | None]] = []
     for season, obs_df in season_obs.items():
@@ -275,7 +294,24 @@ def build_season_skill_states(
             season_priors = phase0_shrunk[phase0_shrunk["season"] == season]
             external_priors_df = season_priors if not season_priors.empty else None
         for skill in ppk.SKILLS:
-            tasks.append((season, skill, obs_df, external_priors_df))
+            y_col, w_col = f"y_{skill}", f"weight_{skill}"
+            # Slim to exactly what ppk.smooth_skill/build_player_sequences
+            # reads (player_id + this skill's y_/weight_ only) -- a real
+            # memory bug surfaced here on the first Gap B real run: building
+            # all 70 (season, skill) tasks eagerly, each a *full* obs_df.copy()
+            # (every skill's columns + raw game-log columns + context columns,
+            # ~67MB with context attached), put ~4.7GB of redundant data in
+            # this list before any submission even started, and crashed the
+            # ProcessPoolExecutor's workers (BrokenProcessPool, almost
+            # certainly an OS-level OOM kill, not a Python exception). Each
+            # task only ever needed 3 columns.
+            if use_context_adjustment:
+                context_model = fit_context_adjustment(obs_df, skill)
+                adjusted_y = apply_context_adjustment(obs_df, skill, context_model)
+                skill_obs_df = pd.DataFrame({"player_id": obs_df["player_id"], y_col: adjusted_y, w_col: obs_df[w_col]})
+            else:
+                skill_obs_df = obs_df[["player_id", y_col, w_col]]
+            tasks.append((season, skill, skill_obs_df, external_priors_df))
 
     results: dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -315,7 +351,7 @@ def build_season_skill_states(
 
 def load_or_build_season_skill_states(
     engine: Engine, seasons: list[int], cache_dir: Path | None = None, force_rebuild: bool = False,
-    use_phase0_prior: bool = True,
+    use_phase0_prior: bool = True, use_context_adjustment: bool = False,
 ) -> tuple[dict[int, dict[str, float]], pd.DataFrame]:
     """Cached wrapper around build_season_skill_states. The ~2h intra-season
     filtering pass is identical every time it's run against the same seasons
@@ -325,11 +361,13 @@ def load_or_build_season_skill_states(
     the cache filename (Gap D, Issue #37 reconciliation) specifically so a
     flat-prior cache and a Phase-0-prior cache can't collide — set
     force_rebuild=True after a real upstream data change (e.g. another
-    game-log backfill), not needed just to flip this flag."""
+    game-log backfill), not needed just to flip this flag. `use_context_adjustment`
+    (Gap B) is part of the cache filename for the same reason."""
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     prior_suffix = "phase0prior" if use_phase0_prior else "flatprior"
-    states_path = cache_dir / f"season_states_{prior_suffix}.parquet"
-    q_path = cache_dir / f"fitted_q_by_season_{prior_suffix}.json"
+    context_suffix = "ctxadj" if use_context_adjustment else "noctx"
+    states_path = cache_dir / f"season_states_{prior_suffix}_{context_suffix}.parquet"
+    q_path = cache_dir / f"fitted_q_by_season_{prior_suffix}_{context_suffix}.json"
 
     if not force_rebuild and states_path.exists() and q_path.exists():
         log.info("Loading cached season skill states from %s", states_path)
@@ -337,7 +375,9 @@ def load_or_build_season_skill_states(
         fitted_q_by_season = {int(k): v for k, v in json.loads(q_path.read_text()).items()}
         return fitted_q_by_season, season_states
 
-    fitted_q_by_season, season_states = build_season_skill_states(engine, seasons, use_phase0_prior=use_phase0_prior)
+    fitted_q_by_season, season_states = build_season_skill_states(
+        engine, seasons, use_phase0_prior=use_phase0_prior, use_context_adjustment=use_context_adjustment,
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     season_states.to_parquet(states_path)
     q_path.write_text(json.dumps(fitted_q_by_season))
@@ -780,3 +820,267 @@ def blend_block_priors(
             adjustment = best_corr * out[f"std_resid_{best_mate}"] * np.sqrt(out[var_col].clip(lower=0.0))
             out[f"{base_col}_blended"] = out[base_col] + adjustment
     return out
+
+
+# Gap C (Issue #37 reconciliation, 2026-06-24): real per-40/per-100 rate
+# projections for `projected_rates`/`projected_box_score` (item 3), feeding
+# Gap F's eventual write path. Two stages, per the plan:
+#
+# Stage 2B (conditional rates) turns out to need no new regression at all:
+# `passing_creation`/`offensive_rebounding`/`defensive_rebounding`/
+# `steal_disruption`/`block_rim_protection`/`turnover_avoidance` are *already*
+# per-40 rates by construction (`player_projection_kalman.RATE_PER_40_SKILLS`
+# literally defines them that way) — their Phase 2a smoothed state already
+# *is* the projected per-40 rate. Stage 2B is `STAGE_2B_RATE_SKILLS` below: a
+# direct relabeling, not a model.
+#
+# Stage 2A (possession outcome) is the real new work: `shot_creation_usage`
+# is a single total-volume number (FGA + 0.44*FTA per 40); none of the
+# existing skills capture how that volume splits across 2PA/3PA/FT-trip
+# attempts. Documented adaptation (same honesty standard as the rest of this
+# module): we only have aggregated box-score counts, not true per-possession
+# PBP, so "possession outcome" here means season-aggregated per-40 attempt
+# *rates* for {2PA, 3PA, FT-trip}, regressed on the shooting-percentage
+# skills + total volume + position — not a literal multinomial over
+# possession-level events, and not constrained to sum to `shot_creation_usage`
+# exactly (a real simplification, stated rather than hidden). The plan doc's
+# "other" category (possessions a player didn't personally end) is dropped
+# entirely — nothing in the available box-score data identifies it, and
+# inventing a residual category would manufacture a number with no real
+# basis. Make/miss splits for 2PA/3PA are then derived by multiplying the
+# fitted attempt rate by the corresponding shooting-percentage skill
+# (already a probability in [0, 1]) — `FT trip` has no make/miss split in
+# the plan's own category list (the make/miss is `free_throw_touch`'s job).
+
+STAGE_2A_FEATURE_SKILLS = ["shooting_3p", "shooting_2p_finishing", "free_throw_touch", "shot_creation_usage"]
+STAGE_2A_TARGETS = ("rate_2pa_attempted", "rate_3pa_attempted", "rate_ft_trip")
+STAGE_2B_RATE_SKILLS = {
+    "rate_assist": "passing_creation",
+    "rate_oreb": "offensive_rebounding",
+    "rate_dreb": "defensive_rebounding",
+    "rate_stl": "steal_disruption",
+    "rate_blk": "block_rim_protection",
+    "rate_tov": "turnover_avoidance",
+}
+
+ATTEMPT_RATE_SQL = """
+SELECT
+    player_id, season,
+    SUM(minutes) AS total_minutes,
+    SUM(field_goals_attempted - three_point_field_goals_attempted) AS fg2a,
+    SUM(three_point_field_goals_attempted) AS fg3a,
+    SUM(free_throws_attempted) AS fta
+FROM hoopr_player_game_logs
+WHERE season = ANY(:seasons) AND player_id IS NOT NULL
+GROUP BY player_id, season
+"""
+
+
+MIN_MINUTES_FOR_RATE_TARGET = 40.0  # roughly one game's worth -- see docstring
+
+
+def build_attempt_rate_targets(engine: Engine, seasons: list[int]) -> pd.DataFrame:
+    """Season-aggregated per-40 attempt-rate regression *targets* for Stage
+    2A — real box-score totals, not the smoothed skill states (those are the
+    *features*, built separately by `build_season_skill_states`).
+
+    Real bug, found on the first real-data run (2026-06-24): the original
+    version only `clip(lower=1e-6)`'d `total_minutes` before dividing —
+    correct for avoiding a literal division by zero, but a player with a few
+    seconds of garbage-time minutes and even one attempt produces an
+    astronomical per-40 rate (1 attempt / 1e-6 minutes * 40 ≈ 40 million),
+    which dominates the Ridge fit's residual variance entirely (observed
+    `resid_std` ≈ 227,000 on real data — nonsensical). Fixed by dropping rows
+    below `MIN_MINUTES_FOR_RATE_TARGET` outright, matching Phase 0's own
+    `MIN_GAMES`-floor convention (drop low-sample rows rather than compute a
+    garbage rate for them), instead of letting a near-zero denominator
+    through.
+    """
+    with engine.connect() as conn:
+        totals = pd.read_sql(text(ATTEMPT_RATE_SQL), conn, params={"seasons": seasons})
+    return _compute_attempt_rates(totals)
+
+
+def _compute_attempt_rates(totals: pd.DataFrame) -> pd.DataFrame:
+    """Pure rate-computation step factored out of `build_attempt_rate_targets`
+    so the minutes-floor fix is unit-testable without a DB connection."""
+    totals = totals[totals["total_minutes"] >= MIN_MINUTES_FOR_RATE_TARGET].copy()
+    minutes = totals["total_minutes"]
+    totals["rate_2pa_attempted"] = totals["fg2a"] / minutes * 40.0
+    totals["rate_3pa_attempted"] = totals["fg3a"] / minutes * 40.0
+    totals["rate_ft_trip"] = totals["fta"] / minutes * 40.0
+    return totals[["player_id", "season", "total_minutes", *STAGE_2A_TARGETS]]
+
+
+def _stage_2a_design_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """[skill_<feature>] + position dummies — same shape/convention as
+    `player_projection.build_design_matrix`, but Stage 2A's smaller feature
+    set (shooting + volume skills only, not the full SKILLS list)."""
+    skill_cols = [f"skill_{s}" for s in STAGE_2A_FEATURE_SKILLS]
+    pos_dummies = pd.get_dummies(df["position"], prefix="pos") if "position" in df.columns else pd.DataFrame(index=df.index)
+    X = pd.concat([df[skill_cols].fillna(0.0), pos_dummies], axis=1)
+    return X.reindex(columns=skill_cols + list(pos_dummies.columns), fill_value=0.0)
+
+
+def fit_attempt_rate_models(
+    states_df: pd.DataFrame, alpha: float = 5.0,
+) -> dict[str, tuple[Pipeline, float]]:
+    """Fits one weighted Ridge model per Stage 2A target. `states_df` must
+    have `skill_<feature>` columns (Stage 2A's feature set), `position`, the
+    3 target columns from `build_attempt_rate_targets`, and `total_minutes`
+    (used as the sample weight — more minutes, more reliable a season's
+    attempt-rate target is). Returns {target: (fitted_pipeline,
+    residual_std)} — residual_std mirrors `player_projection.fit_value_model`'s
+    uncertainty convention."""
+    models: dict[str, tuple[Pipeline, float]] = {}
+    for target in STAGE_2A_TARGETS:
+        train = states_df.dropna(subset=[target, *[f"skill_{s}" for s in STAGE_2A_FEATURE_SKILLS]])
+        if len(train) < 30:
+            continue
+        X = _stage_2a_design_matrix(train)
+        y = train[target].to_numpy(dtype=np.float64)
+        weights = train["total_minutes"].clip(lower=1e-6).to_numpy(dtype=np.float64) if "total_minutes" in train else None
+        model = Pipeline([("scale", StandardScaler()), ("ridge", Ridge(alpha=alpha))])
+        fit_kwargs = {"ridge__sample_weight": weights} if weights is not None else {}
+        model.fit(X, y, **fit_kwargs)
+        resid_std = float(np.std(y - model.predict(X)))
+        models[target] = (model, resid_std)
+    return models
+
+
+def project_rates(
+    states_df: pd.DataFrame, attempt_models: dict[str, tuple[Pipeline, float]],
+    pace: pd.Series | None = None,
+) -> pd.DataFrame:
+    """Combines Stage 2A's fitted attempt-rate models with the shooting-
+    percentage skills (make/miss split) and Stage 2B's direct skill read-off
+    into one per-40 + per-100 rate frame per (player_id, season).
+
+    `pace` (optional): per-row team `adj_tempo` (possessions/40min) for a
+    per-100-possession conversion (`per_100 = per_40 / (pace / 100)`).
+    Without it, falls back to a fixed NCAA Division I average pace
+    (~68 possessions/40min) — an approximation stated here, not hidden.
+    """
+    out = states_df[["player_id", "season"]].copy()
+    X = _stage_2a_design_matrix(states_df)
+
+    for target, (model, _resid_std) in attempt_models.items():
+        out[target] = model.predict(X).clip(min=0.0)
+
+    if "rate_2pa_attempted" in out.columns and "skill_shooting_2p_finishing" in states_df.columns:
+        pct = states_df["skill_shooting_2p_finishing"].clip(0.0, 1.0)
+        out["rate_2pa_make"] = out["rate_2pa_attempted"] * pct
+        out["rate_2pa_miss"] = out["rate_2pa_attempted"] * (1.0 - pct)
+    if "rate_3pa_attempted" in out.columns and "skill_shooting_3p" in states_df.columns:
+        pct = states_df["skill_shooting_3p"].clip(0.0, 1.0)
+        out["rate_3pa_make"] = out["rate_3pa_attempted"] * pct
+        out["rate_3pa_miss"] = out["rate_3pa_attempted"] * (1.0 - pct)
+
+    for rate_col, skill in STAGE_2B_RATE_SKILLS.items():
+        skill_col = f"skill_{skill}"
+        if skill_col in states_df.columns:
+            out[rate_col] = states_df[skill_col].clip(lower=0.0)
+
+    DEFAULT_PACE = 68.0
+    pace_arr = pace.to_numpy(dtype=np.float64) if pace is not None else np.full(len(out), DEFAULT_PACE)
+    pace_arr = np.where(np.isfinite(pace_arr) & (pace_arr > 0), pace_arr, DEFAULT_PACE)
+    per40_cols = [c for c in out.columns if c not in ("player_id", "season")]
+    for col in per40_cols:
+        out[f"{col}_per100"] = out[col] / (pace_arr / 100.0)
+
+    return out
+
+
+# Gap F (Issue #37 reconciliation, 2026-06-24): writes real skill_states/
+# uncertainty/projected_rates/projected_box_score for Phase 2a, instead of
+# Phase 0's empty `{}` placeholders for those same fields. Writes to the same
+# `player_projections` table under a *different* `model_version` — the
+# table's partial unique index is on (player_id, season, model_version)
+# WHERE school_id IS NULL, so Phase 2a rows never collide with or overwrite
+# Phase 0's. `pp.upsert_neutral_projections` is fully generic (keyed off
+# model_version, not the row content), so it's reused as-is here, not
+# duplicated.
+MODEL_VERSION_PHASE2A = "player-projection-phase2a-v1"
+
+
+def build_phase2_records(
+    projected_df: pd.DataFrame, projected_rates_df: pd.DataFrame | None = None,
+    model_version: str = MODEL_VERSION_PHASE2A,
+) -> list[tuple]:
+    """Phase 2a's analog of `player_projection.build_neutral_records`.
+    `projected_df` must be `pp.project_value`'s output (value_per_100/CI/
+    `_resid_std`) applied to a `pp.skill_percentiles`'d Phase 2a state frame
+    (`skill_<s>`/`skill_var_<s>`/`pctile_<s>` columns) — same shape Phase 0
+    uses, just sourced from Phase 2a's season-grain states instead of Phase
+    0's single-season shrinkage. `projected_rates_df` is Gap C's
+    `project_rates` output (optional — left-joined by (player_id, season));
+    players below Gap C's `MIN_MINUTES_FOR_RATE_TARGET` floor get `{}` for
+    `projected_box_score`/`projected_rates` specifically (same "real but
+    incomplete, not a crash" convention Phase 0 itself uses for fields it
+    hasn't built yet), not dropped from the table.
+
+    `projected_box_score` is a real per-40 derived summary (points, rebounds,
+    assists, steals, blocks, turnovers) computed from Gap C's category rates
+    — `pts_per_40` needs free-throw *makes*, not just the trip rate Gap C
+    fits directly, so it's derived here as `rate_ft_trip * skill_free_throw_touch`.
+    """
+    computed_at = datetime.now(timezone.utc)
+    expires_at = computed_at + timedelta(days=pp.EXPIRES_DAYS)
+
+    rates_lookup: dict[tuple[int, int], dict] = {}
+    if projected_rates_df is not None:
+        rate_cols = [c for c in projected_rates_df.columns if c not in ("player_id", "season")]
+        for _, rr in projected_rates_df.iterrows():
+            rates_lookup[(int(rr["player_id"]), int(rr["season"]))] = {
+                c: round(float(rr[c]), 3) for c in rate_cols
+            }
+
+    records: list[tuple] = []
+    for _, r in projected_df.iterrows():
+        skill_states = {
+            s: round(float(-r[f"skill_{s}"] if s in pp.INVERTED_SKILLS else r[f"skill_{s}"]), 4)
+            for s in ppk.SKILLS
+        }
+        skill_pcts = {s: float(r[f"pctile_{s}"]) for s in ppk.SKILLS}
+        uncertainty = {
+            "residual_std": round(float(r["_resid_std"]), 3),
+            "skill_state_var": {
+                s: round(float(r[f"skill_var_{s}"]), 4) for s in ppk.SKILLS if f"skill_var_{s}" in r.index
+            },
+        }
+        explanation = {
+            "source": "phase2a_season_grain_state_space",
+            "skill_state_direction": {
+                s: "higher_is_better" if s not in pp.INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
+                for s in ppk.SKILLS
+            },
+        }
+
+        rates = rates_lookup.get((int(r["player_id"]), int(r["season"])), {})
+        box_score: dict = {}
+        if rates:
+            ft_makes_per_40 = rates.get("rate_ft_trip", 0.0) * float(r.get("skill_free_throw_touch", 0.0))
+            box_score = {
+                "pts_per_40": round(
+                    2 * rates.get("rate_2pa_make", 0.0) + 3 * rates.get("rate_3pa_make", 0.0) + ft_makes_per_40, 2,
+                ),
+                "reb_per_40": round(rates.get("rate_oreb", 0.0) + rates.get("rate_dreb", 0.0), 2),
+                "ast_per_40": round(rates.get("rate_assist", 0.0), 2),
+                "stl_per_40": round(rates.get("rate_stl", 0.0), 2),
+                "blk_per_40": round(rates.get("rate_blk", 0.0), 2),
+                "tov_per_40": round(rates.get("rate_tov", 0.0), 2),
+            }
+
+        records.append((
+            int(r["player_id"]), None, int(r["season"]), "neutral",
+            round(float(r["value_per_100"]), 3),
+            round(float(r["value_ci_lower"]), 3),
+            round(float(r["value_ci_upper"]), 3),
+            None, None,
+            json.dumps(box_score), json.dumps(rates),
+            json.dumps(skill_states), json.dumps(skill_pcts),
+            json.dumps(uncertainty),
+            json.dumps(explanation),
+            model_version, computed_at, expires_at,
+        ))
+    return records

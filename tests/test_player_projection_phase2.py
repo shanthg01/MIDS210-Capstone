@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -335,3 +337,169 @@ def test_apply_context_adjustment_passes_through_unchanged_when_model_is_none():
     obs_df = pd.DataFrame({"y_shooting_3p": [0.3, 0.4, 0.5]})
     result = pp2.apply_context_adjustment(obs_df, "shooting_3p", None)
     pd.testing.assert_series_equal(result, obs_df["y_shooting_3p"])
+
+
+def _synthetic_stage2a_states(n=300, seed=0):
+    rng = np.random.default_rng(seed)
+    skill_shot_creation_usage = rng.uniform(5.0, 25.0, n)
+    skill_shooting_3p = rng.uniform(0.25, 0.45, n)
+    skill_shooting_2p_finishing = rng.uniform(0.40, 0.65, n)
+    skill_free_throw_touch = rng.uniform(0.6, 0.9, n)
+    # known generating relationship: higher shooting_3p skill -> more of the
+    # total volume goes toward 3PA, not 2PA -- this is exactly the "attempt
+    # share" signal Stage 2A is supposed to recover.
+    rate_3pa_attempted = 2.0 + 0.6 * skill_shot_creation_usage * (skill_shooting_3p - 0.25) / 0.20
+    rate_2pa_attempted = (skill_shot_creation_usage - rate_3pa_attempted).clip(min=0.5)
+    rate_ft_trip = 0.3 * skill_shot_creation_usage + rng.normal(0, 0.2, n)
+    return pd.DataFrame({
+        "player_id": np.arange(n),
+        "season": 2026,
+        "position": rng.choice(["PG", "WG", "C"], size=n),
+        "total_minutes": rng.uniform(200, 900, n),
+        "skill_shot_creation_usage": skill_shot_creation_usage,
+        "skill_shooting_3p": skill_shooting_3p,
+        "skill_shooting_2p_finishing": skill_shooting_2p_finishing,
+        "skill_free_throw_touch": skill_free_throw_touch,
+        "skill_passing_creation": rng.uniform(0.5, 6.0, n),
+        "skill_offensive_rebounding": rng.uniform(0.2, 4.0, n),
+        "skill_defensive_rebounding": rng.uniform(1.0, 8.0, n),
+        "skill_steal_disruption": rng.uniform(0.2, 2.5, n),
+        "skill_block_rim_protection": rng.uniform(0.0, 3.0, n),
+        "skill_turnover_avoidance": rng.uniform(5.0, 18.0, n),
+        "rate_3pa_attempted": rate_3pa_attempted,
+        "rate_2pa_attempted": rate_2pa_attempted,
+        "rate_ft_trip": rate_ft_trip.clip(min=0.0),
+    })
+
+
+def test_fit_attempt_rate_models_recovers_the_attempt_share_signal():
+    states = _synthetic_stage2a_states()
+    models = pp2.fit_attempt_rate_models(states)
+    assert set(models.keys()) == set(pp2.STAGE_2A_TARGETS)
+
+    X = pp2._stage_2a_design_matrix(states)
+    pred_3pa = models["rate_3pa_attempted"][0].predict(X)
+    # higher shooting_3p skill at the same usage level should predict a
+    # higher 3PA attempt rate -- the actual signal Stage 2A exists to find.
+    corr = np.corrcoef(pred_3pa, states["skill_shooting_3p"])[0, 1]
+    assert corr > 0.3
+
+
+def test_fit_attempt_rate_models_skips_targets_with_too_few_rows():
+    tiny = _synthetic_stage2a_states(n=5)
+    models = pp2.fit_attempt_rate_models(tiny)
+    assert models == {}
+
+
+def test_project_rates_make_miss_split_uses_shooting_percentage_skill():
+    states = _synthetic_stage2a_states(n=200)
+    models = pp2.fit_attempt_rate_models(states)
+    out = pp2.project_rates(states, models)
+
+    # the make share of total 2PA rate should track skill_shooting_2p_finishing
+    implied_pct = out["rate_2pa_make"] / out["rate_2pa_attempted"].replace(0, np.nan)
+    valid = implied_pct.dropna()
+    assert valid.corr(states.loc[valid.index, "skill_shooting_2p_finishing"]) > 0.9
+    # makes + misses must reconstruct the attempted rate exactly
+    assert np.allclose(out["rate_2pa_make"] + out["rate_2pa_miss"], out["rate_2pa_attempted"])
+
+
+def test_project_rates_stage_2b_is_a_direct_skill_readoff_not_a_model():
+    states = _synthetic_stage2a_states(n=50)
+    out = pp2.project_rates(states, attempt_models={})
+    for rate_col, skill in pp2.STAGE_2B_RATE_SKILLS.items():
+        np.testing.assert_allclose(out[rate_col].to_numpy(), states[f"skill_{skill}"].clip(lower=0.0).to_numpy())
+
+
+def test_project_rates_per100_uses_given_pace_else_default():
+    states = _synthetic_stage2a_states(n=10)
+    out_default = pp2.project_rates(states, attempt_models={})
+    pace = pd.Series([100.0] * len(states))  # 100 poss/40min -> per_100 == per_40
+    out_paced = pp2.project_rates(states, attempt_models={}, pace=pace)
+
+    assert np.allclose(out_paced["rate_assist_per100"], out_paced["rate_assist"])
+    # default pace (68) is lower than 100 -> per_100 should scale UP from per_40
+    assert (out_default["rate_assist_per100"] >= out_default["rate_assist"]).all()
+
+
+def test_compute_attempt_rates_drops_near_zero_minutes_instead_of_blowing_up():
+    # Real bug, first real-data run (2026-06-24): clip(lower=1e-6) on minutes
+    # let a garbage-time player (seconds of total_minutes, 1 attempt) produce
+    # an astronomical per-40 rate that dominated the Ridge fit's residual
+    # variance (resid_std ~227,000 on real data). The fix drops low-minutes
+    # rows outright instead of computing a garbage rate for them.
+    totals = pd.DataFrame({
+        "player_id": [1, 2, 3],
+        "season": [2026, 2026, 2026],
+        "total_minutes": [500.0, 0.0001, 30.0],  # player 2: near-zero minutes
+        "fg2a": [100, 1, 20],
+        "fg3a": [50, 0, 10],
+        "fta": [40, 0, 8],
+    })
+    out = pp2._compute_attempt_rates(totals)
+    assert set(out["player_id"]) == {1}  # player 2 (near-zero) and 3 (below 40min floor) both dropped
+    assert (out["rate_2pa_attempted"] < 100).all()  # sane per-40 scale, nothing astronomical
+
+
+def _synthetic_projected_df(n=20, seed=0):
+    rng = np.random.default_rng(seed)
+    import portalpoint.modeling.player_projection as pp
+    df = pd.DataFrame({
+        "player_id": np.arange(n),
+        "season": 2026,
+        "value_per_100": rng.normal(0, 3, n),
+        "value_ci_lower": rng.normal(-5, 1, n),
+        "value_ci_upper": rng.normal(5, 1, n),
+        "_resid_std": 1.5,
+    })
+    for s in pp.SKILLS:
+        df[f"skill_{s}"] = rng.uniform(0.1, 5.0, n)
+        df[f"skill_var_{s}"] = rng.uniform(0.01, 1.0, n)
+        df[f"pctile_{s}"] = rng.uniform(0, 100, n)
+    return df
+
+
+def test_build_phase2_records_inverts_turnover_avoidance_sign():
+    import portalpoint.modeling.player_projection as pp
+    df = _synthetic_projected_df(n=5)
+    records = pp2.build_phase2_records(df)
+    skill_states = json.loads(records[0][11])
+    assert skill_states["turnover_avoidance"] == pytest.approx(-df.iloc[0]["skill_turnover_avoidance"], abs=1e-3)
+    assert skill_states["shooting_3p"] == pytest.approx(df.iloc[0]["skill_shooting_3p"], abs=1e-3)
+
+
+def test_build_phase2_records_uses_distinct_model_version_and_neutral_school_id():
+    df = _synthetic_projected_df(n=3)
+    records = pp2.build_phase2_records(df)
+    for r in records:
+        assert r[1] is None  # school_id -- neutral mode
+        assert r[15] == pp2.MODEL_VERSION_PHASE2A
+
+
+def test_build_phase2_records_populates_rates_when_given_else_empty():
+    df = _synthetic_projected_df(n=3)
+    rates_df = pd.DataFrame({
+        "player_id": [0, 1],  # player 2 deliberately missing -> {} for that player
+        "season": [2026, 2026],
+        "rate_2pa_make": [3.0, 4.0],
+        "rate_3pa_make": [1.0, 2.0],
+        "rate_ft_trip": [2.0, 3.0],
+        "rate_oreb": [1.0, 1.0],
+        "rate_dreb": [3.0, 3.0],
+        "rate_assist": [2.0, 2.0],
+        "rate_stl": [1.0, 1.0],
+        "rate_blk": [0.5, 0.5],
+        "rate_tov": [2.0, 2.0],
+    })
+    df["skill_free_throw_touch"] = 0.8
+    records = pp2.build_phase2_records(df, projected_rates_df=rates_df)
+
+    rates_player0 = json.loads(records[0][10])
+    box_player0 = json.loads(records[0][9])
+    assert rates_player0["rate_2pa_make"] == 3.0
+    assert box_player0["pts_per_40"] == pytest.approx(2 * 3.0 + 3 * 1.0 + 2.0 * 0.8)
+
+    box_player2 = json.loads(records[2][9])
+    rates_player2 = json.loads(records[2][10])
+    assert box_player2 == {}
+    assert rates_player2 == {}
