@@ -40,6 +40,22 @@ This distinction is important. A projected 18-minute defensive specialist can be
 
 The first implementation should not pretend to solve player talent. Player Projection owns neutral talent and skill forecasts. Role Fit owns opportunity, roster context, and how a player's likely role maps onto a specific school.
 
+### Target-season contract
+
+Role Fit / Playing Time consumes the neutral Player Projection row for the same target
+season it is scoring:
+
+```text
+neutral player projection for player p, season n
+    + destination roster/team context for school s, season n
+    -> expected minutes, usage role, displacement, and uncertainty for p at s in n
+```
+
+This model should include team context. Minutes and usage are not destination-neutral
+player traits; they depend on open minutes, returning talent, team style, roster needs,
+and source/destination level. The destination-adjusted Player Projection then consumes
+these opportunity outputs to translate neutral talent into school-specific production.
+
 ---
 
 ## 2. Model Type Decision
@@ -273,7 +289,7 @@ This view supports transfer inference, historical roster reconstruction, and tra
 | Identity | position, soft position probabilities, height, class_year, archetype_id |
 | Prior role | prior minutes, minutes share, games played, prior usage |
 | Talent | player projection outputs when available; fallback to BPM/RAPM-style fields |
-| Skill texture | shooting profile, assist rate, usage, rebounding, blocks, steals, HE play-style frequencies |
+| Skill texture | neutral projected skills/rates, shooting profile, assist rate, usage, rebounding, blocks, steals, HE play-style frequencies |
 | Transfer context | source conference tier, destination conference tier, up/lateral/down transfer flag |
 | Data quality | player projection confidence, HE/hoopR availability, match confidence |
 
@@ -300,7 +316,16 @@ candidate_archetype in destination_archetype_deficits
 candidate_soft_position dot open_minutes_by_position
 scheme_fit * role_need_score
 gap_match * candidate_position_confidence
+shooting_skill * team_3pa_rate_or_spacing_need
+passing_creation * open_ball_handler_minutes
+shot_creation_usage * available_usage
+rim_protection * frontcourt_defensive_need
+rebounding_skill * destination_rebounding_gap
 ```
+
+These interactions should remain opportunity features here. They help predict whether a player
+earns minutes or a usage role at a school. The destination-adjusted Player Projection owns the
+next step: converting those minutes/roles into school-specific stats and value.
 
 ---
 

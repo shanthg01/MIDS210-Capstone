@@ -158,14 +158,20 @@ Destination projection answers:
 What does this player project to do at this specific school?
 ```
 
-It should additionally include:
+It is a downstream adapter over the neutral projection, not a replacement for it. For target season
+`n`, it should consume:
 
-- Expected minutes from the separate Playing Time / Rotation model.
-- Expected usage in the destination roster.
+- Neutral player projection for player `p`, season `n`.
+- Playing Time / Rotation outputs for `(player p, school s, season n)`.
+- Destination team style, pace, roster baseline, and level/tier context for school `s`, season `n`.
+
+It should output:
+
+- Expected minutes and usage copied from the Playing Time / Rotation model.
 - Pace-adjusted per-game stat line.
-- Conference and strength-of-schedule adjustment.
-- Scheme and roster context adjustment.
+- Destination-adjusted per-40/per-100 rates.
 - Destination-adjusted player value and uncertainty.
+- Explanation of what moved relative to neutral projection.
 
 The neutral talent model should not own playing-time projection. Playing time remains a separate model, but the destination-adjusted projection depends on it.
 
@@ -177,6 +183,34 @@ Neutral Player Projection
         -> expected minutes, expected usage, usage role, displacement
             -> Destination-adjusted Player Projection
 ```
+
+MVP destination formula:
+
+```text
+destination_adjusted_value_per_100
+    = neutral_value_per_100
+    + role_usage_delta
+    + style_skill_fit_delta
+    + roster_context_delta
+    + competition_level_delta
+```
+
+Guardrails:
+
+- Keep `neutral_value_per_100` as the anchor; contextual deltas should be modest until validated.
+- Do not let `scheme_fit` become value by itself. Scheme Fit is compatibility; destination projection
+  translates compatibility into expected production only through role, usage, and style/skill
+  interactions.
+- Playing-time uncertainty should widen destination value and box-score intervals.
+- Destination rows should be separate `player_projections` records with `school_id` set and a
+  distinct destination-adjusted model version.
+
+Efficient first version:
+
+1. Use Playing Time outputs for expected minutes, usage role, expected usage, displacement, and uncertainty.
+2. Translate neutral projected rates to per-game stats using destination pace and minutes.
+3. Apply conservative rules or a small regularized residual model for role/style/context deltas.
+4. Validate against historical player-school-season outcomes before increasing delta magnitudes.
 
 ---
 
@@ -780,11 +814,13 @@ school_id
 season
 expected_minutes
 expected_usage
+usage_role
+minutes_uncertainty
+displaced_minutes
 projected_per_game_box_score
 projected_per_possession_rates
 destination_adjusted_value_per_100
 destination_adjusted_value_interval
-role
 confidence
 explanation
 model_version
@@ -801,6 +837,27 @@ neutral projection
 + scheme/roster context
 = school-specific projected stats and value
 ```
+
+The first adapter should compute at least these explanation fields:
+
+```text
+neutral_value_per_100
+role_usage_delta
+style_skill_fit_delta
+roster_context_delta
+competition_level_delta
+minutes_source_model_version
+neutral_projection_model_version
+team_style_features_used
+```
+
+Suggested style/skill translation examples:
+
+- Strong projected 3P shooting on a high-3PA roster can raise projected 3PA and spacing value.
+- High passing creation with open ball-handler minutes can raise assist rate and usage role.
+- High shot-creation usage on a crowded backcourt should lower expected usage and raise uncertainty.
+- Rim protection / defensive rebounding should translate more at destinations with frontcourt need.
+- Destination pace changes per-game box score more than per-100 value.
 
 ### Current API compatibility — corrected
 

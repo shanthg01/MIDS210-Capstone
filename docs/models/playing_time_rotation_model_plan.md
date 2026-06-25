@@ -68,6 +68,30 @@ Team Rating Projection
 
 The Player Projection model owns talent. The Playing Time / Rotation model owns opportunity. The Team Rating Projection model combines talent and opportunity into roster impact.
 
+### Target-season contract
+
+The Playing Time / Rotation model consumes the neutral Player Projection row for the same
+target season it is scoring:
+
+```text
+neutral player projection for player p, season n
+    + destination school/team context for school s, season n
+    + roster baseline / snapshot for school s, season n
+    -> expected opportunity for player p at school s in season n
+```
+
+This model is intentionally destination-aware. It should use team context because minutes and
+usage are roster- and staff-dependent outcomes, not generic player traits. The neutral projection
+answers "how good is the player?"; Playing Time answers "how much of that player will this roster
+actually use, and in what role?"
+
+The first production version should remain efficient and sturdy:
+
+- Use one row per `(player_id, school_id, season)` candidate-destination pair.
+- Use precomputed neutral projections, `scheme_fit`, `gap_match`, team-style vectors, and roster-baseline features.
+- Prefer transparent tabular models plus deterministic rotation constraints before building a full roster optimizer.
+- Keep the output contract rich enough for downstream models even if the first implementation writes only `role_fit` plus JSON breakdowns.
+
 The same stack should support interactive scenario analysis. A dashboard can let a coach adjust minutes, usage role, or displaced minutes without refitting the talent model:
 
 ```text
@@ -257,9 +281,9 @@ Usage role can be predicted from projected usage, player skill state, team needs
 
 ### Candidate features
 
-- Neutral player projected impact per 100.
+- Neutral player projected impact per 100 for the target season.
 - Offensive and defensive impact split.
-- Projected usage and box-score rates.
+- Projected skill states, percentiles, usage texture, and box-score rates.
 - Position and archetype.
 - Class year and eligibility.
 - Prior minutes and games played.
@@ -277,6 +301,8 @@ Usage role can be predicted from projected usage, player skill state, team needs
 - Team quality tier.
 - Conference tier.
 - Team system/style cluster.
+- Team pace and shot profile.
+- Team play-style frequencies where Hoop Explorer coverage exists.
 - Coach/team historical rotation size if available.
 
 ### Interaction features
@@ -287,6 +313,16 @@ Usage role can be predicted from projected usage, player skill state, team needs
 - Position-band crowding.
 - Defensive role need: rim protection, rebounding, point-of-attack defense.
 - Offensive role need: creation, spacing, rim pressure.
+- Player skill × team style interactions:
+  - shooting skill × team 3PA rate / spacing need
+  - passing creation × open ball-handler minutes
+  - shot creation usage × available usage
+  - rim finishing / offensive rebounding × rim-pressure style
+  - rim protection / defensive rebounding × frontcourt defensive need
+
+These interaction features are the bridge to destination-adjusted projection. Playing Time uses
+them to estimate role and opportunity; the destination adapter later uses the resulting role/minutes
+to translate neutral rates into school-specific production.
 
 ---
 
@@ -329,6 +365,10 @@ candidate_minutes = f(
     conference_transition
 )
 ```
+
+For MVP, this can be a regularized tabular model or gradient-boosted model trained on historical
+player-school-season outcomes, followed by simple roster constraints. Do not start with a slow
+simulation over every possible lineup unless the simpler constrained model fails validation.
 
 ### Stage C - Displacement
 
