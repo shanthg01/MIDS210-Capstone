@@ -21,46 +21,36 @@ from portalpoint.modeling.recommendations import (
 
 @pytest.fixture()
 def base_df() -> pd.DataFrame:
-    """Minimal 3-row candidate pool with all required columns."""
+    """Minimal 3-row candidate pool (pre-filtered available players — no availability_status)."""
     return pd.DataFrame(
         {
-            "player_name":        ["Alice", "Bob", "Carol"],
-            "position":           ["PG",    "SG",  "SF"],
-            "scheme_fit":         [80.0,    60.0,  40.0],
-            "gap_match":          [70.0,    50.0,  30.0],
-            "availability_status":["available", "committed", "available"],
+            "player_name": ["Alice", "Bob", "Carol"],
+            "position":    ["PG",    "SG",  "SF"],
+            "scheme_fit":  [80.0,    60.0,  40.0],
+            "gap_match":   [70.0,    50.0,  30.0],
             # future — needed by generate_top_50_candidates when Models 5–6 ready:
-            "player_projection":  [8.0,     5.0,   2.0],
-            "data_confidence":    [0.9,     0.7,   0.5],
-            "team_rating_delta":  [1.0,     0.5,   -1.0],
+            "player_projection": [8.0,  5.0,  2.0],
+            "data_confidence":   [0.9,  0.7,  0.5],
+            "team_rating_delta": [1.0,  0.5, -1.0],
         }
     )
 
 
 @pytest.fixture()
-def available_df(base_df: pd.DataFrame) -> pd.DataFrame:
-    """All players available."""
-    df = base_df.copy()
-    df["availability_status"] = "available"
-    return df
-
-
-@pytest.fixture()
-def large_available_df() -> pd.DataFrame:
-    """60 available players — enough to verify Top-50 cap."""
+def large_df() -> pd.DataFrame:
+    """60-row pool — enough to verify Top-50 cap."""
     rng = np.random.default_rng(42)
     n = 60
     return pd.DataFrame(
         {
-            "player_name":        [f"P{i}" for i in range(n)],
-            "position":           ["PG"] * n,
-            "scheme_fit":         rng.uniform(20, 90, n),
-            "gap_match":          rng.uniform(20, 90, n),
-            "availability_status":["available"] * n,
+            "player_name": [f"P{i}" for i in range(n)],
+            "position":    ["PG"] * n,
+            "scheme_fit":  rng.uniform(20, 90, n),
+            "gap_match":   rng.uniform(20, 90, n),
             # future — needed by generate_top_50_candidates when Models 5–6 ready:
-            "player_projection":  rng.uniform(0, 10, n),
-            "data_confidence":    rng.uniform(0.5, 1.0, n),
-            "team_rating_delta":  rng.uniform(-2, 3, n),
+            "player_projection": rng.uniform(0, 10, n),
+            "data_confidence":   rng.uniform(0.5, 1.0, n),
+            "team_rating_delta": rng.uniform(-2, 3, n),
         }
     )
 
@@ -105,18 +95,9 @@ class TestCalculateOverallFit:
 # ── generate_top_50_candidates ───────────────────────────────────────────────
 
 class TestGenerateTop50Candidates:
-    def test_returns_at_most_50_rows(self, large_available_df):
-        result = generate_top_50_candidates(large_available_df)
+    def test_returns_at_most_50_rows(self, large_df):
+        result = generate_top_50_candidates(large_df)
         assert len(result) <= 50
-
-    def test_committed_players_excluded_by_default(self, base_df):
-        # base_df has Bob as 'committed'
-        result = generate_top_50_candidates(base_df, filter_available=True)
-        assert "Bob" not in result["player_name"].values
-
-    def test_committed_players_included_when_filter_off(self, base_df):
-        result = generate_top_50_candidates(base_df, filter_available=False)
-        assert "Bob" in result["player_name"].values
 
     def test_required_columns_present(self, base_df):
         result = generate_top_50_candidates(base_df)
@@ -125,12 +106,12 @@ class TestGenerateTop50Candidates:
         # future — uncomment when predictions table ready:
         # assert "adjusted_projection" in result.columns
 
-    def test_sorted_descending_by_rank_score(self, available_df):
-        result = generate_top_50_candidates(available_df)
+    def test_sorted_descending_by_rank_score(self, base_df):
+        result = generate_top_50_candidates(base_df)
         scores = result["stage1_rank_score"].tolist()
         assert scores == sorted(scores, reverse=True)
 
-    def test_stage1_rank_score_formula(self, available_df):
+    def test_stage1_rank_score_formula(self, base_df):
         """Verify formula: stage1_rank_score = overall_fit / 100 (current scope).
 
         future — extend when predictions + team_rating_projections tables ready:
@@ -138,16 +119,15 @@ class TestGenerateTop50Candidates:
         # assert alice["stage1_rank_score"]   == pytest.approx(8.95) # 7.2 + 1.0 + 0.75
         """
         result = generate_top_50_candidates(
-            available_df,
+            base_df,
             weights={"scheme_fit": 0.5, "gap_match": 0.5},
-            filter_available=False,
         )
         alice = result[result["player_name"] == "Alice"].iloc[0]
         assert alice["overall_fit"] == pytest.approx(75.0)
         assert alice["stage1_rank_score"] == pytest.approx(75.0 / 100)
 
-    def test_index_is_reset(self, available_df):
-        result = generate_top_50_candidates(available_df)
+    def test_index_is_reset(self, base_df):
+        result = generate_top_50_candidates(base_df)
         assert list(result.index) == list(range(len(result)))
 
 
@@ -155,8 +135,8 @@ class TestGenerateTop50Candidates:
 
 class TestRefineToTop10:
     @pytest.fixture()
-    def top50(self, large_available_df):
-        return generate_top_50_candidates(large_available_df)
+    def top50(self, large_df):
+        return generate_top_50_candidates(large_df)
 
     def test_returns_at_most_10_rows(self, top50):
         result = refine_to_top_10(top50)

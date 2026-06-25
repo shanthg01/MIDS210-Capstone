@@ -1,7 +1,10 @@
 """2-Stage Recommendation Engine.
 
-Stage 1 — availability gate + vectorized rank → Top-50 candidates.
+Stage 1 — vectorized rank score → Top-50 candidates.
 Stage 2 — re-rank with user preference weights + risk penalty → Top-10 picks.
+
+Availability filtering is owned by the caller (SQL WHERE clause in
+run_recommendations.py) — the engine receives a pre-filtered pool.
 
 Only scheme_fit (Model 3) and gap_match (Model 4) are wired today.
 Placeholder weight keys for Models 5-6+ are commented below.
@@ -27,7 +30,6 @@ DEFAULT_FIT_WEIGHTS: dict = {
     # placeholders — uncomment and re-proportion when Models 5–6 land:
     # 'role_fit':    0.0,
     # 'program_fit': 0.0,
-    # 'availability': 0.0,      # future
     # 'player_projection': 0.0, # future (separate from adjusted_projection)
     # 'data_confidence': 0.0,   # future
     # 'team_rating': 0.0,       # future
@@ -79,22 +81,22 @@ def calculate_overall_fit(
 def generate_top_50_candidates(
     df: pd.DataFrame,
     weights: Optional[dict] = None,
-    filter_available: bool = True,
 ) -> pd.DataFrame:
-    """Stage 1: availability gate → vectorized rank score → Top-50.
+    """Stage 1: vectorized rank score → Top-50.
+
+    Availability filtering is the caller's responsibility (SQL WHERE clause).
+    The engine expects a pre-filtered pool of available players only.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Candidate pool. Required columns:
-        ``availability_status``, plus every key in *weights*.
+        Pre-filtered candidate pool (available players only). Required columns:
+        every key in *weights*.
         Future columns (when predictions + team_rating_projections tables ready):
         ``player_projection``, ``data_confidence``, ``team_rating_delta``.
     weights : dict, optional
         Fit sub-score weights forwarded to :func:`calculate_overall_fit`.
         Defaults to DEFAULT_FIT_WEIGHTS.
-    filter_available : bool
-        When True (default), drops rows where ``availability_status != 'available'``.
 
     Returns
     -------
@@ -104,13 +106,6 @@ def generate_top_50_candidates(
         Future columns: ``adjusted_projection``.
     """
     pool = df.copy()
-
-    if filter_available:
-        before = len(pool)
-        pool = pool[pool["availability_status"] == "available"]
-        logger.debug("Availability gate: %d → %d players", before, len(pool))
-
-    pool = pool.copy()
     pool["overall_fit"] = calculate_overall_fit(pool, weights)
     pool["stage1_rank_score"] = pool["overall_fit"] / 100
     # future — extend when predictions + team_rating_projections tables are ready:
