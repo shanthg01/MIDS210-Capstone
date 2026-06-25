@@ -5,8 +5,11 @@ import os
 
 import mlflow
 from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
 
 from portalpoint.modeling.io import find_repo_root, load_env
+
+CHAMPION_ALIAS = "champion"
 
 
 def ensure_aws_env() -> None:
@@ -78,33 +81,48 @@ def maybe_promote(
     new_value: float,
     higher_is_better: bool = True,
     threshold: float = 0.05,
+    alias: str = CHAMPION_ALIAS,
 ) -> str:
-    """Register new model version; promote to Production if improvement > threshold.
+    """Register new model version; promote to `alias` (default `"champion"`)
+    if improvement > threshold vs. whatever currently holds that alias.
 
-    First version always goes to Production (no baseline to beat).
-    Returns a string describing the outcome.
+    First version always gets the alias (no baseline to beat). Returns a
+    string describing the outcome.
+
+    Migrated 2026-06-25 from MLflow's stages API (`get_latest_versions(...,
+    stages=["Production"])` / `transition_model_version_stage`) to the
+    alias-based registry API (`get_model_version_by_alias` /
+    `set_registered_model_alias`) — stages are deprecated since MLflow 2.9
+    and will be removed in a future major release (confirmed via real
+    `FutureWarning`s on this session's actual runs, not a hypothetical).
+    Versions that are *not* promoted simply don't hold the alias — there's
+    no "Staging" equivalent to set, since nothing in this codebase ever read
+    that label besides this function's own returned string.
     """
     model_uri = f"runs:/{run_id}/{artifact_path}"
     mv = mlflow.register_model(model_uri, model_name)
 
-    prod_versions = client.get_latest_versions(model_name, stages=["Production"])
-    if not prod_versions:
-        client.transition_model_version_stage(model_name, mv.version, "Production")
-        return f"first_production — {model_name} v{mv.version} → Production"
+    try:
+        champion = client.get_model_version_by_alias(model_name, alias)
+    except MlflowException:
+        champion = None
 
-    prod_metrics = client.get_run(prod_versions[0].run_id).data.metrics
-    prod_value = prod_metrics.get(metric_name, 0.0)
+    if champion is None:
+        client.set_registered_model_alias(model_name, alias, mv.version)
+        return f"first_production — {model_name} v{mv.version} → @{alias}"
 
-    if prod_value == 0.0:
+    champion_metrics = client.get_run(champion.run_id).data.metrics
+    champion_value = champion_metrics.get(metric_name, 0.0)
+
+    if champion_value == 0.0:
         delta = float("inf")
     elif higher_is_better:
-        delta = (new_value - prod_value) / abs(prod_value)
+        delta = (new_value - champion_value) / abs(champion_value)
     else:
-        delta = (prod_value - new_value) / abs(prod_value)
+        delta = (champion_value - new_value) / abs(champion_value)
 
     if delta > threshold:
-        client.transition_model_version_stage(model_name, mv.version, "Production")
-        return f"promoted — {model_name} v{mv.version} → Production (Δ={delta:+.1%})"
+        client.set_registered_model_alias(model_name, alias, mv.version)
+        return f"promoted — {model_name} v{mv.version} → @{alias} (Δ={delta:+.1%})"
     else:
-        client.transition_model_version_stage(model_name, mv.version, "Staging")
-        return f"staging — {model_name} v{mv.version} → Staging (Δ={delta:+.1%})"
+        return f"staging — {model_name} v{mv.version} stays below @{alias} (Δ={delta:+.1%})"

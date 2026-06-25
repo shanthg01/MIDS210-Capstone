@@ -1353,6 +1353,25 @@ User asked two related questions: why does Phase 2 have no production script (on
 
 `--phase both` run end-to-end with no cross-talk: Phase 0 (27,047 rows) then Phase 2a (33,540 rows), each correctly compared against the same `v1` Production baseline independently.
 
+### Follow-up verification pass + infra/process fixes (2026-06-25, same day)
+
+A second verification pass (checking the actual code/git state, not memory) found two small real gaps and one known accepted divergence:
+- `run_phase2a()` had no `off_adj_rapm_prod`/`adj_rapm_prod_margin` robustness check (Issue #37 item 4 asks for one; Phase 0's `run_phase0()` already had one).
+- The script's Gap G metric only computed RMSE, not calibration (the notebook's Gap G section always had it).
+- The notebook's Cells 14-18 didn't apply Gap A/E to real data — only the script did (already flagged as an optional follow-up in the approved plan).
+
+All three fixed:
+- **Robustness check + calibration logging added to `run_phase2a()`** — same pattern as Phase 0's, now logged as real MLflow metrics (`fold3_calibration_80pct_target`). Verified on a real run: `off_value_per_100` vs. `off_adj_rapm_prod` corr=0.667 (n=16,019, comparable to Phase 0's own ~0.64), calibration=0.875 (consistent with the notebook's own prior ~0.88).
+- **Gap A/E folded into the notebook** (new Cell 14-4 substitutes the blended estimates; Cell 18-1 queries real archetypes) — notebook and script now match.
+
+**Separately, also migrated `mlflow_helpers.maybe_promote` off MLflow's deprecated stages API** (real `FutureWarning`s seen on every run this session, not hypothetical — `get_latest_versions`/`transition_model_version_stage` are deprecated since MLflow 2.9, stages are being removed in a future major release) to the alias-based API (`get_model_version_by_alias`/`set_registered_model_alias`, alias `"champion"`). Backfilled the `champion` alias onto the current Production version for **every** registered model in this MLflow instance (`player-projection`, `gap-matching-scorer`, `player-clustering`, `scheme-fit-scorer`, `team-clustering`) — not just this one — since they all share `maybe_promote`, and without the backfill the *next* rerun of any of them would have seen "no champion" and auto-promoted regardless of merit (the same bug class just fixed for Phase 2a's gate, but latent for every other model too). Verified on a real run: identical `Δ=+1.0%` result as before the migration, now reported as `"stays below @champion"` instead of stage language — confirms the migration changed only the API surface, not the comparison logic.
+
+**Two infra/process follow-ups explicitly deferred, not built** (no prerequisite infrastructure exists for either, confirmed by search — building either now would mean fabricating unused scaffolding):
+- Wiring `--phase both` into a weekly Airflow cadence — no Airflow DAGs exist anywhere in this repo yet, for any model.
+- Feature-drift/accuracy-decay monitoring — no Prometheus/Grafana exists yet. Noted as a TODO to build for **all models**, not just this one, once real monitoring infra exists (or as a lighter MLflow-history-only pilot, if picked up before then).
+
+195 tests passing throughout.
+
 ### TODO before resuming Phase 2
 
 1. ✅ **Done.** Moved `scripts/validate_phase2_season_model.py` into the notebook, matching Phase 1's precedent exactly (`validate_phase1_kalman.py` was folded in and deleted the same way). The script no longer exists standalone.

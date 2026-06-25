@@ -201,14 +201,17 @@ def _load_real_archetypes(engine, seasons: list[int]) -> pd.DataFrame:
         )
 
 
-def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float]:
+def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float, float]:
     """Real held-out fold-3 metrics for Phase 2a — the same rolling-origin
     tooling the notebook's Gap G section already uses, run here so the
     production script's MLflow promotion gate is judged on a real held-out
     metric, not in-sample residual std (Phase 0's own gate metric,
     `total_resid_std`, is in-sample — a known, accepted limitation carried
     over from before this session's eval work existed). Returns
-    (combined_rmse, off_rmse, def_rmse) for fold 3 (test season 2026)."""
+    (combined_rmse, off_rmse, def_rmse, calibration) for fold 3 (test season
+    2026). `calibration` (added 2026-06-25 — the notebook's Gap G section
+    already computed this, the script never did) is empirical 80%-CI
+    coverage on the combined off+def value, via `compute_calibration`."""
     folds = ppe.make_rolling_origin_folds(phase2_states)
     fold3 = folds[2]
     train_df, val_df, test_df = fold3["train"], fold3["val"], fold3["test"]
@@ -221,6 +224,8 @@ def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float
     off_metrics = ppe.compute_regression_metrics(labeled_test["off_adj_rapm"], labeled_test["off_value_per_100"])
     def_metrics = ppe.compute_regression_metrics(labeled_test["def_adj_rapm"], labeled_test["def_value_per_100"])
     phase2a_combined = float(np.sqrt(off_metrics["rmse"] ** 2 + def_metrics["rmse"] ** 2))
+    total_actual = labeled_test["off_adj_rapm"] + labeled_test["def_adj_rapm"]
+    calibration = ppe.compute_calibration(total_actual, labeled_test["value_ci_lower"], labeled_test["value_ci_upper"])
 
     # Phase 0 reference, same fold, same held-out test season -- recomputed
     # here (not read from MLflow) so the comparison is apples-to-apples on
@@ -228,7 +233,7 @@ def _gap_g_real_metric(phase2_states: pd.DataFrame) -> tuple[float, float, float
     # `maybe_promote` (called by the caller) reads Phase 0's *currently
     # registered* Production metric directly from MLflow for the actual
     # gate decision -- this function only needs to produce Phase 2a's side.
-    return phase2a_combined, off_metrics["rmse"], def_metrics["rmse"]
+    return phase2a_combined, off_metrics["rmse"], def_metrics["rmse"], calibration
 
 
 def run_phase2a(engine) -> None:
@@ -254,7 +259,11 @@ def run_phase2a(engine) -> None:
     phase0_context = pp.load_player_season_frame(engine)[["player_id", "season", "position"]].drop_duplicates()
     with engine.connect() as conn:
         he_labels_raw = pd.read_sql(
-            text("SELECT player_id, season, off_adj_rapm, def_adj_rapm FROM hoop_explorer_player_stats"), conn,
+            text(
+                "SELECT player_id, season, off_adj_rapm, def_adj_rapm, "
+                "off_adj_rapm_prod, adj_rapm_prod_margin FROM hoop_explorer_player_stats"
+            ),
+            conn,
         )
     he_labels = phase0_context.merge(he_labels_raw, on=["player_id", "season"], how="left")
     phase0_weight = pp.shrink_skills(pp.load_player_season_frame(engine))[["player_id", "season", "_weight"]]
@@ -294,6 +303,24 @@ def run_phase2a(engine) -> None:
     phase2_pctile = pp.skill_percentiles(phase2_states, skills=ppk.SKILLS)
     phase2_projected = pp.project_value(phase2_pctile, off_model_p2, def_model_p2, off_resid_std_p2, def_resid_std_p2)
 
+    # Secondary-label robustness check (Issue #37 item 4 — "validate total
+    # against adj_rapm_margin... as robustness only"), same pattern as
+    # run_phase0()'s — this was missing from Phase 2a until 2026-06-25.
+    prod_check = phase2_projected[["off_value_per_100", "off_adj_rapm_prod"]].dropna()
+    if len(prod_check) > 30:
+        prod_corr = prod_check["off_value_per_100"].corr(prod_check["off_adj_rapm_prod"])
+        log.info(
+            "Robustness check: off_value_per_100 vs off_adj_rapm_prod corr=%.3f (n=%s)",
+            prod_corr, f"{len(prod_check):,}",
+        )
+    margin_check = phase2_projected[["value_per_100", "adj_rapm_prod_margin"]].dropna()
+    if len(margin_check) > 30:
+        margin_corr = margin_check["value_per_100"].corr(margin_check["adj_rapm_prod_margin"])
+        log.info(
+            "Robustness check: value_per_100 vs adj_rapm_prod_margin corr=%.3f (n=%s)",
+            margin_corr, f"{len(margin_check):,}",
+        )
+
     # Gap E: real archetype metadata, evaluation/explanation only.
     archetypes_df = _load_real_archetypes(engine, PHASE2_SEASONS)
     log.info("Gap E: loaded %s real archetype rows", f"{len(archetypes_df):,}")
@@ -307,10 +334,10 @@ def run_phase2a(engine) -> None:
 
     # Gap G: real held-out metric for the MLflow promotion gate -- not
     # in-sample resid_std (see _gap_g_real_metric's docstring).
-    phase2a_combined_rmse, off_rmse, def_rmse = _gap_g_real_metric(phase2_states)
+    phase2a_combined_rmse, off_rmse, def_rmse, calibration = _gap_g_real_metric(phase2_states)
     log.info(
-        "Gap G real held-out fold-3 metric: combined_rmse=%.4f (off=%.4f def=%.4f)",
-        phase2a_combined_rmse, off_rmse, def_rmse,
+        "Gap G real held-out fold-3 metric: combined_rmse=%.4f (off=%.4f def=%.4f) calibration_80pct_target=%.3f",
+        phase2a_combined_rmse, off_rmse, def_rmse, calibration,
     )
 
     values = np.fromiter((r[4] for r in records), dtype=np.float64, count=len(records))
@@ -349,6 +376,7 @@ def run_phase2a(engine) -> None:
             "fold3_combined_rmse": phase2a_combined_rmse,
             "fold3_off_rmse": off_rmse,
             "fold3_def_rmse": def_rmse,
+            "fold3_calibration_80pct_target": calibration,
         })
         mlflow.pyfunc.log_model(
             artifact_path="player_projection_model", python_model=Phase2aPyfunc(off_model_p2, def_model_p2),
