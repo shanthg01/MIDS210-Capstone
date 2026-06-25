@@ -1049,7 +1049,7 @@ MODEL_VERSION_PHASE2A = "player-projection-phase2a-v1"
 
 def build_phase2_records(
     projected_df: pd.DataFrame, projected_rates_df: pd.DataFrame | None = None,
-    model_version: str = MODEL_VERSION_PHASE2A,
+    archetypes_df: pd.DataFrame | None = None, model_version: str = MODEL_VERSION_PHASE2A,
 ) -> list[tuple]:
     """Phase 2a's analog of `player_projection.build_neutral_records`.
     `projected_df` must be `pp.project_value`'s output (value_per_100/CI/
@@ -1067,6 +1067,15 @@ def build_phase2_records(
     assists, steals, blocks, turnovers) computed from Gap C's category rates
     — `pts_per_40` needs free-throw *makes*, not just the trip rate Gap C
     fits directly, so it's derived here as `rate_ft_trip * skill_free_throw_touch`.
+
+    `archetypes_df` (Gap E, Issue #37 reconciliation): optional frame with
+    `player_id`/`season`/`archetype_label`/`confidence` columns (same shape
+    `player_projection_eval.join_archetype_metadata` expects/produces) — when
+    given, adds those two fields into `explanation` for players with a
+    matched archetype row. Evaluation/explanation metadata *only*, per
+    Issue #37's explicit constraint — never touches `skill_states`, the
+    design matrix, or either value model. Missing for a player-season simply
+    means no archetype keys are added, not a crash or a dropped row.
     """
     computed_at = datetime.now(timezone.utc)
     expires_at = computed_at + timedelta(days=pp.EXPIRES_DAYS)
@@ -1077,6 +1086,16 @@ def build_phase2_records(
         for _, rr in projected_rates_df.iterrows():
             rates_lookup[(int(rr["player_id"]), int(rr["season"]))] = {
                 c: round(float(rr[c]), 3) for c in rate_cols
+            }
+
+    archetype_lookup: dict[tuple[int, int], dict] = {}
+    if archetypes_df is not None:
+        for _, ar in archetypes_df.iterrows():
+            if pd.isna(ar.get("archetype_label")):
+                continue
+            archetype_lookup[(int(ar["player_id"]), int(ar["season"]))] = {
+                "archetype_label": ar["archetype_label"],
+                "archetype_confidence": float(ar["confidence"]) if pd.notna(ar.get("confidence")) else None,
             }
 
     records: list[tuple] = []
@@ -1098,6 +1117,7 @@ def build_phase2_records(
                 s: "higher_is_better" if s not in pp.INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
                 for s in ppk.SKILLS
             },
+            **archetype_lookup.get((int(r["player_id"]), int(r["season"])), {}),
         }
 
         rates = rates_lookup.get((int(r["player_id"]), int(r["season"])), {})

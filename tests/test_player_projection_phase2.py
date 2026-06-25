@@ -509,3 +509,29 @@ def test_build_phase2_records_populates_rates_when_given_else_empty():
     rates_player2 = json.loads(records[2][10])
     assert box_player2 == {}
     assert rates_player2 == {}
+
+
+def test_build_phase2_records_adds_archetype_metadata_to_explanation_only():
+    # Gap E (Issue #37 reconciliation): archetype is evaluation/explanation
+    # metadata only -- must land in `explanation`, never touch skill_states,
+    # uncertainty, or value_per_100. Missing-archetype players get no extra
+    # keys, not a crash.
+    df = _synthetic_projected_df(n=3)
+    archetypes_df = pd.DataFrame({
+        "player_id": [0, 1],  # player 2 deliberately missing
+        "season": [2026, 2026],
+        "archetype_label": ["3&D Wing", "Post Scoring Big"],
+        "confidence": [0.91, 0.74],
+    })
+    records = pp2.build_phase2_records(df, archetypes_df=archetypes_df)
+
+    explanation0 = json.loads(records[0][14])
+    assert explanation0["archetype_label"] == "3&D Wing"
+    assert explanation0["archetype_confidence"] == pytest.approx(0.91)
+    assert "skill_state_direction" in explanation0  # existing content preserved, not replaced
+
+    skill_states0 = json.loads(records[0][11])
+    assert "archetype_label" not in skill_states0  # never leaks into skill_states
+
+    explanation2 = json.loads(records[2][14])
+    assert "archetype_label" not in explanation2  # player 2 has no archetype row -- no crash, no extra keys
