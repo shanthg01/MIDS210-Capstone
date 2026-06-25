@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 23, 2026
+**Last updated:** June 25, 2026 (Player Projection Phase 2a real-data validated, beats Phase 0 on offense; see Data Pipeline section)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -201,6 +201,7 @@ Policy/ops notes:
 | hoopR game logs | `scripts/ingest_hoopr.py --game-logs` | **Complete for all 7 seasons 2020-2026** (was 2026-only; backfilled 2026-06-23) — same sportsdataverse-data host as PBP, different release tag (schedule + team/player box score parquet) | `hoopr_games` + `hoopr_team_game_logs` + `hoopr_player_game_logs` — 1,176,237 player-game rows total |
 | Player Projection Phase 0 | `scripts/run_player_projection.py` / `notebooks/models/player_projection_state_space.ipynb` | Complete — `player-projection-shrinkage-v1` | `player_projections` (27,047 rows, neutral mode); served by `GET /api/players/{id}/projection` |
 | Player Projection Phase 1 | `notebooks/models/player_projection_state_space.ipynb` Cells 8-12 | Validation only, no production script — single-season (2026) Kalman filter/smoother per skill; `R_t` scaling bug fixed 2026-06-23 | No DB write; validates Phase 2 readiness |
+| Player Projection Phase 2a | `notebooks/models/player_projection_state_space.ipynb` Cells 14-18 (no production script yet — see Process Improvement TODOs) | **Complete + real-data validated 2026-06-25**, reconciled against [Issue #37](https://github.com/shanthg01/MIDS210-Capstone/issues/37). Beats Phase 0 on held-out offense every fold, ties on defense. 11th skill (`foul_discipline`) + offense/defense feature-set split for the value model both landed. Gap B (context adjustment) regresses accuracy — flagged TBD, not enabled. | `player_projections` (33,540 rows, `model_version="player-projection-phase2a-v1"`, neutral mode — separate partial-unique-index key from Phase 0's rows, can't collide). Production integration (replacing Phase 0's default) not yet decided. |
 | 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped but 0 matched, needs investigation | `transfer_portal_events` (raw) + `transfers` (promoted) |
 | barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Complete — 357 distinct schools (target ~365) | `roster_snapshots` + `roster_snapshot_players` |
 | Roster-state features | `scripts/build_roster_state_features.py` | Plain script, not a model (no MLflow); depends on a roster snapshot existing — should be re-run against the full 357-school snapshot set if it was last run against a narrower subset | `roster_state_features` |

@@ -1,14 +1,22 @@
 # Player Projection Model Plan
 ## State-Space Player Skill and Value Projection System
 
-**Status (2026-06-23): Phase 0 in production. Phase 1 validated and calibrated. Phase 2 unblocked, not started.**
+**Status (2026-06-25): Phase 0 in production. Phase 1 validated and calibrated. Phase 2a implemented, real-data validated, real numbers beat Phase 0 on offense — production-integration decision still pending.**
 Phase 0 (`player-projection-shrinkage-v1`) writes real rows to `player_projections`, served by
 `GET /api/players/{id}/projection`. Phase 1 (single-season Kalman, `player_projection_kalman.py`)
 is implemented, its `R_t`-scaling bug found and fixed, and its defense-label sign question
 investigated and resolved as a real (non-bug) finding — see §15 and the notebook's §13 for the
-full record. Phase 2 (cross-season persistence, block covariance) is the open next step: the
-2020-2025 game-log backfill that gated it is complete, and nothing in §15's Phase 0/1 checklist
-remains open.
+full record. **Phase 2a (cross-season persistence, block covariance) is implemented and reconciled
+against [Issue #37](https://github.com/shanthg01/MIDS210-Capstone/issues/37)** — Gaps A/D/E/G coded,
+tested, and validated against real data (Phase 2a beats Phase 0 on offense every fold, ties on
+defense); Gap B (context adjustment) is coded but found to *regress* accuracy on real data, flagged
+TBD pending root-cause work, not rejected; Gap C (rate projections) and Gap F (real DB write under
+`model_version="player-projection-phase2a-v1"`) are both done. Two follow-on additions landed
+2026-06-24/25: an 11th skill (`foul_discipline`, Phase 1/2-only) and an offense/defense
+feature-set split for the value-translation model (kept despite a real, measured defense-accuracy
+cost — see §22). Production integration (replacing Phase 0 as the default) remains an explicit,
+not-yet-made decision, gated on Gap B's resolution. Full real-data record, all real bugs found and
+fixed, and the teammate-review response are all in §22.
 
 **Notebook:** `notebooks/models/player_projection_state_space.ipynb` (built, executed, both phases)
 **Script:** `scripts/run_player_projection.py` (Phase 0 only — Phase 1 has no production script, it's notebook-only validation)
