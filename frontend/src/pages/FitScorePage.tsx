@@ -18,6 +18,7 @@ import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
 import { getPlayer } from '../api/players';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
+import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -134,36 +135,51 @@ function OverallPanel({
           /100
         </Typography>
       </Box>
-      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1 }}>
-        {[
-          { label: 'Gap Match', value: gap, component: 'gap_match' },
-          { label: 'Scheme', value: scheme, component: 'scheme_fit' },
-          { label: 'Role Fit', value: role, component: 'role_fit' },
-          { label: 'Program Fit', value: program, component: 'program_fit' },
-        ].map(({ label, value, component }) => {
-          const c = scoreColor(value);
-          const isLive = LIVE_COMPONENTS.has(component);
-          return (
-            <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Box
-                  sx={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    bgcolor: isLive ? 'success.main' : 'grey.400',
-                  }}
-                />
-                <Typography variant="body2" color="text.secondary">
-                  {label}
+      <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
+          {[
+            { label: 'Gap Match', value: gap, component: 'gap_match' },
+            { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+            { label: 'Role Fit', value: role, component: 'role_fit' },
+            { label: 'Program Fit', value: program, component: 'program_fit' },
+          ].map(({ label, value, component }) => {
+            const c = scoreColor(value);
+            const isLive = LIVE_COMPONENTS.has(component);
+            return (
+              <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Box
+                    sx={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      bgcolor: isLive ? 'success.main' : 'grey.400',
+                    }}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {label}
+                  </Typography>
+                </Box>
+                <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
+                  {fmtScore(value)}
                 </Typography>
               </Box>
-              <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
-                {fmtScore(value)}
-              </Typography>
-            </Box>
-          );
-        })}
+            );
+          })}
+        </Box>
+
+        <Box sx={{ flex: '1 1 240px' }}>
+          <FitRadarChart
+            size={180}
+            data={[
+              { label: 'Gap Match', value: gap, component: 'gap_match' },
+              { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+              { label: 'Role Fit', value: role, component: 'role_fit' },
+              { label: 'Program Fit', value: program, component: 'program_fit' },
+            ]}
+          />
+          <RadarLegend />
+        </Box>
       </Box>
     </Paper>
   );
