@@ -31,7 +31,7 @@ async def get_team_rating_projection(
         confidence_interval=(round(delta - ci_spread, 1), round(delta + ci_spread, 1)),
         national_percentile=percentile,
         conference_rank=rng.randint(2, 8),
-        context=f"Top-{100 - percentile + 10} nationally, up from top-{100 - percentile + 30} without you",
+        context=f"Top-{100 - percentile + 10} nationally, up from top-{100 - percentile + 30} without this player",
         expected_minutes_input=round(rng.uniform(18.0, 26.0), 1),
         model_version="proj_v1.0-stub",
     )

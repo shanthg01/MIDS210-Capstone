@@ -261,14 +261,22 @@ async def get_player_projection(
         description="Season to fetch. Defaults to the player's latest available projection.",
     ),
 ):
-    """Neutral talent projection (Cross-Season model's next-season forecast).
-    Real model output, not a stub — 404 if the player has no projection row
-    rather than synthesizing one, since fabricating a fake skill/value
-    breakdown would be actively misleading for a product surface like this."""
+    """Neutral talent projection. Real model output, not a stub — 404 if the
+    player has no projection row rather than synthesizing one, since
+    fabricating a fake skill/value breakdown would be actively misleading for
+    a product surface like this.
+
+    Accepts either real, populated model_version (Phase 0 shrinkage or Phase 2a
+    neutral), most recent first — not narrowed to PLAYER_PROJECTION_MODEL_VERSION
+    (the cross-season *forecast* variant) alone, since that version has only 2
+    rows in the whole table (real bug found 2026-06-26: every other player's
+    real projection was 404ing because of this filter)."""
     stmt = select(PlayerProjectionORM).where(
         PlayerProjectionORM.player_id == player_id,
         PlayerProjectionORM.projection_mode == "neutral",
-        PlayerProjectionORM.model_version == PLAYER_PROJECTION_MODEL_VERSION,
+        PlayerProjectionORM.model_version.in_(
+            [PLAYER_PROJECTION_MODEL_VERSION, "player-projection-shrinkage-v1", "player-projection-phase2a-v1"]
+        ),
         PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
     )
     if season is not None:

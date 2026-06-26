@@ -15,12 +15,14 @@ from portalpoint.api.schemas.fit_score import (
     FitBreakdown,
     FitScoreResponse,
     FitWeights,
+    GapFeatureGap,
     GapMatchBreakdown,
     ProgramFitBreakdown,
     RoleFitBreakdown,
     SchemeBreakdown,
 )
 from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember
+from portalpoint.modeling.gap_matching import GAP_FEATURES
 
 
 def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
@@ -33,6 +35,19 @@ def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
         ),
         starter_probability=round(rng.uniform(0.35, 0.85), 2),
         depth_chart_position=rng.randint(1, 3),
+    )
+
+
+def stub_gap_breakdown(rng: random.Random) -> GapMatchBreakdown:
+    n = rng.randint(1, 3)
+    features = rng.sample(GAP_FEATURES, n)
+    return GapMatchBreakdown(
+        archetype_needed=rng.random() > 0.3,
+        position_depth_score=round(rng.uniform(50.0, 95.0), 1),
+        gap_reliability=round(rng.uniform(0.5, 1.0), 2),
+        top_gap_features=[
+            GapFeatureGap(feature=f, gap=round(rng.uniform(0.1, 0.8), 3)) for f in features
+        ],
     )
 
 
@@ -79,12 +94,7 @@ def stub_fit_score(
                 ball_movement_match=round(rng.uniform(60.0, 98.0), 1),
             ),
             role_fit=stub_role_fit_breakdown(rng),
-            gap=GapMatchBreakdown(
-                archetype_needed=rng.random() > 0.3,
-                position_depth_score=round(rng.uniform(50.0, 95.0), 1),
-                uniqueness_bonus=round(rng.uniform(0.0, 15.0), 1),
-                redundancy_penalty=round(rng.uniform(-15.0, 0.0), 1),
-            ),
+            gap=stub_gap_breakdown(rng),
             program_fit=stub_program_fit_breakdown(rng),
         ),
         weights_used=w,
@@ -130,9 +140,11 @@ def real_fit_score(
             gap=GapMatchBreakdown(
                 archetype_needed=gap_bd.get("archetype_needed", False),
                 position_depth_score=gap_bd.get("position_depth_score", 50.0),
-                # uniqueness_bonus / redundancy_penalty not yet computed by gap-cos-v1
-                uniqueness_bonus=0.0,
-                redundancy_penalty=0.0,
+                gap_reliability=gap_bd.get("gap_reliability", 0.0),
+                top_gap_features=[
+                    GapFeatureGap(feature=f["feature"], gap=f["gap"])
+                    for f in gap_bd.get("top_gap_features", [])
+                ],
             ),
             program_fit=stub_program_fit_breakdown(rng),
         ),

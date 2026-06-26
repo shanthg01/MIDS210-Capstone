@@ -28,11 +28,22 @@ class RoleFitBreakdown(BaseModel):
     depth_chart_position: int  # 1 = projected starter
 
 
+class GapFeatureGap(BaseModel):
+    feature: str
+    gap: float  # how far below the destination's target this player's stat sits, pre-weighting
+
+
 class GapMatchBreakdown(BaseModel):
     archetype_needed: bool
     position_depth_score: float = Field(..., ge=0, le=100)
-    uniqueness_bonus: float  # > 0 when player fills scarce skill the team lacks
-    redundancy_penalty: float  # <= 0 when archetype is already stacked on roster
+    # Confidence in the gap score itself — blends position-source/sample/feature
+    # reliability (modeling/gap_matching.py's gap_reliability), not a fit score.
+    gap_reliability: float = Field(..., ge=0.0, le=1.0)
+    # The specific stats this player most closes the gap on for this school,
+    # largest first — real model output (gap_matching.py's top_gap_features),
+    # replaces the old uniqueness_bonus/redundancy_penalty fields, which were
+    # never actually computed (always hardcoded to 0.0).
+    top_gap_features: list[GapFeatureGap] = []
 
 
 class ProgramFitBreakdown(BaseModel):

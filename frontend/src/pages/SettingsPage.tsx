@@ -35,7 +35,7 @@ import {
   listProfiles,
   updatePreferences,
 } from '../api/users';
-import { getRosterGap, listSchools } from '../api/schools';
+import { getRosterGap, getSystemProfile, listSchools } from '../api/schools';
 import { updateSchool } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import type { FitWeights, ImportanceWeights, SchoolListItem, StatKey, StatThreshold, UserFilters } from '../types/api';
@@ -207,6 +207,14 @@ export default function SettingsPage() {
   const [selectedSchool, setSelectedSchool] = useState<SchoolListItem | null>(null);
   const [schoolSaving, setSchoolSaving] = useState(false);
   const [schoolSaveSuccess, setSchoolSaveSuccess] = useState(false);
+
+  // 404 (no team_system_profiles row for this school/season yet) is expected, not retried.
+  const { data: systemProfile } = useQuery({
+    queryKey: ['systemProfile', schoolId],
+    queryFn: getSystemProfile,
+    enabled: !!schoolId,
+    retry: false,
+  });
 
   useEffect(() => {
     if (currentSchool) setSelectedSchool(currentSchool);
@@ -445,6 +453,21 @@ export default function SettingsPage() {
           <Alert severity="warning" sx={{ mt: 1.5 }}>
             No school set yet — fit scores can't be computed until you pick one.
           </Alert>
+        )}
+        {systemProfile && (
+          <Box sx={{ mt: 2 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+              Your team's system (Model #2, {systemProfile.season})
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+              {systemProfile.offense_label && (
+                <Chip size="small" color="primary" variant="outlined" label={systemProfile.offense_label} />
+              )}
+              {systemProfile.defense_label && (
+                <Chip size="small" color="secondary" variant="outlined" label={systemProfile.defense_label} />
+              )}
+            </Box>
+          </Box>
         )}
       </Paper>
 

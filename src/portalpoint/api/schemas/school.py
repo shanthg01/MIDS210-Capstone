@@ -72,6 +72,16 @@ class UpdateSchoolResponse(BaseModel):
     school_id: int
 
 
+class TeamSystemProfileResponse(BaseModel):
+    """The user's program's own team-system archetype (Model #2, team_clustering.py)
+    — combined offense/defense cluster label, not a player-fit score."""
+    school_id: int
+    season: int
+    system_label: str
+    offense_label: str | None = None
+    defense_label: str | None = None
+
+
 class RosterGapResponse(BaseModel):
     """Derived from roster_state_features — facts (open minutes/usage by
     position), not a model output. suggested_position is the simplest real

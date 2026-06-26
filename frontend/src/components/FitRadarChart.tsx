@@ -36,10 +36,15 @@ export default function FitRadarChart({ data, size = 240 }: Props) {
   const scorePoints = data.map((d, i) => pointFor(i, (Math.max(0, Math.min(100, d.value)) / 100) * radius));
   const scorePath = scorePoints.map((p) => p.join(',')).join(' ');
 
+  // Wider side margin than a middle-anchored label would need — labels now
+  // anchor outward (start/end, not middle), so the full label width extends
+  // to one side of its axis point, not split evenly across both.
+  const margin = 70;
+
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-      <svg width={size + 80} height={size + 16} viewBox={`0 0 ${size + 80} ${size + 16}`}>
-        <g transform="translate(40, 8)">
+      <svg width={size + margin * 2} height={size + 16} viewBox={`0 0 ${size + margin * 2} ${size + 16}`}>
+        <g transform={`translate(${margin}, 8)`}>
           {/* Grid rings */}
           {ringLevels.map((level) => {
             const pts = data.map((_, i) => pointFor(i, (level / 100) * radius).join(',')).join(' ');
@@ -81,15 +86,19 @@ export default function FitRadarChart({ data, size = 240 }: Props) {
             );
           })}
 
-          {/* Axis labels */}
+          {/* Axis labels — anchor points outward (away from center) instead of
+              centering on the axis point, otherwise longer labels like
+              "Program Fit" overlap back into the chart on the left/right axes. */}
           {data.map((d, i) => {
             const [x, y] = pointFor(i, labelRadius);
+            const dx = x - center;
+            const textAnchor = dx > 5 ? 'start' : dx < -5 ? 'end' : 'middle';
             return (
               <text
                 key={i}
                 x={x}
                 y={y}
-                textAnchor="middle"
+                textAnchor={textAnchor}
                 dominantBaseline="middle"
                 fontSize={12}
                 fontWeight={600}

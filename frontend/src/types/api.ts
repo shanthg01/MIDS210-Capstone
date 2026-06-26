@@ -196,6 +196,14 @@ export interface PlayerProjectionResponse {
 
 // ── Schools ───────────────────────────────────────────────────────────────────
 
+export interface TeamSystemProfileResponse {
+  school_id: number;
+  season: number;
+  system_label: string;
+  offense_label: string | null;
+  defense_label: string | null;
+}
+
 export interface RosterGapResponse {
   school_id: number;
   season: number;
@@ -222,11 +230,16 @@ export interface RoleFitBreakdown {
   depth_chart_position: number;
 }
 
+export interface GapFeatureGap {
+  feature: string;
+  gap: number;
+}
+
 export interface GapMatchBreakdown {
   archetype_needed: boolean;
   position_depth_score: number;
-  uniqueness_bonus: number;
-  redundancy_penalty: number;
+  gap_reliability: number;
+  top_gap_features: GapFeatureGap[];
 }
 
 export interface ProgramFitBreakdown {

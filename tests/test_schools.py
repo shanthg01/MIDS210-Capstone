@@ -19,3 +19,16 @@ def test_roster_gap_404_when_no_school_or_snapshot(client, H):
     # it — the real "don't fabricate" 404, not a 500.
     r = client.get("/api/schools/roster-gap", headers=H)
     assert r.status_code == 404
+
+
+def test_system_profile_requires_auth(client):
+    assert client.get("/api/schools/system-profile").status_code == 401
+
+
+def test_system_profile_response_shape(client, H):
+    # Test user's school_id=1 (Houston) has a real team_system_profiles row.
+    data = client.get("/api/schools/system-profile", headers=H).json()
+    assert data["school_id"] == 1
+    assert "system_label" in data
+    assert "offense_label" in data
+    assert "defense_label" in data
