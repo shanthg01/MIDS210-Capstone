@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** June 21, 2026
+**Last updated:** June 25, 2026 (`players.py`'s `/{id}/projection` endpoint added)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -31,7 +31,7 @@ User-facing fit should eventually expose four components:
 | Component | Status | App implication |
 |---|---|---|
 | Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
-| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v2`, departure-aware for the current season — Issue #26); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
+| Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v4` code path, all-pairs, shared roster baseline); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
 | Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. Roster-state data dependency (`roster_snapshots`) now exists — see `ARCHITECTURE_STATUS.md` — model itself still not built. |
 | Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
@@ -54,10 +54,10 @@ Interactive docs: `http://localhost:8000/docs`
 | Router | Status | Notes |
 |---|---|---|
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
-| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. |
+| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves Player Projection Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision; response includes Phase 2a's `projected_box_score`/`projected_rates` when present — see `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, default season 2026. Real `scheme_fit` + `gap_match`; `role_fit`/`program_fit` stubbed at 50.0. Falls back to full stub when no row exists for the triple (pair outside M3/Gap Matching scope). |
-| `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path); `role_fit`/`program_fit` stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates the all-pairs scoring (e.g. below the 5-game minimum). |
+| `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. Documented contract: default to `is_portal_candidate = true` once real. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub | Blocked on team rating projection model. |
 | `comparison.py` | Stub/partial | Side-by-side comparison shape exists; richer comparison blocked on full fit scores/projections. |
@@ -130,17 +130,17 @@ Watch-outs:
 
 - Default JWT expiry is one hour; set `JWT_EXPIRY_SECONDS=86400` locally if helpful.
 - Any page that assumes complete fit scores must communicate partial/stub state until all components are real.
-- `fit_scores.py` hardcodes `CURRENT_SEASON = 2026` — no season config exists yet. Add a `season` query param override if the frontend needs historical seasons.
-- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v2`.
+- `fit_scores.py` resolves current season dynamically (`fit_score_service.get_current_season()` — max season in `player_team_fit_scores`, Redis-cached); `season` query param overrides it for historical seasons.
+- `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v4`.
 
 ---
 
 ## Tests
 
-Current known state from the prior tracker:
+Current state (2026-06-22):
 
 ```text
-111 tests passing across 8 modules
+115 tests passing across 8 modules
 ```
 
 Test areas:

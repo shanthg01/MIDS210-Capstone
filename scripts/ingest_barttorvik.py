@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from portalpoint.db.models import Player, PlayerSeasonStats, School, TeamSeasonStats
 from portalpoint.db.session import AsyncSessionLocal
+from portalpoint.modeling.minutes import resolved_minutes_per_game
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -277,6 +278,38 @@ def _parse_height(ht) -> int | None:
     return _safe_int(s)
 
 
+def _infer_position(role, height_inches: int | None) -> str:
+    """Map BartTorvik's role label to the canonical player.position field.
+
+    BartTorvik does not expose a plain PG/SG/SF/PF/C column in getadvstats.php,
+    but its role labels are position-informative enough for display/defaults.
+    """
+    role_norm = str(role or "").strip().lower()
+    role_map = {
+        "pure pg": "PG",
+        "scoring pg": "PG",
+        "combo g": "SG",
+        "wing g": "SG",
+        "wing f": "SF",
+        "stretch 4": "PF",
+        "pf/c": "C",
+        "c": "C",
+    }
+    if role_norm in role_map:
+        return role_map[role_norm]
+    if height_inches is None:
+        return "SG"
+    if height_inches <= 73:
+        return "PG"
+    if height_inches <= 76:
+        return "SG"
+    if height_inches <= 79:
+        return "SF"
+    if height_inches <= 82:
+        return "PF"
+    return "C"
+
+
 def _shot_distribution(row: dict) -> tuple[float | None, float | None, float | None]:
     """Compute (three_point_rate, rim_rate, mid_range_rate) from attempt counts."""
     fg2a = _safe_float(row.get("fg2a")) or 0.0
@@ -464,10 +497,11 @@ async def ingest_players(
         name = str(r.get("player") or "").strip()
         if not name or not bart_pid:
             continue
+        height_inches = _parse_height(r.get("ht"))
         rows.append({
             "full_name": name,
-            "position": "G",  # barttorvik doesn't give position directly; update from cbbpy later
-            "height_inches": _parse_height(r.get("ht")),
+            "position": _infer_position(r.get("role"), height_inches),
+            "height_inches": height_inches,
             "class_year": CLASS_YEAR_MAP.get(str(r.get("yr") or "").strip(), "freshman"),
             "hometown": str(r.get("hometown") or "").strip() or None,
             "barttorvik_id": bart_pid,
@@ -513,8 +547,9 @@ async def ingest_player_season_stats(
             continue
 
         gp = _safe_int(r.get("gp")) or 0
-        mpg = _safe_float(r.get("min_per_game"))
-        # % of team minutes (0-100); min_per_game is sparsely populated.
+        raw_mpg = _safe_float(r.get("min_per_game"))
+        # % of team minutes (0-100). This is the reliable playing-time field;
+        # the raw min_per_game source column is legacy/mis-mapped in local data.
         min_pct = _safe_float(r.get("min_per"))
         three_rate, rim_rate, mid_rate = _shot_distribution(r)
 
@@ -546,7 +581,7 @@ async def ingest_player_season_stats(
             "school_id": school_id,
             "season": season,
             "games_played": gp,
-            "minutes_per_game": mpg or 0.0,
+            "minutes_per_game": resolved_minutes_per_game(min_pct, raw_mpg) or 0.0,
             "min_pct": min_pct,
             # Traditional — barttorvik per-game cols (provisional; confirmed for ppg)
             "points_per_game": raw_ppg or 0.0,

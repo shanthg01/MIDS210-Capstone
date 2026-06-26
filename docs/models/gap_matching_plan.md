@@ -46,6 +46,25 @@ query is `gap_matching.filter_departed()`'s `departed_pairs` load, `gap-cos-v2`.
 re-executed end to end and verified to produce identical numbers (1,280,700 rows, same
 per-season mean/std, same MLflow Δ).
 
+**Update (2026-06-22) — `gap-cos-v3`, all-pairs.** Gap Matching no longer scores only
+the pairs Scheme Fit pre-seeded (the "8 dims from player_season_stats" feature space
+above is also stale — see `gap_matching.GAP_FEATURES`, a 14-dim rate/style vector now).
+Scores every eligible player×school×season pair, matching Scheme Fit's own all-pairs
+rewrite the same day (`scheme-cos-v3`). 9,731,957 rows. `filter_departed()`'s departure
+query/scope is unchanged by this — still current-season-only, still `transfers`-sourced.
+See CLAUDE.md Process Improvement TODO #5 and `docs/status/MODEL_STATUS.md` for full
+detail, including two bugs found and fixed at this scale (role_fit/program_fit
+placeholder mismatch; the "preserve existing Scheme Fit context" step not scaling past
+~1.3M rows).
+
+**Update (2026-06-22 branch) — `gap-cos-v4`, shared roster baseline.** The
+current script no longer uses the `filter_departed()` query below as the
+complete roster-baseline definition. It now calls
+`portalpoint.modeling.roster_baseline`: historical seasons infer target roster
+membership from `player_season_stats(S+1)`, while the latest season uses latest
+`roster_snapshots` with expected-departure fallback for schools without usable
+snapshots. Candidate availability still comes from `portalpoint.modeling.availability`.
+
 SELECT player_id, from_school_id
 FROM transfers
 WHERE from_school_id IS NOT NULL

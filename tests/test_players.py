@@ -86,6 +86,16 @@ def test_search_requires_name_param(client):
     assert client.get("/api/players/search").status_code == 422
 
 
+def test_search_available_only_param_accepted(client):
+    assert client.get("/api/players/search?name=Marcus&available_only=true").status_code == 200
+
+
+def test_search_available_only_filters_to_subset(client):
+    all_count = client.get("/api/players/search?name=an").json()["total"]
+    available_count = client.get("/api/players/search?name=an&available_only=true").json()["total"]
+    assert available_count <= all_count
+
+
 def test_claim_requires_auth(client):
     assert client.post("/api/players/101/claim", json={"player_id": 101}).status_code == 401
 
@@ -97,3 +107,39 @@ def test_claim_with_auth(client, H):
     assert data["success"] is True
     assert data["player_id"] == 101
     assert "message" in data
+
+
+def test_get_player_projection_is_public(client):
+    assert client.get("/api/players/101/projection").status_code == 200
+
+
+def test_get_player_projection_response_shape(client):
+    data = client.get("/api/players/101/projection").json()
+    assert data["player_id"] == 101
+    assert data["projection_mode"] == "neutral"
+    assert isinstance(data["value_per_100"], float)
+    assert data["model_version"] == "player-proj-phase2a-fcast-v1"
+    assert isinstance(data["projected_box_score"], dict)
+    assert isinstance(data["projected_rates"], dict)
+    assert isinstance(data["skill_states"], dict)
+    assert isinstance(data["skill_percentiles"], dict)
+    for pctile in data["skill_percentiles"].values():
+        assert 0 <= pctile <= 100
+
+
+def test_get_player_projection_defaults_to_latest_season(client):
+    data = client.get("/api/players/101/projection").json()
+    explicit = client.get(f"/api/players/101/projection?season={data['season']}").json()
+    assert explicit["season"] == data["season"]
+    assert explicit["value_per_100"] == data["value_per_100"]
+
+
+def test_get_player_projection_not_found_for_unprojected_player(client):
+    # Out of range of real ingested ids (~27k players) — see PLAYER_ID in conftest.py.
+    r = client.get("/api/players/9900001/projection")
+    assert r.status_code == 404
+
+
+def test_get_player_projection_not_found_for_unprojected_season(client):
+    r = client.get("/api/players/101/projection?season=1999")
+    assert r.status_code == 404

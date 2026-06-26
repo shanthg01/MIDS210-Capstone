@@ -1,8 +1,15 @@
 """
 scripts/run_scheme_fit.py
 
-Non-interactive rerun of Model 3 (Scheme Fit Scorer). For validation plots and
-spot-checks, use notebooks/models/scheme_fit_scorer.ipynb instead.
+Non-interactive rerun of Model 3 (Scheme Fit Scorer). Scores every eligible
+player x school pair, season-matched (scheme-cos-v3, all-pairs — matches Gap
+Matching's scope so both models share the same player x school universe).
+Must run before run_gap_matching.py: this script does a full-season delete +
+rebuild of player_team_fit_scores, and Gap Matching only layers its real
+gap_match onto rows that already exist.
+
+For validation plots and spot-checks, use notebooks/models/scheme_fit_scorer.ipynb
+instead.
 
 Usage:
   uv run python scripts/run_scheme_fit.py
@@ -15,7 +22,6 @@ import sys
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-from sklearn.metrics.pairwise import cosine_similarity
 from sqlalchemy import text
 
 from portalpoint.modeling import scheme_fit as sf
@@ -29,6 +35,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+SCHOOL_CHUNK_SIZE = 50
 
 PLAYER_SQL = """
 SELECT
@@ -74,7 +82,6 @@ def main() -> None:
 
     team_df = pq.read_table(features_dir / "team_style_vectors.parquet").to_pandas()
     seasons_in_data = sorted(team_df["season"].unique().tolist())
-    current_season = max(seasons_in_data)
     team_df = team_df.dropna(subset=sf.TEAM_SHOT_FEATS)
     team_df = team_df.drop_duplicates(subset=["school_id", "season"], keep="first").reset_index(drop=True)
     if all(f in team_df.columns for f in sf.HE_FEATS):
@@ -106,21 +113,49 @@ def main() -> None:
     player_df = player_df.merge(he_player_raw, on=["player_id", "season"], how="left").reset_index(drop=True)
     log.info("Loaded %s player-seasons", f"{len(player_df):,}")
 
-    records, season_stats, n_he_records = sf.score_all_seasons(
-        player_df, team_df, seasons_in_data, tempo_default, top_k=sf.TOP_K, model_version=sf.MODEL_VERSION,
-    )
-    for season, stats in season_stats.items():
-        log.info("Season %s: %sp x %st, mean_fit=%.1f, HE=%s", season, f"{stats['n_players']:,}", f"{stats['n_teams']:,}", stats["mean_fit"], f"{stats['n_he']:,}")
+    deleted = sf.delete_season_rows(engine, seasons_in_data)
+    log.info("Deleted %s stale rows for seasons %s", f"{deleted:,}", seasons_in_data)
 
-    deleted, upserted = sf.upsert_fit_scores(engine, records, seasons_in_data)
-    log.info("Deleted %s stale rows, upserted %s rows to player_team_fit_scores", f"{deleted:,}", f"{upserted:,}")
+    total_records = 0
+    total_upserted = 0
+    total_he = 0
+    sim_sum = 0.0
+    sim_sq_sum = 0.0
 
-    p_cur = player_df[player_df["season"] == current_season].reset_index(drop=True)
-    t_cur = team_df[team_df["season"] == current_season].reset_index(drop=True)
-    SIM_SCALED = np.clip(
-        cosine_similarity(p_cur[sf.PLAYER_SHOT_FEATS].values.astype(np.float64), t_cur[sf.TEAM_SHOT_FEATS].values.astype(np.float64)) * 100,
-        0, 100,
-    )
+    for season in seasons_in_data:
+        school_ids = sorted(team_df.loc[team_df["season"] == season, "school_id"].unique().tolist())
+        season_records = 0
+        season_upserted = 0
+        for start in range(0, len(school_ids), SCHOOL_CHUNK_SIZE):
+            school_batch = school_ids[start:start + SCHOOL_CHUNK_SIZE]
+            records, _, n_he = sf.score_all_seasons(
+                player_df, team_df, [season], tempo_default,
+                school_ids=school_batch, model_version=sf.MODEL_VERSION,
+            )
+            if not records:
+                continue
+            sim_values = np.fromiter((r[5] for r in records), dtype=np.float64, count=len(records))
+            total_records += len(records)
+            season_records += len(records)
+            total_he += n_he
+            sim_sum += float(sim_values.sum())
+            sim_sq_sum += float(np.square(sim_values).sum())
+            upserted = sf.upsert_fit_scores(engine, records)
+            total_upserted += upserted
+            season_upserted += upserted
+        log.info(
+            "Season %d: scored=%s upserted=%s",
+            season, f"{season_records:,}", f"{season_upserted:,}",
+        )
+
+    log.info("Total records scored: %s", f"{total_records:,}")
+    log.info("Total rows upserted to player_team_fit_scores: %s", f"{total_upserted:,}")
+    log.info("HE play-type matches: %s", f"{total_he:,}")
+
+    if total_records == 0:
+        raise RuntimeError("No scheme fit records were scored")
+    mean_fit = sim_sum / total_records
+    std_fit = float(np.sqrt(max(sim_sq_sum / total_records - mean_fit * mean_fit, 0.0)))
 
     client = setup_mlflow("scheme-fit-scorer")
     import mlflow
@@ -138,17 +173,16 @@ def main() -> None:
                 results.append({"scheme_fit": round(sf.scheme_fit_score(p, t), 2)})
             return results
 
-    with mlflow.start_run(run_name=f"scheme-fit-s{current_season}-script") as run:
+    with mlflow.start_run(run_name=f"scheme-fit-s{max(seasons_in_data)}-script") as run:
         mlflow.log_params({
-            "season": current_season,
-            "top_k": sf.TOP_K,
+            "seasons": ",".join(str(s) for s in seasons_in_data),
             "model_version": sf.MODEL_VERSION,
             "source": "script",
         })
         mlflow.log_metrics({
-            "mean_scheme_fit": float(SIM_SCALED.mean()),
-            "std_scheme_fit": float(SIM_SCALED.std()),
-            "n_records_written": float(len(records)),
+            "mean_scheme_fit": mean_fit,
+            "std_scheme_fit": std_fit,
+            "n_records_written": float(total_records),
             "n_players": float(len(player_df)),
             "n_teams": float(len(team_df)),
         })
@@ -157,7 +191,7 @@ def main() -> None:
 
     result = maybe_promote(
         client, "scheme-fit-scorer", run_id, "scheme_fit_model",
-        metric_name="std_scheme_fit", new_value=float(SIM_SCALED.std()), higher_is_better=True,
+        metric_name="std_scheme_fit", new_value=std_fit, higher_is_better=True,
     )
     log.info("MLflow run %s — %s", run_id, result)
 

@@ -1,10 +1,13 @@
 # Playing Time / Rotation Model Plan
 ## Roster-Aware Opportunity Projection System
 
-**Planned notebook:** `notebooks/models/playing_time_rotation_model.ipynb`  
-**Model family:** Roster simulation + constrained minutes model + calibrated uncertainty  
-**Primary output table:** `player_team_fit_scores` initially, with a future dedicated `playing_time_projections` table  
-**Upstream dependencies:** Live roster ingest, Player Projection system, Gap Matching, Scheme Fit  
+**Planned notebook:** `notebooks/models/playing_time_rotation_model.ipynb`
+**Planned script:** `scripts/run_playing_time.py`
+**Primary module:** `src/portalpoint/modeling/playing_time.py`
+**Model family:** Roster simulation + constrained minutes model + calibrated uncertainty
+**Primary output table:** `playing_time_projections`
+**Secondary output:** `player_team_fit_scores.role_fit` derived from `playing_time_projections`
+**Upstream dependencies:** Live roster ingest, Player Projection system, Gap Matching, Scheme Fit, Player Clustering, Team System Clustering
 **Downstream consumers:** Role Fit score, Player Projection destination adapter, Team Rating Projection, Recommendation Engine
 
 ---
@@ -24,7 +27,8 @@ The model should not directly optimize the user-facing `role_fit` score. It shou
 ```text
 Playing Time / Rotation model
     -> expected minutes
-    -> usage role
+    -> expected usage
+    -> usage role label
     -> displaced minutes
     -> minutes uncertainty
 
@@ -68,6 +72,30 @@ Team Rating Projection
 
 The Player Projection model owns talent. The Playing Time / Rotation model owns opportunity. The Team Rating Projection model combines talent and opportunity into roster impact.
 
+### Target-season contract
+
+The Playing Time / Rotation model consumes the neutral Player Projection row for the same
+target season it is scoring:
+
+```text
+neutral player projection for player p, season n
+    + destination school/team context for school s, season n
+    + roster baseline / snapshot for school s, season n
+    -> expected opportunity for player p at school s in season n
+```
+
+This model is intentionally destination-aware. It should use team context because minutes and
+usage are roster- and staff-dependent outcomes, not generic player traits. The neutral projection
+answers "how good is the player?"; Playing Time answers "how much of that player will this roster
+actually use, and in what role?"
+
+The first production version should remain efficient and sturdy:
+
+- Use one row per `(player_id, school_id, season)` candidate-destination pair.
+- Use precomputed neutral projections, `scheme_fit`, `gap_match`, team-style vectors, and roster-baseline features.
+- Prefer transparent tabular models plus deterministic rotation constraints before building a full roster optimizer.
+- Write first-class opportunity rows to `playing_time_projections`; update `player_team_fit_scores.role_fit` as the product score derived from those rows.
+
 The same stack should support interactive scenario analysis. A dashboard can let a coach adjust minutes, usage role, or displaced minutes without refitting the talent model:
 
 ```text
@@ -90,14 +118,22 @@ player_id
 school_id
 season
 expected_minutes
+expected_minutes_share
 minutes_ci_lower
 minutes_ci_upper
+expected_usage
 usage_role
 usage_role_confidence
 displaced_minutes
-opportunity_explanation
+opportunity_drivers
+data_quality_flags
+role_fit
 model_version
 ```
+
+`expected_minutes`, `expected_minutes_share`, and `expected_usage` are the hard quantitative
+outputs. `usage_role` is an interpretability and downstream-adapter label derived from those
+quantities plus archetype/system context; it should not replace the numeric usage/minutes outputs.
 
 ### Optional derived outputs
 
@@ -218,23 +254,32 @@ For each school-season snapshot, build:
 Train on historical player-school-season outcomes:
 
 ```text
-actual_minutes_per_game
 actual_minutes_share
+derived_actual_minutes_per_game
 actual_usage_rate
 games_played
 ```
 
-Minutes share is often cleaner than raw minutes:
+Minutes share is the canonical target. Use `player_season_stats.min_pct` as the
+source of truth; older DBs may have legacy/mis-mapped
+`player_season_stats.minutes_per_game` values even though the current ingest
+derives MPG from `min_pct`:
 
 ```text
-actual_minutes_share = player_minutes / team_available_minutes
+actual_minutes_share = player_season_stats.min_pct / 100
+derived_actual_minutes_per_game = player_season_stats.min_pct * 0.4
 ```
 
-Raw minutes are still the product output because coaches think in minutes per game.
+Derived raw minutes are still the product output because coaches think in
+minutes per game. If exact player-game total minutes are needed later, prefer
+`hoopr_player_game_logs.minutes` aggregates over trusting legacy stored MPG.
 
-### Usage role target
+### Usage role label
 
-Usage role should be a coarse, interpretable label or distribution, not a fragile exact usage-rate forecast.
+Usage role is a coarse, interpretable label on top of projected minutes and usage. It is useful for
+explanation, downstream destination-adjusted stat translation, and sanity checks, but it is not the
+main supervised target. The main numeric targets remain `actual_minutes_share` and
+`actual_usage_rate`.
 
 Suggested labels:
 
@@ -249,7 +294,33 @@ Suggested labels:
 | `defensive_specialist` | Value driven mostly by defense |
 | `depth` | Limited or uncertain offensive role |
 
-Usage role can be predicted from projected usage, player skill state, team needs, and destination roster context.
+MVP usage-role assignment should be deterministic and archetype-informed:
+
+```text
+base_role_prior = mapping(player_archetypes.archetype_label / memberships)
+role_adjustments = projected usage + expected minutes + skill percentiles
+                 + destination roster needs + team_system_profiles.system_label / memberships
+usage_role = highest scoring role
+usage_role_confidence = margin between the top two roles, adjusted for data quality
+```
+
+Examples:
+
+- `Lead Scoring Playmaker` starts with a high prior for `primary_creator` or `secondary_creator`.
+- `Two-Way Spacing Wing` starts with a high prior for `spacing_specialist` or `connector`.
+- `Pressure Connector Guard` starts with a high prior for `connector` or defensive guard roles.
+- `Post Scoring Big` and `Interior Star Big` split between high-usage big, rim runner, rebounder,
+  and defensive anchor roles based on projected usage, minutes, and destination frontcourt need.
+
+Team clustering should adjust the label and confidence, not overwrite the player archetype:
+
+- `3PT Spacing Offense` improves confidence for spacing wings and stretch forwards.
+- `Rim Pressure Offense` improves confidence for rim finishers, screeners, and interior bigs.
+- `Perimeter Creation Offense` increases the value of on-ball creators and passing guards.
+- `Transition Attack` can lift transition guards/wings and widen intervals for poor-fit half-court players.
+
+A learned usage-role classifier is a future challenger. It should only become production if it beats
+the deterministic/archetype-informed labeler on role sanity, calibration, and downstream validation.
 
 ---
 
@@ -257,9 +328,9 @@ Usage role can be predicted from projected usage, player skill state, team needs
 
 ### Candidate features
 
-- Neutral player projected impact per 100.
+- Neutral player projected impact per 100 for the target season.
 - Offensive and defensive impact split.
-- Projected usage and box-score rates.
+- Projected skill states, percentiles, usage texture, and box-score rates.
 - Position and archetype.
 - Class year and eligibility.
 - Prior minutes and games played.
@@ -277,6 +348,8 @@ Usage role can be predicted from projected usage, player skill state, team needs
 - Team quality tier.
 - Conference tier.
 - Team system/style cluster.
+- Team pace and shot profile.
+- Team play-style frequencies where Hoop Explorer coverage exists.
 - Coach/team historical rotation size if available.
 
 ### Interaction features
@@ -287,10 +360,139 @@ Usage role can be predicted from projected usage, player skill state, team needs
 - Position-band crowding.
 - Defensive role need: rim protection, rebounding, point-of-attack defense.
 - Offensive role need: creation, spacing, rim pressure.
+- Player skill × team style interactions:
+  - shooting skill × team 3PA rate / spacing need
+  - passing creation × open ball-handler minutes
+  - shot creation usage × available usage
+  - rim finishing / offensive rebounding × rim-pressure style
+  - rim protection / defensive rebounding × frontcourt defensive need
+
+These interaction features are the bridge to destination-adjusted projection. Playing Time uses
+them to estimate role and opportunity; the destination adapter later uses the resulting role/minutes
+to translate neutral rates into school-specific production.
+
+### Concrete data sources
+
+| Feature group | Source table/artifact | Key fields / metrics |
+|---|---|---|
+| Neutral talent | `player_projections` | Production neutral rows where `model_version="player-proj-phase2a-fcast-v1"` and `school_id IS NULL`; use `value_per_100`, CI bounds, `skill_states`, `skill_percentiles`, `projected_rates`, `projected_box_score`, `uncertainty` |
+| Prior role / historical minutes | `player_season_stats` | `school_id`, `season`, `games_played`, `min_pct`, derived MPG (`min_pct * 0.4`), `usage_rate`, `position`, shooting/rebounding/assist/turnover rates. Do not use legacy `minutes_per_game` as true MPG. |
+| Historical actual playing-time labels | `player_season_stats.min_pct`; optional `hoopr_player_game_logs.minutes` aggregate | Canonical label: `actual_minutes_share = min_pct / 100`; display MPG: `min_pct * 0.4`; derive minutes buckets and starter/rotation flags from derived MPG |
+| RAPM / soft position / HE style | `hoop_explorer_player_stats` | `off_adj_rapm`, `def_adj_rapm`, `pos_confidence_*`, `off_style_*_pct`, `transfer_dest` |
+| Archetype / player role texture | `player_archetypes` | `archetype_label`, `confidence`, membership JSON where available |
+| Destination quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`, shot profile/style fields where populated |
+| Team systems / style clusters | `team_system_profiles`; `data/features/team_style_vectors.parquet` | offense/defense labels, memberships, style vectors, pace/shot/play-style dimensions |
+| Scheme and gap context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON, `is_portal_candidate`, `is_roster_baseline_member` |
+| Current roster state | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | roster membership, returning status, transfer-in/new flags, snapshot date, open/departing/returning minutes and usage by position |
+| Transfer context | `transfers`, `transfer_portal_events` | `from_school_id`, `to_school_id`, `season`, `status`, `pre_usage_rate`, `post_usage_rate`; use transfer MPG fields only after they are derived from `player_season_stats.min_pct` or hoopR minutes |
+
+Do not use `player_school_seasons` as a required dependency for this model; it is empty in the
+current local stack. Use `player_season_stats`, transfer events, and roster snapshots for
+player-team-season membership.
 
 ---
 
-## 7. Recommended Model Shape
+## 7. Training and Inference Sets
+
+### Training set
+
+The supervised training set should contain observed player-school-season outcomes only:
+
+```text
+row grain:
+    player_id, actual_school_id, target_season
+
+label source:
+    player_season_stats for player_id at actual_school_id in target_season
+
+labels:
+    actual_minutes_share = min_pct / 100
+    actual_minutes_per_game = min_pct * 0.4
+    actual_usage_rate = usage_rate
+    games_played
+```
+
+Feature construction must respect time:
+
+```text
+target season n label
+    uses features known before or at the roster-planning point for season n
+```
+
+For returning players, candidate history generally comes from season `n-1` at the same school. For
+transfers, candidate history comes from the source school in season `n-1` or the latest available
+observed season. Neutral Player Projection input should be the production neutral projection for
+target season `n`, not the realized target-season RAPM.
+
+Historical destination context should be built as if the school were evaluating the player before
+season `n`:
+
+- neutral projection for player `p`, season `n`,
+- source-season player stats and archetype,
+- destination `team_system_profiles` for school `s`, season `n` or most recent prior system label,
+- `scheme_fit` / `gap_match` for `(p, s, n)` where available,
+- roster baseline/snapshot features for school `s`, season `n`,
+- returning/open minutes and usage features that do not leak the player's realized target-season role.
+
+Do not create negative training examples by treating unchosen schools as zero-minute outcomes. Those
+counterfactuals are unobserved, not observed benchings. Historical validation can evaluate ranking
+for actual destinations and compare plausible alternatives, but the supervised minutes/usage labels
+come only from the school where the player actually played.
+
+Recommended training seasons:
+
+```text
+train:      2021-2024 target seasons where source-season features exist
+validation: 2025
+test:       2026, when enough completed actuals are available
+```
+
+Adjust the split based on the completed seasons in the local DB. Keep the split temporal.
+
+### Inference set
+
+Production inference scores candidate-destination pairs:
+
+```text
+row grain:
+    player_id, school_id, target_season
+```
+
+Candidate pool:
+
+- current portal candidates from `transfer_portal_events` / `transfers`,
+- current roster baseline members who may return,
+- optional coach-selected watchlist players,
+- no projection for players with no usable neutral Player Projection or no usable historical/source profile.
+
+Destination pool:
+
+- every active D1 school with a usable roster snapshot or roster baseline for the target season,
+- current school rows for returners,
+- committed destination rows for known commits,
+- all-pairs rows where `scheme_fit` / `gap_match` already exist for broad recommendation workflows.
+
+Inference output:
+
+```text
+playing_time_projections:
+    expected_minutes
+    expected_minutes_share
+    minutes interval
+    expected_usage
+    usage_role
+    usage_role_confidence
+    displaced_minutes
+    role_fit
+    data_quality_flags
+```
+
+The script should also update `player_team_fit_scores.role_fit` and `overall_fit` for matching
+candidate-destination rows, preserving existing `scheme_fit`, `gap_match`, and `program_fit`.
+
+---
+
+## 8. Recommended Model Shape
 
 MVP should be interpretable and constrained.
 
@@ -328,7 +530,21 @@ candidate_minutes = f(
     team_tier,
     conference_transition
 )
+
+candidate_usage = h(
+    source_usage,
+    projected skill states,
+    expected minutes,
+    available destination usage,
+    returning creator quality,
+    team system profile,
+    conference_transition
+)
 ```
+
+For MVP, this can be a regularized tabular model or gradient-boosted model trained on historical
+player-school-season outcomes, followed by simple roster constraints. Do not start with a slow
+simulation over every possible lineup unless the simpler constrained model fails validation.
 
 ### Stage C - Displacement
 
@@ -343,22 +559,25 @@ displaced_minutes
 
 This displacement is essential for team projection. A 24-minute candidate is not adding 24 new minutes to the roster; he is replacing someone else's minutes.
 
-### Stage D - Usage role
+### Stage D - Usage role label
 
-Predict usage role from candidate skills and destination context:
+Derive usage role from the numeric opportunity outputs plus archetype/system context:
 
 ```text
 usage_role = g(
-    projected_usage,
-    creation_skill,
-    shooting_gravity,
-    passing_creation,
-    turnover_risk,
-    team_available_usage,
-    current_ball_handlers,
-    scheme_fit
+    player_archetype_label,
+    archetype_memberships,
+    expected_usage,
+    expected_minutes,
+    neutral skill percentiles,
+    team_system_profiles.system_label,
+    team_system_profiles.system_memberships,
+    roster need and crowding
 )
 ```
+
+The role label should explain the opportunity estimate. It should never be the only input to
+downstream models when numeric `expected_usage` and `expected_minutes` are available.
 
 Usage role should also be coach-adjustable in scenario mode. This directly supports questions like:
 
@@ -385,7 +604,7 @@ Key uncertainty sources:
 
 ---
 
-## 8. Interactive Scenario Mode
+## 9. Interactive Scenario Mode
 
 The model should support a dashboard where coaches can test role assumptions with sliders or controls.
 
@@ -429,7 +648,7 @@ coach-adjusted assumption
 
 ---
 
-## 9. Model Family
+## 10. Model Family
 
 Recommended first implementation:
 
@@ -463,7 +682,7 @@ candidate: 24 mpg
 
 ---
 
-## 10. Role Fit Score
+## 11. Role Fit Score
 
 Role Fit should be a derived product score.
 
@@ -488,50 +707,38 @@ Possible interpretation:
 | 30-49 | Crowded or uncertain path |
 | 0-29 | Limited opportunity without roster changes |
 
-The API can continue storing this in `player_team_fit_scores.role_fit`, while richer opportunity fields move into a future table.
+The API can continue reading `player_team_fit_scores.role_fit` for fit-score responses, but the
+source of truth should be the matching `playing_time_projections` row.
 
 ---
 
-## 11. Data Contracts
+## 12. Data Contracts
 
-### Current compatibility
+### Primary table
 
-Current table:
-
-```text
-player_team_fit_scores
-```
-
-Current MVP fields:
-
-| Field | Source |
-|---|---|
-| `player_id` | Candidate |
-| `school_id` | Destination |
-| `role_fit` | Derived score from opportunity outputs |
-| `model_version` | `playing-time-rotation-v1` |
-
-### Future table
-
-Future table:
+Add and write a dedicated table:
 
 ```text
 playing_time_projections
 ```
 
-Suggested columns:
+Required columns:
 
 ```text
+id
 player_id
 school_id
 season
-roster_snapshot_id
+roster_snapshot_id nullable
 expected_minutes
+expected_minutes_share
 minutes_ci_lower
 minutes_ci_upper
 expected_usage
 usage_role
 usage_role_confidence
+starter_probability nullable
+rotation_probability nullable
 displaced_minutes jsonb
 opportunity_drivers jsonb
 data_quality_flags jsonb
@@ -542,9 +749,79 @@ computed_at
 expires_at
 ```
 
+Recommended uniqueness:
+
+```sql
+UNIQUE (player_id, school_id, season, model_version)
+```
+
+### Fit-score compatibility
+
+Also update the existing fit-score table:
+
+```text
+player_team_fit_scores
+```
+
+Fields to update:
+
+| Field | Source |
+|---|---|
+| `player_id` | Candidate |
+| `school_id` | Destination |
+| `role_fit` | Derived from `playing_time_projections.role_fit` |
+| `overall_fit` | Recomputed using existing component weights |
+| `breakdown.role_fit` | Summary JSON copied from `playing_time_projections` |
+| `model_version` | `playing-time-rotation-v1` |
+
+Preserve existing `scheme_fit`, `gap_match`, and `program_fit`. Do not overwrite them while writing
+playing-time results.
+
 ---
 
-## 12. Notebook Structure
+## 13. Script Contract
+
+Create:
+
+```text
+src/portalpoint/modeling/playing_time.py
+scripts/run_playing_time.py
+```
+
+Public functions in `playing_time.py` should be pure and testable:
+
+```python
+build_training_examples(...)
+build_inference_pairs(...)
+build_roster_context(...)
+fit_minutes_usage_models(...)
+predict_minutes_usage(...)
+calibrate_minutes_intervals(...)
+derive_usage_role(...)
+allocate_displaced_minutes(...)
+compute_role_fit_score(...)
+build_playing_time_records(...)
+upsert_playing_time_projections(...)
+sync_role_fit_scores(...)
+```
+
+`scripts/run_playing_time.py` should:
+
+1. Load training examples at observed player-school-season grain.
+2. Fit or load the minutes-share and usage models.
+3. Calibrate minutes intervals on temporal holdout seasons.
+4. Build the production inference grid for the target season.
+5. Score expected minutes, minutes share, usage, intervals, and data-quality flags.
+6. Derive usage role from player archetype, skill state, team system, expected usage, and roster need.
+7. Allocate displaced minutes with roster constraints.
+8. Compute `role_fit`.
+9. Upsert `playing_time_projections`.
+10. Sync `player_team_fit_scores.role_fit`, `overall_fit`, and `breakdown.role_fit`.
+11. Log MLflow metrics, feature config, coverage counts, interval widths, and score distributions.
+
+---
+
+## 14. Notebook Structure
 
 ### Cell 0 - Setup
 
@@ -573,17 +850,18 @@ gap/scheme features
 actual next-season minutes and usage labels
 ```
 
-### Cell 4 - Train Minutes Model
+### Cell 4 - Train Minutes / Usage Models
 
-Predict expected minutes or minutes share.
+Predict expected minutes share and expected usage.
 
 ### Cell 5 - Calibrate Uncertainty
 
 Fit prediction intervals with quantile regression, conformal calibration, bootstrap simulation, or Bayesian posterior draws.
 
-### Cell 6 - Predict Usage Role
+### Cell 6 - Derive Usage Role
 
-Train or derive usage role labels from projected usage, role stats, and destination roster context.
+Derive usage role from player archetype/memberships, projected skills, expected usage, expected
+minutes, team system labels/memberships, and destination roster context.
 
 ### Cell 7 - Constrained Rotation Allocation
 
@@ -603,11 +881,11 @@ Temporal validation and cohort diagnostics.
 
 ### Cell 11 - DB Write
 
-Write `role_fit` to `player_team_fit_scores`; future migration writes full opportunity projections.
+Write `playing_time_projections`, then sync `role_fit` to `player_team_fit_scores`.
 
 ---
 
-## 13. Validation Strategy
+## 15. Validation Strategy
 
 ### Metrics
 
@@ -632,11 +910,11 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 
 ---
 
-## 14. Open Questions
+## 16. Future Decisions
 
 1. ~~What is the best live roster source and refresh cadence during portal season?~~ — Resolved: barttorvik `rostercast.php` via `ingest_roster_snapshots.py` (Issue #17 item 4). Refresh cadence (daily during portal window, per the original ask) not yet automated — manual `uv run` only so far.
 2. Can we reliably distinguish returning, departing, transfer-in, transfer-out, and unknown roster statuses? — Partially: `returning`/`transfer_in`/`new` are computed from a single snapshot (see §4 update above). `departing`/`transfer_out` need day-over-day snapshot diffing — still open, deferred to Issue #17 items 5-6.
-3. Should usage role be learned as labels or derived from projected usage/skill thresholds for MVP?
+3. Should a learned usage-role classifier replace the deterministic/archetype-informed MVP labeler after enough validation data exists?
 4. Do we need starter probability in the product, or is expected minutes plus usage role enough?
 5. How should coach-entered roster overrides affect projections and cache invalidation?
 6. How much should a player's stated preference for role/minutes influence the score versus the basketball projection?
@@ -644,17 +922,19 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 
 ---
 
-## 15. MVP vs Full Version
+## 17. MVP vs Full Version
 
 ### MVP
 
 - Live roster snapshot schema and coverage audit.
+- `playing_time_projections` table and upsert path.
 - Expected minutes / minutes share model.
+- Expected usage model.
 - Calibrated uncertainty interval.
-- Coarse usage role.
+- Deterministic, archetype-informed usage role label.
 - Simple displaced-minute allocation.
 - Scenario override layer for minutes and usage role.
-- Derived `role_fit` score written to `player_team_fit_scores`.
+- Derived `role_fit` score synced to `player_team_fit_scores`.
 - Consumed by Player Projection destination adapter and Team Rating Projection.
 
 ### Full version
@@ -663,5 +943,5 @@ Write `role_fit` to `player_team_fit_scores`; future migration writes full oppor
 - Coach/team random effects.
 - User-editable depth chart overrides.
 - Scenario simulation for injuries, late portal additions, and player withdrawals.
-- Full `playing_time_projections` table.
+- Learned usage-role classifier if it beats the deterministic labeler.
 - Joint minutes and usage allocation across all candidate roster scenarios.

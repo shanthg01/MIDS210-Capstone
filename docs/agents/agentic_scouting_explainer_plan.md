@@ -29,7 +29,7 @@ Each agent is a thin DB-fetch-and-format function (per pattern item #5 — "prom
 - `player_profile_agent` — `player_season_stats`, `player_archetypes` (archetype label), recent `transfers` row if any, season trend.
 - `team_context_agent` — `team_system_profiles` (system label), `roster_depth_charts`, `roster_gap_analysis` for the target school/season.
 - `fit_components_agent` — current row(s) from `player_team_fit_scores` (gap_match, scheme_fit, role_fit, program_fit, weighted overall) — straight passthrough, zero interpretation. This is the ground truth every later claim must cite.
-- `comparable_transfers_agent` — players with the same `player_archetypes` cluster who transferred into teams with a similar `team_system_profiles` label in prior seasons; pulls outcome if Model 5 (Transfer Success) exists, else just lists the comparables with pre/post minutes deltas from `transfers.pre_minutes_per_game`.
+- `comparable_transfers_agent` — players with the same `player_archetypes` cluster who transferred into teams with a similar `team_system_profiles` label in prior seasons; pulls outcome if Model 5 (Transfer Success) exists, else lists comparables with pre/post minutes deltas derived from `player_season_stats.min_pct * 0.4` or validated transfer MPG fields.
 
 ### Layer 2 — assess (parallel, dependent on Layer 1 only)
 

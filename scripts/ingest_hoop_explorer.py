@@ -64,6 +64,7 @@ from portalpoint.db.models import (
     HoopExplorerPlayerStats,
     HoopExplorerTeamStats,
     Player,
+    PlayerSeasonStats,
     School,
 )
 from portalpoint.db.session import AsyncSessionLocal
@@ -268,6 +269,27 @@ async def _build_player_map(session) -> dict[tuple[str, str], int]:
     return m
 
 
+async def _build_player_roster_index(session) -> tuple[dict[tuple[int, int, str], int], dict[tuple[int, int], list[tuple[str, int]]]]:
+    """Season/school roster index for safer HE player matching.
+
+    HE player names are not globally unique, and the players table can contain
+    duplicate names from separate source IDs. Prefer same-season, same-school
+    matches before falling back to global name matching.
+    """
+    stmt = (
+        select(PlayerSeasonStats.season, PlayerSeasonStats.school_id, Player.id, Player.full_name)
+        .join(Player, Player.id == PlayerSeasonStats.player_id)
+    )
+    result = await session.execute(stmt)
+    exact: dict[tuple[int, int, str], int] = {}
+    by_school_season: dict[tuple[int, int], list[tuple[str, int]]] = {}
+    for season, school_id, player_id, full_name in result:
+        key = (int(season), int(school_id), full_name.lower())
+        exact[key] = int(player_id)
+        by_school_season.setdefault((int(season), int(school_id)), []).append((full_name.lower(), int(player_id)))
+    return exact, by_school_season
+
+
 # ---------------------------------------------------------------------------
 # Ingest: teams
 # ---------------------------------------------------------------------------
@@ -399,11 +421,20 @@ async def ingest_player_stats(
     rows: list[dict],
     school_map: dict[str, int],
     player_map: dict[tuple[str, str], int],
+    roster_exact: dict[tuple[int, int, str], int],
+    roster_by_school_season: dict[tuple[int, int], list[tuple[str, int]]],
     season: int,
     dry_run: bool = False,
 ) -> int:
     db_school_names = list(school_map.keys())
-    player_names_lower = {name.lower(): pid for (name, _), pid in player_map.items()}
+    player_ids_by_name: dict[str, set[int]] = {}
+    for name, _barttorvik_id in player_map:
+        player_ids_by_name.setdefault(name.lower(), set()).add(player_map[(name, _barttorvik_id)])
+    unique_player_by_name = {
+        name: next(iter(player_ids))
+        for name, player_ids in player_ids_by_name.items()
+        if len(player_ids) == 1
+    }
     unmatched_teams: list[str] = []
     unmatched_players: list[str] = []
     records: list[dict] = []
@@ -423,18 +454,31 @@ async def ingest_player_stats(
             else:
                 unmatched_teams.append(he_team or "")
 
-        # Player match: try (standard_name_lower) then fuzzy
+        # Player match: prefer same season/team roster context, then fall back
+        # only to globally unique names. This avoids duplicate-name/source-ID
+        # collisions such as a HE row linking to a same-name player without the
+        # BartTorvik player-season row used by downstream models.
         he_name_raw = _str_or_none(r.get("player_name"))
         std_name = _he_player_name_to_standard(he_name_raw)
         player_id: int | None = None
         if std_name:
-            player_id = player_names_lower.get(std_name.lower())
+            std_lower = std_name.lower()
+            if school_id is not None:
+                player_id = roster_exact.get((season, int(school_id), std_lower))
+                if player_id is None:
+                    roster = roster_by_school_season.get((season, int(school_id)), [])
+                    roster_names = [name for name, _pid in roster]
+                    fuzzy_name = _fuzzy_match(std_lower, roster_names, threshold=0.88)
+                    if fuzzy_name:
+                        player_id = next(pid for name, pid in roster if name == fuzzy_name)
             if player_id is None:
-                fuzzy_name = _fuzzy_match(std_name.lower(), list(player_names_lower.keys()), threshold=0.88)
+                player_id = unique_player_by_name.get(std_lower)
+            if player_id is None:
+                fuzzy_name = _fuzzy_match(std_lower, list(unique_player_by_name.keys()), threshold=0.90)
                 if fuzzy_name:
-                    player_id = player_names_lower[fuzzy_name]
-                else:
-                    unmatched_players.append(std_name)
+                    player_id = unique_player_by_name[fuzzy_name]
+            if player_id is None:
+                unmatched_players.append(std_name)
 
         transfer_src = _str_or_none(r.get("transfer_src"))
         transfer_dest = _str_or_none(r.get("transfer_dest"))
@@ -459,6 +503,13 @@ async def ingest_player_stats(
             "off_adj_rapm": _safe_float(r.get("off_adj_rapm")),
             "def_adj_rapm": _safe_float(r.get("def_adj_rapm")),
             "adj_rapm_margin_pred": _safe_float(r.get("adj_rapm_margin_pred")),
+            # Production-weighted RAPM + off/def predicted-high-major split — exist in the
+            # raw CSV (confirmed against the header), previously never mapped here.
+            "off_adj_rapm_prod": _safe_float(r.get("off_adj_rapm_prod")),
+            "def_adj_prod_rapm": _safe_float(r.get("def_adj_prod_rapm")),
+            "adj_rapm_prod_margin": _safe_float(r.get("adj_rapm_prod_margin")),
+            "off_adj_rapm_pred": _safe_float(r.get("off_adj_rapm_pred")),
+            "def_adj_rapm_pred": _safe_float(r.get("def_adj_rapm_pred")),
             "off_usage": _safe_float(r.get("off_usage")),
             "off_assist": _safe_float(r.get("off_assist")),
             "off_efg": _safe_float(r.get("off_efg")),
@@ -573,6 +624,7 @@ async def run(args: argparse.Namespace) -> None:
         async with AsyncSessionLocal() as session:
             school_map = await _build_school_map(session)
             player_map = await _build_player_map(session)
+            roster_exact, roster_by_school_season = await _build_player_roster_index(session)
         for player_csv_path, team_csv_path in pairs:
             log.info("--- season pair: %s | %s ---", player_csv_path.name, team_csv_path.name)
             player_rows = load_csv(player_csv_path)
@@ -585,7 +637,11 @@ async def run(args: argparse.Namespace) -> None:
             log.info("season=%d", season)
             async with AsyncSessionLocal() as session:
                 n_teams   = await ingest_team_stats(session, team_rows, school_map, season, dry_run=args.dry_run)
-                n_players = await ingest_player_stats(session, player_rows, school_map, player_map, season, dry_run=args.dry_run)
+                n_players = await ingest_player_stats(
+                    session, player_rows, school_map, player_map,
+                    roster_exact, roster_by_school_season, season,
+                    dry_run=args.dry_run,
+                )
             log.info("season=%d upserted: %d teams, %d players", season, n_teams, n_players)
             _date = datetime.now().strftime("%Y-%m-%d")
             _try_s3_upload(player_csv_path, f"raw/hoop_explorer/{_date}/{season}_player_stats.csv")
@@ -649,19 +705,28 @@ async def run(args: argparse.Namespace) -> None:
         async with AsyncSessionLocal() as session:
             school_map = await _build_school_map(session)
             player_map = await _build_player_map(session)
+            roster_exact, roster_by_school_season = await _build_player_roster_index(session)
         await ingest_team_stats(None, team_rows, school_map, season, dry_run=True)
-        await ingest_player_stats(None, player_rows, school_map, player_map, season, dry_run=True)
+        await ingest_player_stats(
+            None, player_rows, school_map, player_map,
+            roster_exact, roster_by_school_season, season,
+            dry_run=True,
+        )
         log.info("[dry-run] done")
         return
 
     async with AsyncSessionLocal() as session:
         school_map = await _build_school_map(session)
         player_map = await _build_player_map(session)
+        roster_exact, roster_by_school_season = await _build_player_roster_index(session)
 
         n_teams = await ingest_team_stats(session, team_rows, school_map, season)
         log.info("hoop_explorer_team_stats upserted: %d", n_teams)
 
-        n_players = await ingest_player_stats(session, player_rows, school_map, player_map, season)
+        n_players = await ingest_player_stats(
+            session, player_rows, school_map, player_map,
+            roster_exact, roster_by_school_season, season,
+        )
         log.info("hoop_explorer_player_stats upserted: %d", n_players)
 
     # Upload CSV exports to S3
