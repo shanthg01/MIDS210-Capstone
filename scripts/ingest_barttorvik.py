@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from portalpoint.db.models import Player, PlayerSeasonStats, School, TeamSeasonStats
+from portalpoint.db.player_ids import derive_player_id
 from portalpoint.db.session import AsyncSessionLocal
 from portalpoint.modeling.minutes import resolved_minutes_per_game
 
@@ -499,6 +500,7 @@ async def ingest_players(
             continue
         height_inches = _parse_height(r.get("ht"))
         rows.append({
+            "id": derive_player_id(bart_pid),
             "full_name": name,
             "position": _infer_position(r.get("role"), height_inches),
             "height_inches": height_inches,

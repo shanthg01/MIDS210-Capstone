@@ -94,7 +94,9 @@ class Player(Base):
         Index("ix_players_full_name", "full_name"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # BigInteger, not Integer — id is hash(barttorvik_id) masked to 63 bits
+    # (see db/player_ids.py), doesn't fit a 32-bit Integer.
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     full_name: Mapped[str] = mapped_column(String(200), nullable=False)
     position: Mapped[str] = mapped_column(String(2), nullable=False)  # PG/SG/SF/PF/C
     height_inches: Mapped[Optional[int]] = mapped_column(SmallInteger)
@@ -122,7 +124,7 @@ class PlayerSchoolSeason(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # year season ends
     jersey_number: Mapped[Optional[str]] = mapped_column(String(3))
@@ -172,7 +174,7 @@ class PlayerSeasonStats(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     # Traditional
@@ -292,7 +294,7 @@ class PlayerArchetype(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     archetype_id: Mapped[int] = mapped_column(SmallInteger, nullable=False)   # K-Means cluster 0-9
     archetype_label: Mapped[str] = mapped_column(String(50), nullable=False)  # "3&D Wing" etc.
@@ -443,7 +445,7 @@ class HoopExplorerPlayerStats(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))  # nullable until matched
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     # HE identifiers
@@ -590,7 +592,7 @@ class HoopRPlayerSeasonStats(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))  # nullable until matched
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # nullable until matched
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     espn_athlete_id: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -726,7 +728,7 @@ class HoopRPlayerGameLog(Base):
     espn_game_id: Mapped[str] = mapped_column(ForeignKey("hoopr_games.espn_game_id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     game_date: Mapped[Optional[date]] = mapped_column(Date)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))  # nullable until matched
     espn_athlete_id: Mapped[str] = mapped_column(String(20), nullable=False)
     raw_display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
@@ -790,7 +792,7 @@ class RosterDepthChart(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     position: Mapped[str] = mapped_column(String(2), nullable=False)
     depth_rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1=starter
     projected_minutes: Mapped[Optional[float]] = mapped_column(Float)
@@ -828,7 +830,7 @@ class Transfer(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     from_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
     to_school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # season transferred INTO
@@ -878,7 +880,7 @@ class TransferPortalEvent(Base):
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False)  # "247sports"
     source_player_key: Mapped[str] = mapped_column(String(50), nullable=False)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))  # nullable until matched
     raw_player_name: Mapped[str] = mapped_column(String(200), nullable=False)
     match_confidence: Mapped[Optional[float]] = mapped_column(Float)
     match_status: Mapped[str] = mapped_column(String(20), nullable=False)  # matched/unmatched/ambiguous/no_school
@@ -935,7 +937,7 @@ class RosterSnapshotPlayer(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     snapshot_id: Mapped[int] = mapped_column(ForeignKey("roster_snapshots.id"), nullable=False)
-    player_id: Mapped[Optional[int]] = mapped_column(ForeignKey("players.id"))  # nullable until matched
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))  # nullable until matched
     raw_player_name: Mapped[str] = mapped_column(String(200), nullable=False)
     class_year: Mapped[Optional[str]] = mapped_column(String(10))
     height: Mapped[Optional[str]] = mapped_column(String(10))
@@ -1009,7 +1011,7 @@ class RosterBaselineMember(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     baseline_status: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -1026,7 +1028,7 @@ class NILValuation(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     estimated_value_usd: Mapped[Optional[float]] = mapped_column(Float)
@@ -1050,7 +1052,7 @@ class PlayerTeamFitScore(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     season: Mapped[int] = mapped_column(Integer, nullable=False)
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
@@ -1081,7 +1083,7 @@ class Prediction(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     predicted_per_change: Mapped[float] = mapped_column(Float, nullable=False)
     predicted_minutes: Mapped[float] = mapped_column(Float, nullable=False)
@@ -1119,7 +1121,7 @@ class PlayerProjection(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))  # null for neutral mode
     season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     projection_mode: Mapped[str] = mapped_column(String(20), nullable=False)  # 'neutral' | 'destination'
@@ -1150,7 +1152,7 @@ class Recommendation(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     reasoning: Mapped[Optional[str]] = mapped_column(Text)
@@ -1166,7 +1168,7 @@ class TeamRatingProjection(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     current_adj_em: Mapped[float] = mapped_column(Float, nullable=False)
     projected_adj_em: Mapped[float] = mapped_column(Float, nullable=False)
@@ -1250,7 +1252,7 @@ class UserShortlist(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     overall_fit: Mapped[Optional[float]] = mapped_column(Float)
     notes: Mapped[Optional[str]] = mapped_column(Text)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
