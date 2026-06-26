@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -14,6 +15,8 @@ import {
   TextField,
   Stack,
 } from '@mui/material';
+import TuneIcon from '@mui/icons-material/Tune';
+import FilterAltIcon from '@mui/icons-material/FilterAlt';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getPreferences, updatePreferences } from '../api/users';
 import { useAuth } from '../context/AuthContext';
@@ -120,6 +123,37 @@ function SliderRow({
         onChange={(_, v) => onChange(v as number)}
         sx={{ py: 0.5 }}
       />
+    </Box>
+  );
+}
+
+// ── Mechanism group header ──────────────────────────────────────────────────────
+// Two different mechanisms live on this page: weights re-rank survivors, filters
+// eliminate candidates outright before scoring ever runs. Visually separating
+// them (icon + color accent) so that distinction isn't just implied by reading.
+
+function MechanismHeader({
+  icon,
+  title,
+  description,
+  color,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  color: string;
+}) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.5, mt: 4 }}>
+      <Box sx={{ color, display: 'flex', alignItems: 'center' }}>{icon}</Box>
+      <Box>
+        <Typography variant="subtitle1" fontWeight={700} lineHeight={1.2}>
+          {title}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {description}
+        </Typography>
+      </Box>
     </Box>
   );
 }
@@ -233,8 +267,15 @@ export default function SettingsPage() {
         Customize how fit scores are calculated for your program
       </Typography>
 
+      <MechanismHeader
+        icon={<TuneIcon />}
+        title="Prioritize"
+        description="Re-ranks candidates who pass the filters below — doesn't remove anyone"
+        color="info.main"
+      />
+
       {/* Fit component weights */}
-      <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+      <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Box>
             <Typography variant="h6" fontWeight={700}>
@@ -274,7 +315,7 @@ export default function SettingsPage() {
       </Paper>
 
       {/* Priority/importance weights */}
-      <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+      <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
         <Box sx={{ mb: 2 }}>
           <Typography variant="h6" fontWeight={700}>
             Priority Weights
@@ -300,8 +341,15 @@ export default function SettingsPage() {
         ))}
       </Paper>
 
+      <MechanismHeader
+        icon={<FilterAltIcon />}
+        title="Eliminate"
+        description="Removes candidates outright before scoring ever runs — a hard cutoff, not a preference"
+        color="warning.main"
+      />
+
       {/* Recruiting filters */}
-      <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+      <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'warning.main' }}>
         <Box sx={{ mb: 2 }}>
           <Typography variant="h6" fontWeight={700}>
             Recruiting Filters
