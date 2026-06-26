@@ -118,7 +118,9 @@ def test_get_player_projection_response_shape(client):
     assert data["player_id"] == 101
     assert data["projection_mode"] == "neutral"
     assert isinstance(data["value_per_100"], float)
-    assert data["model_version"]
+    assert data["model_version"] == "player-proj-phase2a-fcast-v1"
+    assert isinstance(data["projected_box_score"], dict)
+    assert isinstance(data["projected_rates"], dict)
     assert isinstance(data["skill_states"], dict)
     assert isinstance(data["skill_percentiles"], dict)
     for pctile in data["skill_percentiles"].values():

@@ -58,6 +58,7 @@ from portalpoint.db.models import Player, PlayerSeasonStats, School, Transfer, T
 from portalpoint.db.session import AsyncSessionLocal
 from portalpoint.modeling.availability import sync_portal_candidate_flags
 from portalpoint.modeling.io import get_sync_engine
+from portalpoint.modeling.minutes import resolved_minutes_per_game
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -380,8 +381,9 @@ async def _promote_transfers(session, season: int) -> int:
     """Upsert matched transfer_portal_events rows into `transfers`, backfilling
     pre_per/pre_minutes_per_game/pre_usage_rate from that player's own
     player_season_stats at `season` (their last season at from_school —
-    see _build_roster's docstring for the season-convention note) — data we
-    already have, no extra scraping."""
+    see _build_roster's docstring for the season-convention note). MPG is
+    derived from min_pct because player_season_stats.minutes_per_game is a
+    legacy, unreliable BartTorvik field in local data."""
     result = await session.execute(
         select(TransferPortalEvent).where(
             TransferPortalEvent.season == season,
@@ -411,7 +413,9 @@ async def _promote_transfers(session, season: int) -> int:
             "portal_entry_date": e.portal_entry_date,
             "commitment_date": e.commitment_date,
             "pre_per": pre.per if pre else None,
-            "pre_minutes_per_game": pre.minutes_per_game if pre else None,
+            "pre_minutes_per_game": (
+                resolved_minutes_per_game(pre.min_pct, pre.minutes_per_game) if pre else None
+            ),
             "pre_usage_rate": pre.usage_rate if pre else None,
         })
 

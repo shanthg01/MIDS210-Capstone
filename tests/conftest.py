@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from portalpoint.main import app
+from scripts.seed_test_data import seed_test_data
 
 # Deliberately out of range of real ingested ids (~27k players, ~365 schools)
 # so tests exercise the stub-fallback path predictably instead of colliding
@@ -16,6 +17,7 @@ _TEST_NAME  = "Test Player"
 
 @pytest.fixture(scope="session")
 def client():
+    seed_test_data()
     with TestClient(app, raise_server_exceptions=True) as c:
         # Seed test user — idempotent: 201 on first run, 409 if already exists
         c.post(
