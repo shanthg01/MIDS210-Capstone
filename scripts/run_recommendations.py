@@ -18,6 +18,7 @@ For exploration use notebooks/models/recommendation_engine.ipynb.
 Usage:
   uv run python scripts/run_recommendations.py --school_id 301 --season 2025
   uv run python scripts/run_recommendations.py --school_id 301 --season 2025 --user_id 1001
+  uv run python scripts/run_recommendations.py --school_id 301 --season 2025 --dry-run   # safe smoke test
 
 Tables used today:
   users                   — school_id, is_active
@@ -181,6 +182,8 @@ def main() -> None:
     parser.add_argument("--season",    type=int, required=True)
     parser.add_argument("--user_id",   type=int, default=None,
                         help="Run for a single user; omit to run for all active users of the school")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Read + score only — skip DB write. Safe to run against shared DB.")
     args = parser.parse_args()
 
     engine = get_sync_engine()
@@ -217,10 +220,21 @@ def main() -> None:
         }
 
         top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
-        n = upsert_recommendations(engine, top10, uid)
         mean_score = float(top10["personalized_fit"].mean())
         all_mean_scores.append(mean_score)
-        log.info("user_id=%d → %d recommendations written (mean_fit=%.1f)", uid, n, mean_score)
+
+        if args.dry_run:
+            log.info("[DRY RUN] user_id=%d — would write %d rows (mean_fit=%.1f)",
+                     uid, len(top10), mean_score)
+            print(top10[["final_rank", "player_id", "player_name", "position",
+                          "scheme_fit", "gap_match", "personalized_fit"]].to_string(index=False))
+        else:
+            n = upsert_recommendations(engine, top10, uid)
+            log.info("user_id=%d → %d recommendations written (mean_fit=%.1f)", uid, n, mean_score)
+
+    if args.dry_run:
+        log.info("[DRY RUN] complete — no rows written to recommendations table.")
+        return
 
     # ── MLflow tracking ──────────────────────────────────────────────────────
     client = setup_mlflow("recommendation-engine")
