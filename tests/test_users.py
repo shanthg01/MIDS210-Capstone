@@ -108,3 +108,65 @@ def test_remove_from_shortlist_returns_204(client, user_id, H):
     # Ensure item exists before deleting
     client.post(f"/api/users/{user_id}/shortlist/3", headers=H)
     assert client.delete(f"/api/users/{user_id}/shortlist/3", headers=H).status_code == 204
+
+
+_PROFILE_BODY = {
+    "name": "Wing search",
+    "fit_weights": {"gap": 0.1, "scheme": 0.5, "role_fit": 0.2, "program_fit": 0.2},
+    "importance_weights": {"scheme_fit": 9, "role_fit": 4, "gap_match": 3, "program_fit": 5},
+    "filters": {
+        "recruiting_regions": [], "conferences": [], "positions": ["SF"],
+        "target_archetypes": [], "nil_budget_min": None, "nil_budget_max": None, "min_stats": None,
+    },
+}
+
+
+def test_preference_profiles_require_auth(client, user_id):
+    assert client.get(f"/api/users/{user_id}/preference-profiles").status_code == 401
+
+
+def test_create_and_list_preference_profile(client, user_id, H):
+    r = client.post(f"/api/users/{user_id}/preference-profiles", json=_PROFILE_BODY, headers=H)
+    assert r.status_code == 201
+    created = r.json()
+    assert created["name"] == "Wing search"
+    assert created["fit_weights"]["scheme"] == 0.5
+
+    listed = client.get(f"/api/users/{user_id}/preference-profiles", headers=H).json()["profiles"]
+    assert any(p["id"] == created["id"] for p in listed)
+
+    client.delete(f"/api/users/{user_id}/preference-profiles/{created['id']}", headers=H)
+
+
+def test_create_preference_profile_duplicate_name_conflicts(client, user_id, H):
+    body = {**_PROFILE_BODY, "name": "Duplicate name test"}
+    first = client.post(f"/api/users/{user_id}/preference-profiles", json=body, headers=H)
+    assert first.status_code == 201
+    second = client.post(f"/api/users/{user_id}/preference-profiles", json=body, headers=H)
+    assert second.status_code == 409
+    client.delete(f"/api/users/{user_id}/preference-profiles/{first.json()['id']}", headers=H)
+
+
+def test_activate_preference_profile_overwrites_active_preferences(client, user_id, H):
+    created = client.post(
+        f"/api/users/{user_id}/preference-profiles",
+        json={**_PROFILE_BODY, "name": "Activate test"},
+        headers=H,
+    ).json()
+
+    r = client.post(f"/api/users/{user_id}/preference-profiles/{created['id']}/activate", headers=H)
+    assert r.status_code == 200
+    active = r.json()
+    assert active["fit_weights"]["scheme"] == 0.5
+    assert active["importance_weights"]["scheme_fit"] == 9
+
+    # Confirms activation persisted to the single UserPreference row, not just the response.
+    refetched = client.get(f"/api/users/{user_id}/preferences", headers=H).json()
+    assert refetched["fit_weights"]["scheme"] == 0.5
+
+    client.delete(f"/api/users/{user_id}/preference-profiles/{created['id']}", headers=H)
+
+
+def test_delete_preference_profile_returns_404_when_missing(client, user_id, H):
+    r = client.delete(f"/api/users/{user_id}/preference-profiles/999999", headers=H)
+    assert r.status_code == 404

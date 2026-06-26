@@ -16,6 +16,7 @@ from portalpoint.api.schemas.player import (
     Position,
 )
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
+from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
     Player,
     PlayerArchetype as PlayerArchetypeORM,
@@ -60,6 +61,24 @@ def _safe_class_year(raw: str) -> ClassYear:
     return _CLASS_MAP.get(key, ClassYear.SENIOR)
 
 
+def _parse_min_stats(raw: list[str] | None) -> list[tuple[StatKey, float]]:
+    """Each entry formatted '<stat_key>:<min_value>' (e.g. 'usage_rate:20') —
+    a hard filter passed explicitly per-request, not pulled server-side from
+    saved preferences, since /search stays public (no CurrentUser)."""
+    if not raw:
+        return []
+    parsed: list[tuple[StatKey, float]] = []
+    for entry in raw:
+        key, _, value = entry.partition(":")
+        try:
+            stat = StatKey(key)
+            min_value = float(value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid min_stat entry: {entry!r}")
+        parsed.append((stat, min_value))
+    return parsed
+
+
 def _build_stats(s: PlayerSeasonStats) -> PlayerStats | None:
     try:
         ts = s.true_shooting_pct or 0.0
@@ -100,7 +119,14 @@ async def search_players(
         description="Restrict to players with a matched Entered/Committed transfer_portal_events "
         "row for their latest season — the 'browse the portal' view, not generic player search.",
     ),
+    min_stat: list[str] | None = Query(
+        default=None,
+        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — AND'd together "
+        "as a hard floor on the player's latest-season player_season_stats row. Valid stat_key values: "
+        + ", ".join(k.value for k in StatKey),
+    ),
 ):
+    min_stats = _parse_min_stats(min_stat)
     # Latest season subquery — avoids N+1 and multi-row joins
     latest_season_sq = (
         select(
@@ -133,6 +159,9 @@ async def search_players(
             & (TransferPortalEvent.match_status == "matched")
             & (TransferPortalEvent.status.in_(AVAILABLE_STATUSES)),
         )
+
+    for stat, min_value in min_stats:
+        stmt = stmt.where(getattr(PlayerSeasonStats, stat.value) >= min_value)
 
     rows = (await db.execute(stmt)).all()
     results = [

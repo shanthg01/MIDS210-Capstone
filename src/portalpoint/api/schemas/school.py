@@ -52,3 +52,16 @@ class SchoolDetail(SchoolBase):
     current_season_style: TeamStyle | None = None
     current_adjEM: float | None = None
     national_rank: int | None = None
+
+
+class RosterGapResponse(BaseModel):
+    """Derived from roster_state_features — facts (open minutes/usage by
+    position), not a model output. suggested_position is the simplest real
+    read of those facts: whichever position has the most open minutes share,
+    not a new score."""
+    school_id: int
+    season: int
+    open_minutes_by_position: dict[str, float]
+    open_usage_by_position: dict[str, float] | None = None
+    suggested_position: str | None = None
+    suggested_open_minutes: float | None = None

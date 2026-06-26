@@ -4,56 +4,47 @@ Brainstormed 2026-06-21. Grounded against current backend schema (`UserPreferenc
 [`src/portalpoint/api/schemas/user.py`](../../src/portalpoint/api/schemas/user.py)) and current frontend state
 (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/FitScoreBar.tsx`).
 
+**Status (2026-06-26): 8 of 9 items done.** Only #9 (shortlist comparison wiring) remains open.
+
 ## Customizability (weighting + override/factor specs)
 
 Backend schema for most of this already exists (`UserFilters`) but isn't wired to UI — `SettingsPage.tsx` has a
 greyed-out "Phase 2" placeholder for it.
 
-1. **Wire the existing Recruiting Filters panel** — `recruiting_regions`, `conferences`, `positions`,
-   `target_archetypes`, `nil_budget_min/max` all exist server-side, unused in UI. Lowest-effort, highest-visibility
-   win — replace the greyed box with real multi-selects.
-2. **Stat-threshold builder for `min_stats`** — currently a freeform `dict | None`, no shape enforced. Needs real
-   UI: pick stat (3PT%, usage%, mins%) + min value, multiple rows. Tighten the schema (typed fields, not raw dict)
-   before building UI on top of it — raw dict will rot.
-3. **Archetype picker tied to M1 labels** — `target_archetypes` field exists but raw strings; surface
-   `ARCHETYPE_LABELS` from `modeling/player_clustering.py` as a real chip-select ("3&D Wing", "Stretch Big", etc.)
-   instead of free text.
-4. **Hard filter vs soft weight — make the distinction visible.** Filters (`UserFilters`) eliminate candidates;
-   weights (`fit_weights`/`importance_weights`) re-rank survivors. Both currently live in Settings with no visual
-   separation — worth a UI section break ("Eliminate" vs "Prioritize") so coaches understand they're different
-   mechanisms.
-5. **Surface roster gap as a suggested target, not blank text entry.** `roster_state_features` already computes
-   departing/returning minutes+usage by position — show "Your biggest hole: backup PG minutes" and let user accept
-   or override, instead of a coach guessing what gap to fill manually. Connects customization directly to model
-   output.
-6. **Saved weight profiles** — one global `fit_weights`/`importance_weights` per user today. Real use case: a coach
-   scouting a wing vs. filling a specific roster hole wants different weight sets. Named presets ("Wing search,"
-   "Backup PG search") > single static slider set.
+1. ✅ **Done.** Recruiting Filters panel wired — `recruiting_regions`, `conferences`, `positions`,
+   `target_archetypes`, `nil_budget_min/max` all live in `SettingsPage.tsx` as real multi-selects.
+2. ✅ **Done.** `min_stats` is now a typed `list[StatThreshold]` (`StatKey` enum in `schemas/user.py`), with a
+   repeatable stat+min-value row builder in Settings — and actually wired into `GET /players/search`'s `min_stat`
+   query params (via `PlayerSearchPage.tsx`), not just stored inert.
+3. ✅ **Done** (as a side effect of #1) — `target_archetypes` uses the real `ARCHETYPE_LABELS` chip-select, not
+   free text.
+4. ✅ **Done.** "Prioritize" (info-blue, Tune icon) vs "Eliminate" (warning-orange, Filter icon) section headers +
+   color-accented borders in `SettingsPage.tsx`.
+5. ✅ **Done.** New `GET /api/schools/roster-gap` endpoint (first read consumer of `roster_state_features`) surfaces
+   the caller's biggest open-minutes position as a one-click "Add to filters" suggestion in Settings.
+6. ✅ **Done.** New `user_preference_profiles` table + CRUD/activate endpoints; dropdown switcher + "Save current
+   as new…" in Settings. Activating a profile copies its fields into the existing single `UserPreference` row —
+   zero changes to `fit_scores.py`'s consumption of it.
 
-Note: NIL filter (#1) will sit dead until `nil_valuations` populates (Open Design Question #6 in root `CLAUDE.md`)
-— build the UI but flag it as inert, don't let it silently no-op.
+Note: NIL filter (#1) still sits dead until `nil_valuations` populates (Open Design Question #6 in root
+`CLAUDE.md`) — built, flagged inert in the UI, not hidden.
 
 ## Other enhancements worth pursuing
 
-7. **Surface Player Projection (Model #8) on the player profile — currently zero frontend wiring.** Backend is
-   real and production (`GET /api/players/{id}/projection`, `PlayerProjectionResponse` in
-   `src/portalpoint/api/schemas/player_projection.py`) — `value_per_100` with CI bounds, `skill_percentiles`,
-   `explanation`. `PlayerProfilePage.tsx` only calls `getPlayer`, never the projection endpoint; `api/players.ts`
-   has no client for it. Highest-priority add given a completed model has no UI path at all. Suggest: a
-   projection card on the profile page (value + CI, skill percentile bars) using the same
-   `LIVE_COMPONENTS`-style real-vs-stub convention as `FitScoreBar`.
-8. **Radar/spider chart for fit breakdown.** Current `FitScoreBar` is linear bars only — D3 is in the stack per
-   `CLAUDE.md` but unused. A 4-component radar reads faster than 4 stacked bars, and the existing
-   `LIVE_COMPONENTS`/placeholder distinction should carry into the chart (dashed for stub, solid for live).
-9. **Shortlist comparison view.** Shortlist exists (`users.py` get/add/remove) and a separate `ComparePage` exists
-   for ad-hoc compares — no path from shortlist → compare selected players directly. Small wiring gap, real
+7. ✅ **Done.** `ProjectionCard.tsx` on `PlayerProfilePage.tsx` — value/100 + CI, per-40 box score, skill percentile
+   bars, top value-driver chips, via the new `GET /players/{id}/projection` client.
+8. ✅ **Done.** Hand-rolled SVG `FitRadarChart.tsx` (skipped D3 — overkill for a static 4-axis polygon) wired into
+   `FitScorePage.tsx`'s `OverallPanel`, alongside the existing numeric grid. Live/stub distinction carried via
+   filled vs. open vertex markers.
+9. **Open.** Shortlist comparison view. Shortlist exists (`users.py` get/add/remove) and a separate `ComparePage`
+   exists for ad-hoc compares — no path from shortlist → compare selected players directly. Small wiring gap, real
    workflow gap.
-10. **Onboarding for first-time weight setup.** Defaults apply silently (`_DEFAULTS` in `users.py`) — a new program
-    never sees they're using defaults. A first-login wizard ("set your priorities") turns the customizability
-    feature into something users actually discover.
+10. ✅ **Done.** `OnboardingWizard.tsx` — fires once per browser per user (`pp_onboarded_<userId>` in localStorage),
+    mounted in `AppLayout.tsx`. Surfaces the Prioritize/Eliminate split plus live default weights, "Customize now"
+    jumps to Settings.
 
-## Suggested sequencing
+## Suggested sequencing (historical)
 
-1 → 7 → 4 → 8 first: cheapest backend-ready win, then closing the completed-model-with-no-UI gap, then the
-conceptual fix that makes the customization model legible, then the visualization that makes the 4-component
-score worth having.
+Built in this order: 1 → 7 → 4 → 8 → 10 → 2 → 5 → 6. Items 2/5/6 needed real backend work (typed schema, new
+`schools.py` router, new table + migration) — see the implementation plan this was built from for the full
+backend design.

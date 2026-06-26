@@ -33,6 +33,25 @@ export interface ImportanceWeights {
   program_fit: number;
 }
 
+// Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
+export type StatKey =
+  | 'usage_rate'
+  | 'fg3_pct'
+  | 'ft_pct'
+  | 'rim_pct'
+  | 'assist_rate'
+  | 'tov_pct'
+  | 'off_reb_pct'
+  | 'def_reb_pct'
+  | 'steal_pct'
+  | 'block_pct'
+  | 'min_pct';
+
+export interface StatThreshold {
+  stat: StatKey;
+  min_value: number;
+}
+
 export interface UserFilters {
   recruiting_regions: string[];
   conferences: string[];
@@ -40,7 +59,7 @@ export interface UserFilters {
   target_archetypes: string[];
   nil_budget_min: number | null;
   nil_budget_max: number | null;
-  min_stats: Record<string, number> | null;
+  min_stats: StatThreshold[] | null;
 }
 
 export interface UserPreferences {
@@ -53,6 +72,26 @@ export interface UserPreferencesUpdate {
   importance_weights?: ImportanceWeights;
   filters?: UserFilters;
   fit_weights?: FitWeights;
+}
+
+export interface PreferenceProfile {
+  id: number;
+  name: string;
+  created_at: string;
+  fit_weights: FitWeights;
+  importance_weights: ImportanceWeights;
+  filters: UserFilters;
+}
+
+export interface PreferenceProfileCreate {
+  name: string;
+  fit_weights: FitWeights;
+  importance_weights: ImportanceWeights;
+  filters: UserFilters;
+}
+
+export interface PreferenceProfileListResponse {
+  profiles: PreferenceProfile[];
 }
 
 // ── Players ───────────────────────────────────────────────────────────────────
@@ -135,6 +174,17 @@ export interface PlayerProjectionResponse {
   explanation: Record<string, unknown> | null;
   model_version: string;
   computed_at: string;
+}
+
+// ── Schools ───────────────────────────────────────────────────────────────────
+
+export interface RosterGapResponse {
+  school_id: number;
+  season: number;
+  open_minutes_by_position: Record<string, number>;
+  open_usage_by_position: Record<string, number> | null;
+  suggested_position: string | null;
+  suggested_open_minutes: number | null;
 }
 
 // ── Fit Scores ────────────────────────────────────────────────────────────────

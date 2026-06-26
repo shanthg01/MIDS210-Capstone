@@ -6,6 +6,11 @@ from sqlalchemy.exc import IntegrityError
 
 from portalpoint.api.deps import CurrentUser, DbSession
 from portalpoint.api.schemas.fit_score import FitWeights
+from portalpoint.api.schemas.preference_profile import (
+    PreferenceProfile,
+    PreferenceProfileCreate,
+    PreferenceProfileListResponse,
+)
 from portalpoint.api.schemas.user import (
     ImportanceWeights,
     ShortlistItem,
@@ -14,7 +19,7 @@ from portalpoint.api.schemas.user import (
     UserPreferences,
     UserPreferencesUpdate,
 )
-from portalpoint.db.models import Player, UserPreference, UserShortlist
+from portalpoint.db.models import Player, UserPreference, UserPreferenceProfile, UserShortlist
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -158,3 +163,123 @@ async def remove_from_shortlist(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Player not on shortlist")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── Saved weight profiles ───────────────────────────────────────────────────
+# Additive on top of UserPreference (the single "active" row fit_scores.py
+# reads) — named snapshots a user can switch between. Activating a profile
+# copies its fields into that row; this table is never read by the fit-score
+# computation path itself.
+
+def _profile_to_schema(p: UserPreferenceProfile) -> PreferenceProfile:
+    return PreferenceProfile(
+        id=p.id,
+        name=p.name,
+        created_at=p.created_at,
+        fit_weights=FitWeights(
+            gap=p.weight_gap, scheme=p.weight_scheme, role_fit=p.weight_role, program_fit=p.weight_program,
+        ),
+        importance_weights=ImportanceWeights(
+            scheme_fit=p.importance_scheme_fit,
+            role_fit=p.importance_role_fit,
+            gap_match=p.importance_gap_match,
+            program_fit=p.importance_program_fit,
+        ),
+        filters=UserFilters(**(p.filters or {})),
+    )
+
+
+@router.get("/{user_id}/preference-profiles", response_model=PreferenceProfileListResponse)
+async def list_preference_profiles(user_id: int, current_user: CurrentUser, db: DbSession):
+    _check_auth(user_id, current_user)
+    rows = (
+        await db.execute(
+            select(UserPreferenceProfile)
+            .where(UserPreferenceProfile.user_id == user_id)
+            .order_by(UserPreferenceProfile.created_at)
+        )
+    ).scalars().all()
+    return PreferenceProfileListResponse(profiles=[_profile_to_schema(p) for p in rows])
+
+
+@router.post("/{user_id}/preference-profiles", response_model=PreferenceProfile, status_code=201)
+async def create_preference_profile(
+    user_id: int, body: PreferenceProfileCreate, current_user: CurrentUser, db: DbSession
+):
+    _check_auth(user_id, current_user)
+    profile = UserPreferenceProfile(
+        user_id=user_id,
+        name=body.name,
+        weight_gap=body.fit_weights.gap,
+        weight_scheme=body.fit_weights.scheme,
+        weight_role=body.fit_weights.role_fit,
+        weight_program=body.fit_weights.program_fit,
+        importance_scheme_fit=body.importance_weights.scheme_fit,
+        importance_role_fit=body.importance_weights.role_fit,
+        importance_gap_match=body.importance_weights.gap_match,
+        importance_program_fit=body.importance_weights.program_fit,
+        filters=body.filters.model_dump(exclude_none=True),
+    )
+    db.add(profile)
+    try:
+        await db.commit()
+        await db.refresh(profile)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Profile named {body.name!r} already exists")
+    return _profile_to_schema(profile)
+
+
+@router.delete("/{user_id}/preference-profiles/{profile_id}", status_code=204)
+async def delete_preference_profile(
+    user_id: int, profile_id: int, current_user: CurrentUser, db: DbSession
+):
+    _check_auth(user_id, current_user)
+    result = await db.execute(
+        delete(UserPreferenceProfile).where(
+            UserPreferenceProfile.id == profile_id,
+            UserPreferenceProfile.user_id == user_id,
+        )
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{user_id}/preference-profiles/{profile_id}/activate", response_model=UserPreferences)
+async def activate_preference_profile(
+    user_id: int, profile_id: int, current_user: CurrentUser, db: DbSession
+):
+    _check_auth(user_id, current_user)
+    profile = (
+        await db.execute(
+            select(UserPreferenceProfile).where(
+                UserPreferenceProfile.id == profile_id,
+                UserPreferenceProfile.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    prefs = (
+        await db.execute(select(UserPreference).where(UserPreference.user_id == user_id))
+    ).scalar_one_or_none()
+    if prefs is None:
+        prefs = UserPreference(user_id=user_id)
+        db.add(prefs)
+
+    prefs.weight_gap = profile.weight_gap
+    prefs.weight_scheme = profile.weight_scheme
+    prefs.weight_role = profile.weight_role
+    prefs.weight_program = profile.weight_program
+    prefs.importance_scheme_fit = profile.importance_scheme_fit
+    prefs.importance_role_fit = profile.importance_role_fit
+    prefs.importance_gap_match = profile.importance_gap_match
+    prefs.importance_program_fit = profile.importance_program_fit
+    prefs.filters = profile.filters
+
+    await db.commit()
+    await db.refresh(prefs)
+    return _prefs_to_schema(prefs)

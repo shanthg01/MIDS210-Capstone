@@ -14,13 +14,49 @@ import {
   Autocomplete,
   TextField,
   Stack,
+  Select,
+  MenuItem,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import TuneIcon from '@mui/icons-material/Tune';
 import FilterAltIcon from '@mui/icons-material/FilterAlt';
+import DeleteIcon from '@mui/icons-material/Delete';
+import AddIcon from '@mui/icons-material/Add';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getPreferences, updatePreferences } from '../api/users';
+import {
+  activateProfile,
+  createProfile,
+  deleteProfile,
+  getPreferences,
+  listProfiles,
+  updatePreferences,
+} from '../api/users';
+import { getRosterGap } from '../api/schools';
 import { useAuth } from '../context/AuthContext';
-import type { FitWeights, ImportanceWeights, UserFilters } from '../types/api';
+import type { FitWeights, ImportanceWeights, StatKey, StatThreshold, UserFilters } from '../types/api';
+
+// Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
+const STAT_OPTIONS: Array<{ key: StatKey; label: string }> = [
+  { key: 'usage_rate', label: 'Usage %' },
+  { key: 'fg3_pct', label: '3PT %' },
+  { key: 'ft_pct', label: 'FT %' },
+  { key: 'rim_pct', label: 'Rim %' },
+  { key: 'assist_rate', label: 'Assist Rate' },
+  { key: 'tov_pct', label: 'Turnover %' },
+  { key: 'off_reb_pct', label: 'Off. Rebound %' },
+  { key: 'def_reb_pct', label: 'Def. Rebound %' },
+  { key: 'steal_pct', label: 'Steal %' },
+  { key: 'block_pct', label: 'Block %' },
+  { key: 'min_pct', label: 'Minutes % of Team' },
+];
+export const STAT_LABELS: Record<StatKey, string> = STAT_OPTIONS.reduce(
+  (acc, o) => ({ ...acc, [o.key]: o.label }),
+  {} as Record<StatKey, string>,
+);
 
 // Mirrors schemas/school.py Region enum — no /api/schools listing endpoint exists yet to fetch this from.
 const REGIONS = ['Northeast', 'Southeast', 'Mid-Atlantic', 'Midwest', 'Southwest', 'West', 'Pacific'];
@@ -170,6 +206,25 @@ export default function SettingsPage() {
     enabled: !!userId,
   });
 
+  // 404 (no school / no roster snapshot yet) is expected, not retried.
+  const { data: rosterGap } = useQuery({
+    queryKey: ['rosterGap', userId],
+    queryFn: getRosterGap,
+    enabled: !!userId,
+    retry: false,
+  });
+
+  const { data: profilesData } = useQuery({
+    queryKey: ['preferenceProfiles', userId],
+    queryFn: () => listProfiles(userId!),
+    enabled: !!userId,
+  });
+  const profiles = profilesData?.profiles ?? [];
+  const [activeProfileId, setActiveProfileId] = useState<number | ''>('');
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+
   const [fitWeights, setFitWeights] = useState<FitWeightsPct>(DEFAULT_FIT);
   const [importance, setImportance] = useState<ImportanceWeights>(DEFAULT_IMPORTANCE);
   const [filters, setFilters] = useState<UserFilters>(DEFAULT_FILTERS);
@@ -213,6 +268,26 @@ export default function SettingsPage() {
     setSaveSuccess(false);
   }
 
+  const minStats = filters.min_stats ?? [];
+
+  function addStatThreshold() {
+    const used = new Set(minStats.map((t) => t.stat));
+    const next = STAT_OPTIONS.find((o) => !used.has(o.key))?.key ?? STAT_OPTIONS[0].key;
+    updateFilters('min_stats', [...minStats, { stat: next, min_value: 0 }]);
+  }
+
+  function updateStatThreshold(index: number, patch: Partial<StatThreshold>) {
+    updateFilters(
+      'min_stats',
+      minStats.map((t, i) => (i === index ? { ...t, ...patch } : t)),
+    );
+  }
+
+  function removeStatThreshold(index: number) {
+    const next = minStats.filter((_, i) => i !== index);
+    updateFilters('min_stats', next.length ? next : null);
+  }
+
   function handleReset() {
     setFitWeights(DEFAULT_FIT);
     setImportance(DEFAULT_IMPORTANCE);
@@ -248,6 +323,43 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleActivateProfile(profileId: number) {
+    if (!userId) return;
+    setActiveProfileId(profileId);
+    await activateProfile(userId, profileId);
+    await qc.invalidateQueries({ queryKey: ['preferences', userId] });
+  }
+
+  async function handleSaveAsProfile() {
+    if (!userId || !newProfileName.trim() || !fitValid) return;
+    setProfileSaving(true);
+    try {
+      await createProfile(userId, {
+        name: newProfileName.trim(),
+        fit_weights: {
+          gap: fitWeights.gap / 100,
+          scheme: fitWeights.scheme / 100,
+          role_fit: fitWeights.role_fit / 100,
+          program_fit: fitWeights.program_fit / 100,
+        },
+        importance_weights: importance,
+        filters,
+      });
+      await qc.invalidateQueries({ queryKey: ['preferenceProfiles', userId] });
+      setProfileDialogOpen(false);
+      setNewProfileName('');
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function handleDeleteProfile(profileId: number) {
+    if (!userId) return;
+    await deleteProfile(userId, profileId);
+    if (activeProfileId === profileId) setActiveProfileId('');
+    await qc.invalidateQueries({ queryKey: ['preferenceProfiles', userId] });
+  }
+
   if (isLoading) {
     return (
       <Box maxWidth={600}>
@@ -266,6 +378,69 @@ export default function SettingsPage() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
         Customize how fit scores are calculated for your program
       </Typography>
+
+      <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', mb: 3 }}>
+        <Select<number | ''>
+          size="small"
+          displayEmpty
+          value={activeProfileId}
+          onChange={(e) => {
+            const id = e.target.value;
+            if (typeof id === 'number') handleActivateProfile(id);
+          }}
+          sx={{ minWidth: 220 }}
+          renderValue={(id) =>
+            id === '' ? 'Current (unsaved) settings' : profiles.find((p) => p.id === id)?.name ?? ''
+          }
+        >
+          <MenuItem value="" disabled>
+            Saved profiles
+          </MenuItem>
+          {profiles.map((p) => (
+            <MenuItem key={p.id} value={p.id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+              {p.name}
+              <IconButton
+                size="small"
+                edge="end"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDeleteProfile(p.id);
+                }}
+              >
+                <DeleteIcon fontSize="inherit" />
+              </IconButton>
+            </MenuItem>
+          ))}
+        </Select>
+        <Button size="small" startIcon={<AddIcon fontSize="small" />} onClick={() => setProfileDialogOpen(true)}>
+          Save current as new…
+        </Button>
+      </Box>
+
+      <Dialog open={profileDialogOpen} onClose={() => setProfileDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Save current settings as a profile</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Profile name"
+            placeholder="e.g. Wing search"
+            value={newProfileName}
+            onChange={(e) => setNewProfileName(e.target.value)}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProfileDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!newProfileName.trim() || profileSaving}
+            onClick={handleSaveAsProfile}
+          >
+            {profileSaving ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <MechanismHeader
         icon={<TuneIcon />}
@@ -385,6 +560,25 @@ export default function SettingsPage() {
             )}
           />
 
+          {rosterGap?.suggested_position && !filters.positions.includes(rosterGap.suggested_position) && (
+            <Alert
+              severity="info"
+              action={
+                <Button
+                  size="small"
+                  onClick={() =>
+                    updateFilters('positions', [...filters.positions, rosterGap.suggested_position!])
+                  }
+                >
+                  Add to filters
+                </Button>
+              }
+            >
+              Suggested: <strong>{rosterGap.suggested_position}</strong> — your biggest open-minutes hole
+              ({rosterGap.suggested_open_minutes?.toFixed(1)}% of team minutes share)
+            </Alert>
+          )}
+
           <Autocomplete
             multiple
             size="small"
@@ -406,6 +600,49 @@ export default function SettingsPage() {
               <TextField {...params} label="Target archetypes" placeholder="Any archetype" />
             )}
           />
+
+          <Box>
+            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+              Stat thresholds
+            </Typography>
+            <Stack spacing={1.5}>
+              {minStats.map((t, i) => (
+                <Box key={i} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Select
+                    size="small"
+                    value={t.stat}
+                    onChange={(e) => updateStatThreshold(i, { stat: e.target.value as StatKey })}
+                    sx={{ minWidth: 180 }}
+                  >
+                    {STAT_OPTIONS.map((o) => (
+                      <MenuItem key={o.key} value={o.key}>
+                        {o.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Min value"
+                    value={t.min_value}
+                    onChange={(e) => updateStatThreshold(i, { min_value: Number(e.target.value) })}
+                    sx={{ width: 120 }}
+                  />
+                  <IconButton size="small" onClick={() => removeStatThreshold(i)} aria-label="Remove threshold">
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              ))}
+            </Stack>
+            <Button
+              size="small"
+              startIcon={<AddIcon fontSize="small" />}
+              onClick={addStatThreshold}
+              sx={{ mt: minStats.length ? 1 : 0 }}
+            >
+              Add stat filter
+            </Button>
+          </Box>
 
           <Box sx={{ display: 'flex', gap: 2 }}>
             <TextField

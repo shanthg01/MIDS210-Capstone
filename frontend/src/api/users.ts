@@ -1,5 +1,13 @@
 import client from './client';
-import type { ShortlistResponse, ShortlistItem, UserPreferences, UserPreferencesUpdate } from '../types/api';
+import type {
+  PreferenceProfile,
+  PreferenceProfileCreate,
+  PreferenceProfileListResponse,
+  ShortlistResponse,
+  ShortlistItem,
+  UserPreferences,
+  UserPreferencesUpdate,
+} from '../types/api';
 
 export async function getShortlist(userId: number): Promise<ShortlistResponse> {
   const { data } = await client.get<ShortlistResponse>(`/users/${userId}/shortlist`);
@@ -25,5 +33,29 @@ export async function updatePreferences(
   body: UserPreferencesUpdate,
 ): Promise<UserPreferences> {
   const { data } = await client.put<UserPreferences>(`/users/${userId}/preferences`, body);
+  return data;
+}
+
+export async function listProfiles(userId: number): Promise<PreferenceProfileListResponse> {
+  const { data } = await client.get<PreferenceProfileListResponse>(`/users/${userId}/preference-profiles`);
+  return data;
+}
+
+export async function createProfile(
+  userId: number,
+  body: PreferenceProfileCreate,
+): Promise<PreferenceProfile> {
+  const { data } = await client.post<PreferenceProfile>(`/users/${userId}/preference-profiles`, body);
+  return data;
+}
+
+export async function deleteProfile(userId: number, profileId: number): Promise<void> {
+  await client.delete(`/users/${userId}/preference-profiles/${profileId}`);
+}
+
+export async function activateProfile(userId: number, profileId: number): Promise<UserPreferences> {
+  const { data } = await client.post<UserPreferences>(
+    `/users/${userId}/preference-profiles/${profileId}/activate`,
+  );
   return data;
 }
