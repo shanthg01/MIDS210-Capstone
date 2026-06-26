@@ -35,7 +35,7 @@ async def get_recommendations(current_user: CurrentUser, user_id: int = Query(..
     items = [
         RecommendationItem(
             rank=i + 1,
-            player_id=player_id,
+            player_id=str(player_id),
             player_name=name,
             position=pos,
             overall_fit=fit,

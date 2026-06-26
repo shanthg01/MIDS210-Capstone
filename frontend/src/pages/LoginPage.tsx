@@ -29,8 +29,8 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const { access_token, user_id } = await login({ email, password });
-      setSession(access_token, user_id);
+      const { access_token, user_id, school_id } = await login({ email, password });
+      setSession(access_token, user_id, school_id);
       navigate('/dashboard', { replace: true });
     } catch (err) {
       if (isAxiosError(err) && err.response?.status === 401) {
@@ -58,14 +58,14 @@ export default function LoginPage() {
       <img
         src="/portalpoint_textonly_logo_transparent.png"
         alt="PortalPoint"
-        style={{ height: 72, objectFit: 'contain' }}
+        style={{ height: 112, objectFit: 'contain' }}
       />
       <Card
         variant="outlined"
         sx={{ width: 400, p: 2, bgcolor: 'rgba(255,255,255,0.05)' }}
       >
         <CardContent>
-          <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, mb: 1, textAlign: 'center' }}>
             Sign in to your program account
           </Typography>
 

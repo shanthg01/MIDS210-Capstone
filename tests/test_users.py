@@ -96,7 +96,7 @@ def test_add_to_shortlist_returns_201(client, user_id, H):
     assert r.status_code in (201, 409)  # 201 first time, 409 if re-run
     if r.status_code == 201:
         data = r.json()
-        assert data["player_id"] == 2
+        assert data["player_id"] == "2"
         assert "added_at" in data
 
 
@@ -170,3 +170,27 @@ def test_activate_preference_profile_overwrites_active_preferences(client, user_
 def test_delete_preference_profile_returns_404_when_missing(client, user_id, H):
     r = client.delete(f"/api/users/{user_id}/preference-profiles/999999", headers=H)
     assert r.status_code == 404
+
+
+def test_update_school_requires_auth(client, user_id):
+    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 1})
+    assert r.status_code == 401
+
+
+def test_update_school_404_for_nonexistent_school(client, user_id, H):
+    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 9_999_999}, headers=H)
+    assert r.status_code == 404
+
+
+def test_update_school_succeeds_and_restores(client, user_id, H):
+    # school_id=2 ("Duke") is real, confirmed via direct DB query when this was written.
+    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 2}, headers=H)
+    assert r.status_code == 200
+    assert r.json()["school_id"] == 2
+
+    # Restore — test_auth.py / test_schools.py assume this user's school_id is 1 (Houston),
+    # set at signup; this is a shared dev DB, not a per-test transaction, so leaving it
+    # changed would break those tests on the next run.
+    restore = client.put(f"/api/users/{user_id}/school", json={"school_id": 1}, headers=H)
+    assert restore.status_code == 200
+    assert restore.json()["school_id"] == 1

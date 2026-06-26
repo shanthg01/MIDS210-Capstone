@@ -4,12 +4,30 @@ export interface TokenResponse {
   access_token: string;
   expires_in: number;
   user_id: number;
+  school_id: number | null;
 }
 
 export interface SignupRequest {
   email: string;
   password: string;
   full_name: string;
+  school_id: number;
+}
+
+// ── Schools ───────────────────────────────────────────────────────────────────
+
+export interface SchoolListItem {
+  school_id: number;
+  name: string;
+  conference: string;
+}
+
+export interface SchoolListResponse {
+  schools: SchoolListItem[];
+}
+
+export interface UpdateSchoolResponse {
+  school_id: number;
 }
 
 export interface LoginRequest {
@@ -125,7 +143,7 @@ export interface PlayerArchetype {
 }
 
 export interface PlayerProfile {
-  player_id: number;
+  player_id: string; // string, not number — backend serializes as string to avoid JS double precision loss (63-bit ids)
   full_name: string;
   position: string;
   height_inches: number | null;
@@ -142,7 +160,7 @@ export interface PlayerProfile {
 }
 
 export interface PlayerBase {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   full_name: string;
   position: string;
   class_year: string;
@@ -160,7 +178,7 @@ export interface PlayerSearchResponse {
 // ── Player Projection ─────────────────────────────────────────────────────────
 
 export interface PlayerProjectionResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   season: number;
   projection_mode: string;
   value_per_100: number;
@@ -227,7 +245,7 @@ export interface FitBreakdown {
 }
 
 export interface FitScoreResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   overall_fit: number;
   gap_match: number;
@@ -244,7 +262,7 @@ export interface FitScoreResponse {
 // ── Team Rating Projection ────────────────────────────────────────────────────
 
 export interface TeamRatingProjectionResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   current_adjEM: number;
   projected_adjEM: number;
@@ -281,7 +299,7 @@ export interface SHAPExplanation {
 }
 
 export interface PredictionResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   predicted_per_change: number;
   predicted_minutes: number;
@@ -312,12 +330,12 @@ export interface TradeOff {
   factor: string;
   description: string;
   best_player_name: string;
-  best_player_id: number;
+  best_player_id: string; // string, not number — see PlayerProfile.player_id comment
 }
 
 export interface CompareRequest {
   program_id: number;
-  player_ids: number[];
+  player_ids: string[]; // backend's Pydantic list[int] coerces incoming JSON strings to full-precision ints
 }
 
 export interface CompareResponse {
@@ -339,7 +357,7 @@ export interface FitComponents {
 
 export interface RecommendationItem {
   rank: number;
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   player_name: string;
   position: string;
   overall_fit: number;
@@ -358,7 +376,7 @@ export interface RecommendationsResponse {
 // ── Shortlist / Pipeline ──────────────────────────────────────────────────────
 
 export interface ShortlistItem {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   player_name: string;
   position: string;
   overall_fit: number | null;

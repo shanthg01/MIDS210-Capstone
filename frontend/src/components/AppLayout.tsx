@@ -56,16 +56,17 @@ export default function AppLayout() {
               flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
-              px: 2.5,
+              justifyContent: 'center',
               borderRight: '1px solid rgba(255,255,255,0.10)',
               height: 56,
               boxSizing: 'border-box',
+              overflow: 'hidden',
             }}
           >
             <img
               src="/portalpoint_textonly_logo_transparent.png"
               alt="PortalPoint"
-              style={{ height: 38, objectFit: 'contain', display: 'block' }}
+              style={{ height: 52, objectFit: 'contain', display: 'block' }}
             />
           </Box>
 

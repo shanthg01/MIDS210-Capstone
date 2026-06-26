@@ -133,7 +133,7 @@ def test_claim_with_auth(client, H):
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
-    assert data["player_id"] == 101
+    assert data["player_id"] == "101"
     assert "message" in data
 
 
@@ -143,7 +143,7 @@ def test_get_player_projection_is_public(client):
 
 def test_get_player_projection_response_shape(client):
     data = client.get("/api/players/101/projection").json()
-    assert data["player_id"] == 101
+    assert data["player_id"] == "101"
     assert data["projection_mode"] == "neutral"
     assert isinstance(data["value_per_100"], float)
     assert data["model_version"] == "player-proj-phase2a-fcast-v1"

@@ -5,6 +5,7 @@ import type {
   PreferenceProfileListResponse,
   ShortlistResponse,
   ShortlistItem,
+  UpdateSchoolResponse,
   UserPreferences,
   UserPreferencesUpdate,
 } from '../types/api';
@@ -14,12 +15,12 @@ export async function getShortlist(userId: number): Promise<ShortlistResponse> {
   return data;
 }
 
-export async function addToShortlist(userId: number, playerId: number): Promise<ShortlistItem> {
+export async function addToShortlist(userId: number, playerId: string): Promise<ShortlistItem> {
   const { data } = await client.post<ShortlistItem>(`/users/${userId}/shortlist/${playerId}`);
   return data;
 }
 
-export async function removeFromShortlist(userId: number, playerId: number): Promise<void> {
+export async function removeFromShortlist(userId: number, playerId: string): Promise<void> {
   await client.delete(`/users/${userId}/shortlist/${playerId}`);
 }
 
@@ -57,5 +58,10 @@ export async function activateProfile(userId: number, profileId: number): Promis
   const { data } = await client.post<UserPreferences>(
     `/users/${userId}/preference-profiles/${profileId}/activate`,
   );
+  return data;
+}
+
+export async function updateSchool(userId: number, schoolId: number): Promise<UpdateSchoolResponse> {
+  const { data } = await client.put<UpdateSchoolResponse>(`/users/${userId}/school`, { school_id: schoolId });
   return data;
 }

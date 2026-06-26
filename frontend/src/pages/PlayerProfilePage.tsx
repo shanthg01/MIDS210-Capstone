@@ -102,7 +102,9 @@ function StatsSection({ stats }: { stats: PlayerStats }) {
 
 export default function PlayerProfilePage() {
   const { id } = useParams<{ id: string }>();
-  const playerId = Number(id);
+  // Stays a string end-to-end — player_id is a 63-bit hash; Number() would
+  // silently corrupt it past JS's 53-bit safe-integer limit (the original bug).
+  const playerId = id ?? '';
   const { userId } = useAuth();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -114,14 +116,14 @@ export default function PlayerProfilePage() {
   const { data: player, isLoading, error } = useQuery({
     queryKey: ['player', playerId],
     queryFn: () => getPlayer(playerId),
-    enabled: !Number.isNaN(playerId),
+    enabled: !!playerId,
   });
 
   // 404 (no projection row for this player) is expected, not retried — handled via the `error` flag below.
   const { data: projection, isLoading: projectionLoading } = useQuery({
     queryKey: ['playerProjection', playerId],
     queryFn: () => getPlayerProjection(playerId),
-    enabled: !Number.isNaN(playerId),
+    enabled: !!playerId,
     retry: false,
   });
 

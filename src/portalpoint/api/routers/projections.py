@@ -23,7 +23,7 @@ async def get_team_rating_projection(
     percentile = rng.randint(45, 85)
 
     return TeamRatingProjectionResponse(
-        player_id=player_id,
+        player_id=str(player_id),
         school_id=school_id,
         current_adjEM=current,
         projected_adjEM=projected,

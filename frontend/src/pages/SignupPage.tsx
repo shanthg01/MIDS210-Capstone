@@ -9,11 +9,15 @@ import {
   Alert,
   Link,
   CircularProgress,
+  Autocomplete,
 } from '@mui/material';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { signup } from '../api/auth';
+import { listSchools } from '../api/schools';
 import { useAuth } from '../context/AuthContext';
 import { isAxiosError } from 'axios';
+import type { SchoolListItem } from '../types/api';
 
 export default function SignupPage() {
   const { setSession } = useAuth();
@@ -22,16 +26,26 @@ export default function SignupPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [school, setSchool] = useState<SchoolListItem | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const { data: schoolsData, isLoading: schoolsLoading } = useQuery({
+    queryKey: ['schools'],
+    queryFn: listSchools,
+  });
+  const schools = schoolsData?.schools ?? [];
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!school) return;
     setError('');
     setLoading(true);
     try {
-      const { access_token, user_id } = await signup({ email, password, full_name: fullName });
-      setSession(access_token, user_id);
+      const { access_token, user_id, school_id } = await signup({
+        email, password, full_name: fullName, school_id: school.school_id,
+      });
+      setSession(access_token, user_id, school_id);
       navigate('/dashboard', { replace: true });
     } catch (err) {
       if (isAxiosError(err) && err.response?.status === 409) {
@@ -46,7 +60,7 @@ export default function SignupPage() {
     }
   }
 
-  const valid = fullName.trim().length > 0 && email.length > 0 && password.length >= 8;
+  const valid = fullName.trim().length > 0 && email.length > 0 && password.length >= 8 && school !== null;
 
   return (
     <Box
@@ -109,8 +123,20 @@ export default function SignupPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               helperText="Minimum 8 characters"
-              sx={{ mb: 3 }}
+              sx={{ mb: 2 }}
               autoComplete="new-password"
+            />
+            <Autocomplete
+              options={schools}
+              getOptionLabel={(o) => o.name}
+              loading={schoolsLoading}
+              value={school}
+              onChange={(_, val) => setSchool(val)}
+              isOptionEqualToValue={(o, v) => o.school_id === v.school_id}
+              renderInput={(params) => (
+                <TextField {...params} label="Your program / school" required placeholder="Search schools…" />
+              )}
+              sx={{ mb: 3 }}
             />
             <Button
               type="submit"

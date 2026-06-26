@@ -166,7 +166,7 @@ async def search_players(
     rows = (await db.execute(stmt)).all()
     results = [
         PlayerBase(
-            player_id=p.id,
+            player_id=str(p.id),
             full_name=p.full_name,
             position=_safe_position(p.position),
             class_year=_safe_class_year(p.class_year),
@@ -235,7 +235,7 @@ async def get_player(player_id: int, db: DbSession):
     ).scalar_one_or_none()
 
     return PlayerProfile(
-        player_id=player.id,
+        player_id=str(player.id),
         full_name=player.full_name,
         position=_safe_position(player.position),
         height_inches=player.height_inches,
@@ -286,7 +286,7 @@ async def get_player_projection(
         raise HTTPException(status_code=404, detail=detail)
 
     return PlayerProjectionResponse(
-        player_id=row.player_id,
+        player_id=str(row.player_id),
         season=row.season,
         projection_mode=row.projection_mode,
         value_per_100=row.value_per_100,
@@ -308,6 +308,6 @@ async def claim_player(player_id: int, body: ClaimPlayerRequest, current_user: C
     # STUB — replace with identity verification flow in Phase 2
     return ClaimPlayerResponse(
         success=True,
-        player_id=player_id,
+        player_id=str(player_id),
         message="Player profile linked to your account",
     )

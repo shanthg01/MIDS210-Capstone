@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from portalpoint.api.deps import DbSession
 from portalpoint.api.schemas.auth import LoginRequest, LogoutResponse, SignupRequest, TokenResponse
 from portalpoint.core.security import create_access_token, hash_password, verify_password
-from portalpoint.db.models import User, UserPreference
+from portalpoint.db.models import School, User, UserPreference
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -20,10 +20,17 @@ async def signup(body: SignupRequest, db: DbSession):
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
+    school = (
+        await db.execute(select(School).where(School.id == body.school_id))
+    ).scalar_one_or_none()
+    if school is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="School not found")
+
     user = User(
         email=body.email,
         hashed_password=hash_password(body.password),
         full_name=body.full_name,
+        school_id=body.school_id,
     )
     db.add(user)
     try:
@@ -40,6 +47,7 @@ async def signup(body: SignupRequest, db: DbSession):
         access_token=create_access_token(user.id),
         expires_in=3600,
         user_id=user.id,
+        school_id=user.school_id,
     )
 
 
@@ -61,6 +69,7 @@ async def login(body: LoginRequest, db: DbSession):
         access_token=create_access_token(user.id),
         expires_in=3600,
         user_id=user.id,
+        school_id=user.school_id,
     )
 
 

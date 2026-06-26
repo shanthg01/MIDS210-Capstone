@@ -54,6 +54,24 @@ class SchoolDetail(SchoolBase):
     national_rank: int | None = None
 
 
+class SchoolListItem(BaseModel):
+    school_id: int
+    name: str
+    conference: str
+
+
+class SchoolListResponse(BaseModel):
+    schools: list[SchoolListItem]
+
+
+class UpdateSchoolRequest(BaseModel):
+    school_id: int
+
+
+class UpdateSchoolResponse(BaseModel):
+    school_id: int
+
+
 class RosterGapResponse(BaseModel):
     """Derived from roster_state_features — facts (open minutes/usage by
     position), not a model output. suggested_position is the simplest real

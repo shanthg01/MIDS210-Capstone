@@ -184,7 +184,7 @@ function ComparisonResults({
 export default function ComparePage() {
   const { userId } = useAuth();
   const navigate = useNavigate();
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const { data: shortlist, isLoading: loadingPipeline } = useQuery({
     queryKey: ['shortlist', userId],
@@ -196,7 +196,7 @@ export default function ComparePage() {
     mutationFn: comparePlayers,
   });
 
-  function togglePlayer(id: number) {
+  function togglePlayer(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {

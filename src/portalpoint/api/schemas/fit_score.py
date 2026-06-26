@@ -51,7 +51,7 @@ class FitBreakdown(BaseModel):
 
 
 class FitScoreResponse(BaseModel):
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int
     overall_fit: float = Field(..., ge=0, le=100)
     gap_match: float = Field(..., ge=0, le=100)

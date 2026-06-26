@@ -65,7 +65,7 @@ async def get_prediction(
     ]
 
     return PredictionResponse(
-        player_id=player_id,
+        player_id=str(player_id),
         school_id=school_id,
         predicted_per_change=per_change,
         predicted_minutes=minutes,

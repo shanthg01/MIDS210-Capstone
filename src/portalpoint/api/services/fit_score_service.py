@@ -63,7 +63,7 @@ def stub_fit_score(
         1,
     )
     return FitScoreResponse(
-        player_id=player_id,
+        player_id=str(player_id),
         school_id=school_id,
         overall_fit=overall,
         gap_match=gap,
@@ -111,7 +111,7 @@ def real_fit_score(
     gap_bd = bd.get("gap", {})
 
     return FitScoreResponse(
-        player_id=row.player_id,
+        player_id=str(row.player_id),
         school_id=row.school_id,
         overall_fit=row.overall_fit,
         gap_match=row.gap_match,

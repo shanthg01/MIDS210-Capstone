@@ -2,10 +2,21 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from portalpoint.api.deps import CurrentUser, DbSession
-from portalpoint.api.schemas.school import RosterGapResponse
-from portalpoint.db.models import RosterStateFeatures, User
+from portalpoint.api.schemas.school import RosterGapResponse, SchoolListItem, SchoolListResponse
+from portalpoint.db.models import RosterStateFeatures, School, User
 
 router = APIRouter(prefix="/api/schools", tags=["schools"])
+
+
+# Public — used by the signup picker, before a user has a token.
+@router.get("", response_model=SchoolListResponse)
+async def list_schools(db: DbSession):
+    rows = (
+        await db.execute(select(School.id, School.name, School.conference).order_by(School.name))
+    ).all()
+    return SchoolListResponse(
+        schools=[SchoolListItem(school_id=r.id, name=r.name, conference=r.conference) for r in rows]
+    )
 
 
 @router.get("/roster-gap", response_model=RosterGapResponse)

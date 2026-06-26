@@ -35,9 +35,10 @@ import {
   listProfiles,
   updatePreferences,
 } from '../api/users';
-import { getRosterGap } from '../api/schools';
+import { getRosterGap, listSchools } from '../api/schools';
+import { updateSchool } from '../api/users';
 import { useAuth } from '../context/AuthContext';
-import type { FitWeights, ImportanceWeights, StatKey, StatThreshold, UserFilters } from '../types/api';
+import type { FitWeights, ImportanceWeights, SchoolListItem, StatKey, StatThreshold, UserFilters } from '../types/api';
 
 // Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
 const STAT_OPTIONS: Array<{ key: StatKey; label: string }> = [
@@ -197,8 +198,32 @@ function MechanismHeader({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
-  const { userId } = useAuth();
+  const { userId, schoolId, setSchoolId } = useAuth();
   const qc = useQueryClient();
+
+  const { data: schoolsData } = useQuery({ queryKey: ['schools'], queryFn: listSchools });
+  const schools = schoolsData?.schools ?? [];
+  const currentSchool = schools.find((s) => s.school_id === schoolId) ?? null;
+  const [selectedSchool, setSelectedSchool] = useState<SchoolListItem | null>(null);
+  const [schoolSaving, setSchoolSaving] = useState(false);
+  const [schoolSaveSuccess, setSchoolSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    if (currentSchool) setSelectedSchool(currentSchool);
+  }, [currentSchool]);
+
+  async function handleSaveSchool() {
+    if (!userId || !selectedSchool) return;
+    setSchoolSaving(true);
+    setSchoolSaveSuccess(false);
+    try {
+      await updateSchool(userId, selectedSchool.school_id);
+      setSchoolId(selectedSchool.school_id);
+      setSchoolSaveSuccess(true);
+    } finally {
+      setSchoolSaving(false);
+    }
+  }
 
   const { data: prefs, isLoading } = useQuery({
     queryKey: ['preferences', userId],
@@ -378,6 +403,50 @@ export default function SettingsPage() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
         Customize how fit scores are calculated for your program
       </Typography>
+
+      <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" fontWeight={700} gutterBottom>
+          Program
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+          Scheme Fit, Gap Match, and every other school-scoped score are computed against this school
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+          <Autocomplete
+            sx={{ flex: 1 }}
+            size="small"
+            options={schools}
+            getOptionLabel={(o) => o.name}
+            isOptionEqualToValue={(o, v) => o.school_id === v.school_id}
+            value={selectedSchool}
+            onChange={(_, val) => {
+              setSelectedSchool(val);
+              setSchoolSaveSuccess(false);
+            }}
+            renderInput={(params) => <TextField {...params} label="Your school" />}
+          />
+          <Button
+            variant="contained"
+            disabled={
+              schoolSaving || !selectedSchool || selectedSchool.school_id === currentSchool?.school_id
+            }
+            onClick={handleSaveSchool}
+            startIcon={schoolSaving ? <CircularProgress size={16} color="inherit" /> : undefined}
+          >
+            {schoolSaving ? 'Saving…' : 'Save'}
+          </Button>
+        </Box>
+        {schoolSaveSuccess && (
+          <Alert severity="success" sx={{ mt: 1.5 }}>
+            Program updated to {selectedSchool?.name}.
+          </Alert>
+        )}
+        {!schoolId && (
+          <Alert severity="warning" sx={{ mt: 1.5 }}>
+            No school set yet — fit scores can't be computed until you pick one.
+          </Alert>
+        )}
+      </Paper>
 
       <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', mb: 3 }}>
         <Select<number | ''>

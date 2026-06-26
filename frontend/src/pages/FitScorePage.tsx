@@ -288,34 +288,42 @@ function ProjectionPanel({
 
 export default function FitScorePage() {
   const { player_id } = useParams<{ player_id: string }>();
-  const playerId = Number(player_id);
-  const { userId } = useAuth();
+  // Stays a string end-to-end — player_id is a 63-bit hash; Number() would
+  // silently corrupt it past JS's 53-bit safe-integer limit (the original bug).
+  const playerId = player_id ?? '';
+  const { schoolId } = useAuth();
   const navigate = useNavigate();
-
-  // school_id: use userId as proxy — stub seeds with player_id * 1000 + school_id,
-  // so any consistent integer gives stable deterministic results
-  const schoolId = userId ?? 1;
 
   const playerQuery = useQuery({
     queryKey: ['player', playerId],
     queryFn: () => getPlayer(playerId),
-    enabled: !Number.isNaN(playerId),
+    enabled: !!playerId,
   });
 
   const fitQuery = useQuery({
     queryKey: ['fitScore', playerId, schoolId],
-    queryFn: () => getFitScore(playerId, schoolId),
-    enabled: !Number.isNaN(playerId),
+    queryFn: () => getFitScore(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
   });
 
   const projQuery = useQuery({
     queryKey: ['projection', playerId, schoolId],
-    queryFn: () => getTeamRatingProjection(playerId, schoolId),
-    enabled: !Number.isNaN(playerId),
+    queryFn: () => getTeamRatingProjection(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
   });
 
   const isLoading = playerQuery.isLoading || fitQuery.isLoading || projQuery.isLoading;
   const hasError = playerQuery.isError || fitQuery.isError;
+
+  if (schoolId === null) {
+    return (
+      <Alert severity="warning">
+        No school set up for your account yet.{' '}
+        <Link component={RouterLink} to="/settings">Set up your program in Settings</Link>{' '}
+        to see fit scores.
+      </Alert>
+    );
+  }
 
   if (isLoading) {
     return (

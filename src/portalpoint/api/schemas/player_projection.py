@@ -16,7 +16,7 @@ class PlayerProjectionResponse(BaseModel):
     (Model 6, school-level delta-AdjEM) — this is player-level talent/value.
     """
 
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     season: int
     projection_mode: str
     value_per_100: float

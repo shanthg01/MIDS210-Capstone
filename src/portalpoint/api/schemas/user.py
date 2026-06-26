@@ -71,7 +71,7 @@ class UserProfile(BaseModel):
 
 
 class ShortlistItem(BaseModel):
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     player_name: str
     position: str
     overall_fit: float | None = None

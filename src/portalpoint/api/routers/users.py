@@ -11,6 +11,7 @@ from portalpoint.api.schemas.preference_profile import (
     PreferenceProfileCreate,
     PreferenceProfileListResponse,
 )
+from portalpoint.api.schemas.school import UpdateSchoolRequest, UpdateSchoolResponse
 from portalpoint.api.schemas.user import (
     ImportanceWeights,
     ShortlistItem,
@@ -19,7 +20,7 @@ from portalpoint.api.schemas.user import (
     UserPreferences,
     UserPreferencesUpdate,
 )
-from portalpoint.db.models import Player, UserPreference, UserPreferenceProfile, UserShortlist
+from portalpoint.db.models import Player, School, User, UserPreference, UserPreferenceProfile, UserShortlist
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -51,6 +52,24 @@ def _prefs_to_schema(p: UserPreference) -> UserPreferences:
 def _check_auth(user_id: int, current_user: int) -> None:
     if user_id != current_user:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+
+@router.put("/{user_id}/school", response_model=UpdateSchoolResponse)
+async def update_school(
+    user_id: int, body: UpdateSchoolRequest, current_user: CurrentUser, db: DbSession
+):
+    _check_auth(user_id, current_user)
+    school = (await db.execute(select(School).where(School.id == body.school_id))).scalar_one_or_none()
+    if school is None:
+        raise HTTPException(status_code=404, detail="School not found")
+
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.school_id = body.school_id
+    await db.commit()
+    return UpdateSchoolResponse(school_id=body.school_id)
 
 
 @router.get("/{user_id}/preferences", response_model=UserPreferences)
@@ -107,7 +126,7 @@ async def get_shortlist(user_id: int, current_user: CurrentUser, db: DbSession):
 
     players = [
         ShortlistItem(
-            player_id=sl.player_id,
+            player_id=str(sl.player_id),
             player_name=player_name,
             position=position,
             overall_fit=sl.overall_fit,
@@ -140,7 +159,7 @@ async def add_to_shortlist(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Player already on shortlist")
 
     return ShortlistItem(
-        player_id=player_id,
+        player_id=str(player_id),
         player_name=player.full_name,
         position=player.position,
         overall_fit=None,
