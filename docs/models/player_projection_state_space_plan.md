@@ -179,10 +179,14 @@ Canonical flow:
 
 ```text
 Neutral Player Projection
-    -> Role Fit / Playing Time
+    -> Playing Time / Rotation
         -> expected minutes, expected usage, usage role, displacement
             -> Destination-adjusted Player Projection
 ```
+
+Production destination-adjusted projections are blocked until `playing_time_projections` exists.
+Dry-run notebooks may use heuristic minutes for exploration, but production rows should not be
+written without model-produced playing-time outputs.
 
 MVP destination formula:
 
@@ -195,9 +199,40 @@ destination_adjusted_value_per_100
     + competition_level_delta
 ```
 
+The per-100 value is not the same thing as total roster value. Also compute:
+
+```text
+projected_possessions_played
+projected_total_value
+destination_adjusted_interval
+```
+
+Where:
+
+```text
+projected_total_value =
+    destination_adjusted_value_per_100
+    * projected_possessions_played
+    / 100
+```
+
+The interval should start from the neutral projection interval and widen for:
+
+- playing-time interval width,
+- usage-role confidence,
+- roster snapshot staleness,
+- large source/destination level changes,
+- sparse player history or wide neutral uncertainty.
+
 Guardrails:
 
 - Keep `neutral_value_per_100` as the anchor; contextual deltas should be modest until validated.
+- Suggested MVP caps:
+  - `abs(role_usage_delta) <= 0.75`
+  - `abs(style_skill_fit_delta) <= 0.50`
+  - `abs(roster_context_delta) <= 0.50`
+  - `abs(competition_level_delta) <= 0.75`
+  - `abs(total_context_delta) <= 1.50`
 - Do not let `scheme_fit` become value by itself. Scheme Fit is compatibility; destination projection
   translates compatibility into expected production only through role, usage, and style/skill
   interactions.
@@ -813,14 +848,18 @@ player_id
 school_id
 season
 expected_minutes
+expected_minutes_share
 expected_usage
 usage_role
+usage_role_confidence
 minutes_uncertainty
 displaced_minutes
 projected_per_game_box_score
 projected_per_possession_rates
 destination_adjusted_value_per_100
 destination_adjusted_value_interval
+projected_possessions_played
+projected_total_value
 confidence
 explanation
 model_version
@@ -846,6 +885,8 @@ role_usage_delta
 style_skill_fit_delta
 roster_context_delta
 competition_level_delta
+total_context_delta
+uncertainty_adjustment
 minutes_source_model_version
 neutral_projection_model_version
 team_style_features_used
@@ -864,18 +905,108 @@ Concrete data sources for the first destination adapter:
 | Input | Source table/artifact | Key fields / metrics |
 |---|---|---|
 | Neutral projection | `player_projections` | Neutral rows with `school_id IS NULL`, `model_version="player-proj-phase2a-fcast-v1"`, target `season`; use `value_per_100`, CI bounds, `projected_rates`, `projected_box_score`, `skill_states`, `skill_percentiles`, `uncertainty`, `explanation.source_observed_season` |
-| Playing time / role | `player_team_fit_scores` initially, future `playing_time_projections` | `role_fit` plus breakdown JSON for MVP; future fields: `expected_minutes`, `expected_usage`, `usage_role`, `usage_role_confidence`, `displaced_minutes`, minutes intervals, model version |
+| Playing time / role | `playing_time_projections` | Required production dependency: `expected_minutes`, `expected_minutes_share`, `minutes_ci_lower`, `minutes_ci_upper`, `expected_usage`, `usage_role`, `usage_role_confidence`, `displaced_minutes`, `role_fit`, `model_version`, `data_quality_flags` |
 | Destination roster context | `roster_snapshots`, `roster_snapshot_players`, `roster_state_features` | current roster membership, returning/transfer-in/new flags, snapshot freshness, open/departing/returning minutes and usage by position |
 | Destination team quality / pace | `team_season_stats` | `adj_em`, `adj_o`, `adj_d`, `adj_tempo`; use `adj_tempo` for per-game stat translation and `adj_em` percentile for level/tier |
 | Destination style / system | `team_system_profiles`; `data/features/team_style_vectors.parquet`; `hoop_explorer_team_stats` | offense/defense labels, style memberships, team 3PA/rim/mid profile, HE `off_style_*_pct` / `def_style_*_pct` where covered |
 | Player style context | `hoop_explorer_player_stats`, `player_archetypes` | `pos_confidence_*`, `off_style_*_pct`, archetype label/confidence; use as explanation/context, not as a replacement for neutral projection |
-| Pairwise fit context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, breakdown JSON; use as interaction/explanation inputs, not direct value by itself |
+| Pairwise fit context | `player_team_fit_scores` | `scheme_fit`, `gap_match`, `role_fit`, breakdown JSON; use as interaction/explanation inputs, not direct value by itself |
 | Transfer/source context | `transfers`, `transfer_portal_events`, source-season `player_season_stats` | source/destination school IDs, status, pre/post usage, derived MPG from `player_season_stats.min_pct * 0.4` where available, source school/tier. Treat `min_pct` as the source of truth because older DBs may contain legacy stored MPG. |
 
 Destination rows should be written back to `player_projections` with `school_id` populated,
 `projection_mode="destination"`, and a distinct destination-adjusted `model_version`. The partial
 unique index on `(player_id, school_id, season, model_version)` handles reruns separately from
 neutral rows.
+
+#### Destination training set
+
+Train and validate destination adjustments at observed player-school-season grain:
+
+```text
+row grain:
+    player_id, actual_school_id, target_season
+
+required inputs:
+    neutral player projection for player_id, target_season
+    playing_time_projections-like opportunity features for actual_school_id, target_season
+    team_system_profiles for actual_school_id, target_season
+    team_season_stats for actual_school_id, target_season
+    source-season player context
+
+labels:
+    actual per-game box stats from player_season_stats / hoopR aggregates
+    actual usage_rate
+    actual value target from Hoop Explorer RAPM where available
+```
+
+For historical validation, the playing-time features should come from the Playing Time / Rotation
+model's out-of-fold predictions where feasible, not from actual target-season minutes copied from
+the label row. This avoids validating the destination adapter with leaked opportunity.
+
+Do not train on unchosen schools as negative outcomes. A player not attending a school is an
+unobserved counterfactual, not an observed zero-production season.
+
+#### Destination inference set
+
+Production inference should be the successful `playing_time_projections` rows for the target season:
+
+```text
+row grain:
+    player_id, school_id, target_season
+
+filter:
+    playing_time_projections.model_version = active/champion playing-time model
+    player_projections has neutral target-season row
+    destination team context is available
+```
+
+The destination adapter should skip or flag rows when any of these are missing:
+
+- neutral projection,
+- playing-time projection,
+- destination team pace/quality,
+- usable player archetype/skill context.
+
+No production destination row should be written when the playing-time projection is missing.
+
+#### Destination script contract
+
+Create:
+
+```text
+src/portalpoint/modeling/destination_projection.py
+scripts/run_destination_projection.py
+```
+
+Public functions in `destination_projection.py` should be pure and testable:
+
+```python
+load_destination_inputs(...)
+build_destination_training_examples(...)
+build_destination_inference_frame(...)
+translate_neutral_rates_to_destination_stats(...)
+compute_role_usage_delta(...)
+compute_style_skill_fit_delta(...)
+compute_roster_context_delta(...)
+compute_competition_level_delta(...)
+apply_delta_caps(...)
+propagate_destination_uncertainty(...)
+build_destination_projection_records(...)
+upsert_destination_projections(...)
+```
+
+`scripts/run_destination_projection.py` should:
+
+1. Load neutral production projections for the target season.
+2. Load active `playing_time_projections` for the target season.
+3. Inner join to destination team context and pairwise fit context.
+4. Skip rows missing playing-time projections.
+5. Translate neutral per-40/per-possession rates to destination per-game stats using expected minutes and destination pace.
+6. Apply conservative role/style/roster/competition deltas with MVP caps.
+7. Propagate uncertainty from neutral projection and playing-time intervals.
+8. Build explanation JSON with component deltas and source model versions.
+9. Upsert destination rows to `player_projections`.
+10. Log coverage, skipped-row reasons, delta distributions, interval widths, and validation metrics.
 
 ### Current API compatibility — corrected
 
@@ -1054,12 +1185,14 @@ Translate projected rates into offensive, defensive, and total points-per-100 pl
 
 ### Cell 10 - Destination Context Adapter
 
-Join Playing Time / Rotation outputs when available:
+Join required Playing Time / Rotation outputs:
 
 ```text
 expected_minutes
+expected_minutes_share
 expected_usage
 usage_role
+usage_role_confidence
 minutes_ci_lower
 minutes_ci_upper
 displaced_minutes
@@ -1089,7 +1222,9 @@ Build projection decomposition JSON and comparable-player outputs.
 
 ### Cell 14 - DB Write
 
-Write MVP-compatible rows to `predictions`; future migration writes to `player_projections`.
+Write destination rows directly to `player_projections` with `school_id` populated and
+`projection_mode="destination"`. Do not write destination-adjusted player projections to
+`predictions`.
 
 ---
 
@@ -1120,7 +1255,7 @@ Three tiers, matching the Phase 0/1/2 staging in §7, not two.
 - Preserve the two-stage architecture conceptually, but Stage 1 is a per-skill empirical-Bayes shrinkage estimator, not a Kalman filter.
 - Use season-level data (`player_season_stats`, `hoop_explorer_player_stats`) as the only input — 2026 game logs are too thin for a single-season state-space fit to beat a shrinkage estimator anyway.
 - Fit interpretable RAPM-style value model against the corrected Hoop Explorer label set (§5/§8: `off_adj_rapm`, `def_adj_rapm`, `adj_rapm_margin`).
-- Consume heuristic or future Playing Time / Rotation minutes for destination-adjusted outputs.
+- Neutral projections ship without destination-specific minutes. Production destination-adjusted rows are blocked until the Playing Time / Rotation model writes `playing_time_projections`; heuristic minutes are dry-run only.
 - Write to the new `player_projections` table (§18) from day one — never stage through `predictions`.
 - **Result:** 27,047 player-seasons (2021-2026) scored and written, served by `GET /api/players/{id}/projection`. Two real upstream data bugs found and fixed along the way (`players.position` hardcoded `'G'`; Hoop Explorer ingest dropping `off_adj_rapm_prod`/`adj_rapm_prod_margin`) — neither was a Phase 0 logic bug, both were pre-existing ingestion gaps Phase 0's data audit surfaced.
 
