@@ -21,6 +21,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import OnboardingWizard from './OnboardingWizard';
 
 const DRAWER_WIDTH = 228;
 
@@ -43,6 +44,8 @@ export default function AppLayout() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+      <OnboardingWizard />
+
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
         <Toolbar disableGutters sx={{ minHeight: '56px !important' }}>
