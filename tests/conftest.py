@@ -20,12 +20,14 @@ def client():
     seed_test_data()
     with TestClient(app, raise_server_exceptions=True) as c:
         # Seed test user — idempotent: 201 on first run, 409 if already exists.
-        # school_id=1 ("Houston") is real — signup requires it.
+        # school_id=301 ("Test University") comes from seed_test_data() above —
+        # real in every environment, unlike a locally-ingested id like 1 ("Houston"),
+        # which doesn't exist in CI's fresh DB (real regression, 2026-06-26).
         c.post(
             "/api/auth/signup",
             json={
                 "email": _TEST_EMAIL, "password": _TEST_PASS, "full_name": _TEST_NAME,
-                "school_id": 1,
+                "school_id": 301,
             },
         )
         yield c

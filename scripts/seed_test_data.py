@@ -2,8 +2,8 @@
 scripts/seed_test_data.py
 
 Idempotent seed for the rows the pytest suite assumes already exist:
-school_id=301, player_id in (1, 2, 3, 42, 101) — see tests/conftest.py and
-tests/test_players.py / tests/test_users.py. The suite is integration-style
+school_id in (301, 302), player_id in (1, 2, 3, 42, 101) — see tests/conftest.py
+and tests/test_players.py / tests/test_users.py. The suite is integration-style
 (hits the real DB, not fixtures) — locally these rows come from running the
 ingest pipeline (ingest_barttorvik.py etc.) and the modeling scripts
 (run_player_projection.py etc.); CI has neither, so this fills the gap
@@ -11,6 +11,16 @@ deterministically and fast. Safe to run against an already-populated dev DB
 too — every insert is ON CONFLICT DO NOTHING (or DO NOTHING on the relevant
 partial unique index for player_projections), so a real row from an actual
 model run always wins over the seed placeholder.
+
+school_id=301 (not a real ingested id like 1/"Houston") is deliberately what
+conftest.py's test user signs up with — a real schools.id in CI's fresh,
+unseeded DB has to come from here, not from barttorvik ingestion that never
+runs there (real regression, 2026-06-26: signup hardcoded to school_id=1,
+which only exists locally after a real ingest; CI's empty schools table made
+every login-dependent test fail with "Invalid email or password" since the
+seed signup itself 404'd). school_id=302 exists solely so
+test_update_school_succeeds_and_restores has a second real school to swap to
+without depending on locally-ingested data either.
 
 Usage:
   uv run python scripts/seed_test_data.py
@@ -36,8 +46,15 @@ from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FO
 
 SEED_SQL = """
 INSERT INTO schools (id, name, conference, city, state, region)
-VALUES (301, 'Test University', 'Test Conference', 'Testville', 'TS', 'Test Region')
+VALUES
+    (301, 'Test University', 'Test Conference', 'Testville', 'TS', 'Test Region'),
+    (302, 'Test University Two', 'Test Conference', 'Testville', 'TS', 'Test Region')
 ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO team_system_profiles
+    (school_id, season, cluster_id, system_label, offense_cluster_id, defense_cluster_id, model_version)
+VALUES (301, 2026, 0, 'Test System Label', 0, 0, 'seed-test-v1')
+ON CONFLICT (school_id, season) DO NOTHING;
 
 INSERT INTO players (id, full_name, position, class_year)
 VALUES
@@ -94,7 +111,7 @@ def seed_test_data() -> None:
 
 def main() -> None:
     seed_test_data()
-    print("Seed data ready: school(301), players(1,2,3,42,101), player_season_stats, player_archetypes, player_projections")
+    print("Seed data ready: schools(301,302), players(1,2,3,42,101), player_season_stats, player_archetypes, player_projections, team_system_profiles")
 
 
 if __name__ == "__main__":
