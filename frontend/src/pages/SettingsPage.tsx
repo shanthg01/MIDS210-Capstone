@@ -10,11 +10,42 @@ import {
   CircularProgress,
   Chip,
   Divider,
+  Autocomplete,
+  TextField,
+  Stack,
 } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getPreferences, updatePreferences } from '../api/users';
 import { useAuth } from '../context/AuthContext';
-import type { FitWeights, ImportanceWeights } from '../types/api';
+import type { FitWeights, ImportanceWeights, UserFilters } from '../types/api';
+
+// Mirrors schemas/school.py Region enum — no /api/schools listing endpoint exists yet to fetch this from.
+const REGIONS = ['Northeast', 'Southeast', 'Mid-Atlantic', 'Midwest', 'Southwest', 'West', 'Pacific'];
+
+const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C'];
+
+// Mirrors modeling/player_clustering.py ARCHETYPE_LABELS — kept in sync manually, same as FitScoreBar's LABEL_MAP.
+const ARCHETYPES = [
+  'Lead Scoring Playmaker',
+  'High-Usage Frontcourt Creator',
+  'Skilled Stretch Forward',
+  'Post Scoring Big',
+  'Two-Way Perimeter Guard',
+  'Pressure Connector Guard',
+  'Active Connector Forward',
+  'Two-Way Spacing Wing',
+  'Interior Star Big',
+];
+
+const DEFAULT_FILTERS: UserFilters = {
+  recruiting_regions: [],
+  conferences: [],
+  positions: [],
+  target_archetypes: [],
+  nil_budget_min: null,
+  nil_budget_max: null,
+  min_stats: null,
+};
 
 // ── Local state shape (percentages for display) ───────────────────────────────
 
@@ -107,6 +138,7 @@ export default function SettingsPage() {
 
   const [fitWeights, setFitWeights] = useState<FitWeightsPct>(DEFAULT_FIT);
   const [importance, setImportance] = useState<ImportanceWeights>(DEFAULT_IMPORTANCE);
+  const [filters, setFilters] = useState<UserFilters>(DEFAULT_FILTERS);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -121,6 +153,7 @@ export default function SettingsPage() {
         program_fit: Math.round(prefs.fit_weights.program_fit * 100),
       });
       setImportance({ ...prefs.importance_weights });
+      setFilters({ ...DEFAULT_FILTERS, ...prefs.filters });
       setIsDirty(false);
     }
   }, [prefs]);
@@ -140,9 +173,16 @@ export default function SettingsPage() {
     setSaveSuccess(false);
   }
 
+  function updateFilters<K extends keyof UserFilters>(key: K, val: UserFilters[K]) {
+    setFilters((prev) => ({ ...prev, [key]: val }));
+    setIsDirty(true);
+    setSaveSuccess(false);
+  }
+
   function handleReset() {
     setFitWeights(DEFAULT_FIT);
     setImportance(DEFAULT_IMPORTANCE);
+    setFilters(DEFAULT_FILTERS);
     setIsDirty(true);
     setSaveSuccess(false);
   }
@@ -162,6 +202,7 @@ export default function SettingsPage() {
       await updatePreferences(userId, {
         fit_weights: fitWeightsApi,
         importance_weights: importance,
+        filters,
       });
       await qc.invalidateQueries({ queryKey: ['preferences', userId] });
       setSaveSuccess(true);
@@ -259,14 +300,93 @@ export default function SettingsPage() {
         ))}
       </Paper>
 
-      {/* Recruiting filters — Phase 2 */}
-      <Paper variant="outlined" sx={{ p: 3, mb: 3, bgcolor: 'grey.50' }}>
-        <Typography variant="h6" fontWeight={700} color="text.secondary" gutterBottom>
-          Recruiting Filters
-        </Typography>
-        <Typography variant="body2" color="text.disabled">
-          Region, conference, position, and NIL budget filters will be configurable once the recommendation engine is wired (Phase 2).
-        </Typography>
+      {/* Recruiting filters */}
+      <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>
+            Recruiting Filters
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Eliminate candidates outside these criteria, before fit scoring ranks the rest
+          </Typography>
+        </Box>
+
+        <Divider sx={{ mb: 2 }} />
+
+        <Stack spacing={2.5}>
+          <Autocomplete
+            multiple
+            size="small"
+            options={REGIONS}
+            value={filters.recruiting_regions}
+            onChange={(_, val) => updateFilters('recruiting_regions', val)}
+            renderInput={(params) => (
+              <TextField {...params} label="Recruiting regions" placeholder="Any region" />
+            )}
+          />
+
+          <Autocomplete
+            multiple
+            freeSolo
+            size="small"
+            options={[]}
+            value={filters.conferences}
+            onChange={(_, val) => updateFilters('conferences', val)}
+            renderInput={(params) => (
+              <TextField {...params} label="Conferences" placeholder="Type a conference and press Enter" />
+            )}
+          />
+
+          <Autocomplete
+            multiple
+            size="small"
+            options={POSITIONS}
+            value={filters.positions}
+            onChange={(_, val) => updateFilters('positions', val)}
+            renderInput={(params) => (
+              <TextField {...params} label="Positions" placeholder="Any position" />
+            )}
+          />
+
+          <Autocomplete
+            multiple
+            size="small"
+            options={ARCHETYPES}
+            value={filters.target_archetypes}
+            onChange={(_, val) => updateFilters('target_archetypes', val)}
+            renderInput={(params) => (
+              <TextField {...params} label="Target archetypes" placeholder="Any archetype" />
+            )}
+          />
+
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <TextField
+              label="NIL budget min ($)"
+              type="number"
+              size="small"
+              fullWidth
+              value={filters.nil_budget_min ?? ''}
+              onChange={(e) =>
+                updateFilters('nil_budget_min', e.target.value === '' ? null : Number(e.target.value))
+              }
+            />
+            <TextField
+              label="NIL budget max ($)"
+              type="number"
+              size="small"
+              fullWidth
+              value={filters.nil_budget_max ?? ''}
+              onChange={(e) =>
+                updateFilters('nil_budget_max', e.target.value === '' ? null : Number(e.target.value))
+              }
+            />
+          </Box>
+
+          <Alert severity="info" sx={{ mt: 0.5 }}>
+            NIL budget filtering won't affect results yet — NIL valuation data isn't populated. Saved here so it
+            applies automatically once it is.
+          </Alert>
+        </Stack>
       </Paper>
 
       {/* Save actions */}

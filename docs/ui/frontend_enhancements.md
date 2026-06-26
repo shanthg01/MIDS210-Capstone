@@ -35,17 +35,25 @@ Note: NIL filter (#1) will sit dead until `nil_valuations` populates (Open Desig
 
 ## Other enhancements worth pursuing
 
-7. **Radar/spider chart for fit breakdown.** Current `FitScoreBar` is linear bars only — D3 is in the stack per
+7. **Surface Player Projection (Model #8) on the player profile — currently zero frontend wiring.** Backend is
+   real and production (`GET /api/players/{id}/projection`, `PlayerProjectionResponse` in
+   `src/portalpoint/api/schemas/player_projection.py`) — `value_per_100` with CI bounds, `skill_percentiles`,
+   `explanation`. `PlayerProfilePage.tsx` only calls `getPlayer`, never the projection endpoint; `api/players.ts`
+   has no client for it. Highest-priority add given a completed model has no UI path at all. Suggest: a
+   projection card on the profile page (value + CI, skill percentile bars) using the same
+   `LIVE_COMPONENTS`-style real-vs-stub convention as `FitScoreBar`.
+8. **Radar/spider chart for fit breakdown.** Current `FitScoreBar` is linear bars only — D3 is in the stack per
    `CLAUDE.md` but unused. A 4-component radar reads faster than 4 stacked bars, and the existing
    `LIVE_COMPONENTS`/placeholder distinction should carry into the chart (dashed for stub, solid for live).
-8. **Shortlist comparison view.** Shortlist exists (`users.py` get/add/remove) and a separate `ComparePage` exists
+9. **Shortlist comparison view.** Shortlist exists (`users.py` get/add/remove) and a separate `ComparePage` exists
    for ad-hoc compares — no path from shortlist → compare selected players directly. Small wiring gap, real
    workflow gap.
-9. **Onboarding for first-time weight setup.** Defaults apply silently (`_DEFAULTS` in `users.py`) — a new program
-   never sees they're using defaults. A first-login wizard ("set your priorities") turns the customizability
-   feature into something users actually discover.
+10. **Onboarding for first-time weight setup.** Defaults apply silently (`_DEFAULTS` in `users.py`) — a new program
+    never sees they're using defaults. A first-login wizard ("set your priorities") turns the customizability
+    feature into something users actually discover.
 
 ## Suggested sequencing
 
-1 → 4 → 7 first: cheapest backend-ready win, then the conceptual fix that makes the customization model legible,
-then the visualization that makes the 4-component score worth having.
+1 → 7 → 4 → 8 first: cheapest backend-ready win, then closing the completed-model-with-no-UI gap, then the
+conceptual fix that makes the customization model legible, then the visualization that makes the 4-component
+score worth having.

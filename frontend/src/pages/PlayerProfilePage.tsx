@@ -18,10 +18,11 @@ import BarChartIcon from '@mui/icons-material/BarChart';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { getPlayer } from '../api/players';
+import { getPlayer, getPlayerProjection } from '../api/players';
 import { addToShortlist } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import type { PlayerStats } from '../types/api';
+import ProjectionCard from '../components/ProjectionCard';
 
 function StatCell({ label, value }: { label: string; value: string | number }) {
   return (
@@ -114,6 +115,14 @@ export default function PlayerProfilePage() {
     queryKey: ['player', playerId],
     queryFn: () => getPlayer(playerId),
     enabled: !Number.isNaN(playerId),
+  });
+
+  // 404 (no projection row for this player) is expected, not retried — handled via the `error` flag below.
+  const { data: projection, isLoading: projectionLoading } = useQuery({
+    queryKey: ['playerProjection', playerId],
+    queryFn: () => getPlayerProjection(playerId),
+    enabled: !Number.isNaN(playerId),
+    retry: false,
   });
 
   async function handleAdd() {
@@ -249,6 +258,12 @@ export default function PlayerProfilePage() {
       <Divider sx={{ mb: 3 }} />
 
       {addError && <Alert severity="error" sx={{ mb: 2 }}>{addError}</Alert>}
+
+      {projectionLoading ? (
+        <Skeleton variant="rectangular" height={220} sx={{ mb: 3, borderRadius: 1 }} />
+      ) : projection ? (
+        <ProjectionCard projection={projection} />
+      ) : null}
 
       {player.current_season_stats ? (
         <StatsSection stats={player.current_season_stats} />

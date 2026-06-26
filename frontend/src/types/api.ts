@@ -118,6 +118,25 @@ export interface PlayerSearchResponse {
   query: string;
 }
 
+// ── Player Projection ─────────────────────────────────────────────────────────
+
+export interface PlayerProjectionResponse {
+  player_id: number;
+  season: number;
+  projection_mode: string;
+  value_per_100: number;
+  value_ci_lower: number | null;
+  value_ci_upper: number | null;
+  projected_box_score: Record<string, number> | null;
+  projected_rates: Record<string, number> | null;
+  skill_states: Record<string, number> | null;
+  skill_percentiles: Record<string, number> | null;
+  uncertainty: Record<string, unknown> | null;
+  explanation: Record<string, unknown> | null;
+  model_version: string;
+  computed_at: string;
+}
+
 // ── Fit Scores ────────────────────────────────────────────────────────────────
 
 export interface SchemeBreakdown {
