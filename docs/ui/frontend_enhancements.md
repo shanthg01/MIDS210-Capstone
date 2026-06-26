@@ -4,7 +4,8 @@ Brainstormed 2026-06-21. Grounded against current backend schema (`UserPreferenc
 [`src/portalpoint/api/schemas/user.py`](../../src/portalpoint/api/schemas/user.py)) and current frontend state
 (`frontend/src/pages/SettingsPage.tsx`, `frontend/src/components/FitScoreBar.tsx`).
 
-**Status (2026-06-26): 8 of 9 items done.** Only #9 (shortlist comparison wiring) remains open.
+**Status (2026-06-26): 9 of 9 items done.** #9 turned out to already be satisfied on
+re-check — see below.
 
 ## Customizability (weighting + override/factor specs)
 
@@ -36,9 +37,12 @@ Note: NIL filter (#1) still sits dead until `nil_valuations` populates (Open Des
 8. ✅ **Done.** Hand-rolled SVG `FitRadarChart.tsx` (skipped D3 — overkill for a static 4-axis polygon) wired into
    `FitScorePage.tsx`'s `OverallPanel`, alongside the existing numeric grid. Live/stub distinction carried via
    filled vs. open vertex markers.
-9. **Open.** Shortlist comparison view. Shortlist exists (`users.py` get/add/remove) and a separate `ComparePage`
-   exists for ad-hoc compares — no path from shortlist → compare selected players directly. Small wiring gap, real
-   workflow gap.
+9. ✅ **Already done — original claim was stale.** Re-checked the actual code: `ComparePage.tsx` already calls
+   `getShortlist()` directly and lets you pick 2-4 players from it to compare (`togglePlayer`/`handleCompare`,
+   `frontend/src/pages/ComparePage.tsx`). The "no path from shortlist → compare" gap described here didn't
+   reflect the current codebase. Minor remaining UX nit (not a gap): `PipelinePage.tsx` has no compare-selection
+   UI of its own, so picking happens on the Compare page, not carried over from Pipeline — left as-is, not worth
+   building for the duplication it'd remove.
 10. ✅ **Done.** `OnboardingWizard.tsx` — fires once per browser per user (`pp_onboarded_<userId>` in localStorage),
     mounted in `AppLayout.tsx`. Surfaces the Prioritize/Eliminate split plus live default weights, "Customize now"
     jumps to Settings.
