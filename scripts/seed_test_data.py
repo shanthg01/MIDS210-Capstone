@@ -2,7 +2,7 @@
 scripts/seed_test_data.py
 
 Idempotent seed for the rows the pytest suite assumes already exist:
-school_id in (301, 302), player_id in (1, 2, 3, 42, 101) — see tests/conftest.py
+school_id in (301, 302), player_id in (1-8, 42, 101) — see tests/conftest.py
 and tests/test_players.py / tests/test_users.py. The suite is integration-style
 (hits the real DB, not fixtures) — locally these rows come from running the
 ingest pipeline (ingest_barttorvik.py etc.) and the modeling scripts
@@ -21,6 +21,13 @@ every login-dependent test fail with "Invalid email or password" since the
 seed signup itself 404'd). school_id=302 exists solely so
 test_update_school_succeeds_and_restores has a second real school to swap to
 without depending on locally-ingested data either.
+
+Players 4-8 exist solely so GET /api/recommendations (recommendations.py,
+which now pulls its 10 stub-score "recommendations" from real Player rows
+ORDER BY id LIMIT 10, not fabricated ids — see PR comment history) has 10
+real players to draw from in CI; locally this was always masked by ~13k
+real ingested players, so the test only failed in CI (real regression,
+2026-06-26, found right after the school_id one above).
 
 Usage:
   uv run python scripts/seed_test_data.py
@@ -61,6 +68,11 @@ VALUES
     (1,   'Test Player One',      'PG', 'so'),
     (2,   'Test Player Two',      'SG', 'jr'),
     (3,   'Test Player Three',    'SF', 'sr'),
+    (4,   'Test Player Four',     'PF', 'fr'),
+    (5,   'Test Player Five',     'C',  'so'),
+    (6,   'Test Player Six',      'PG', 'jr'),
+    (7,   'Test Player Seven',    'SG', 'sr'),
+    (8,   'Test Player Eight',    'SF', 'fr'),
     (42,  'Test Player FortyTwo', 'PF', 'fr'),
     (101, 'Marcus Test Player',   'C',  'sr')
 ON CONFLICT (id) DO NOTHING;
@@ -111,7 +123,7 @@ def seed_test_data() -> None:
 
 def main() -> None:
     seed_test_data()
-    print("Seed data ready: schools(301,302), players(1,2,3,42,101), player_season_stats, player_archetypes, player_projections, team_system_profiles")
+    print("Seed data ready: schools(301,302), players(1-8,42,101), player_season_stats, player_archetypes, player_projections, team_system_profiles")
 
 
 if __name__ == "__main__":
