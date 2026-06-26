@@ -32,7 +32,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from portalpoint.modeling.io import get_sync_engine
-from portalpoint.modeling.player_projection_phase2 import MODEL_VERSION_PHASE2A_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
 
 SEED_SQL = """
 INSERT INTO schools (id, name, conference, city, state, region)

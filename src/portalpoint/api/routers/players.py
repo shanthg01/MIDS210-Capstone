@@ -27,7 +27,7 @@ from portalpoint.db.models import (
 )
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import resolved_minutes_per_game
-from portalpoint.modeling.player_projection_phase2 import MODEL_VERSION_PHASE2A_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -232,7 +232,7 @@ async def get_player_projection(
         description="Season to fetch. Defaults to the player's latest available projection.",
     ),
 ):
-    """Neutral talent projection (Phase 2a next-season forecast model).
+    """Neutral talent projection (Cross-Season model's next-season forecast).
     Real model output, not a stub — 404 if the player has no projection row
     rather than synthesizing one, since fabricating a fake skill/value
     breakdown would be actively misleading for a product surface like this."""
