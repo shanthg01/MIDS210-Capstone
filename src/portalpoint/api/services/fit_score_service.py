@@ -38,6 +38,43 @@ def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
     )
 
 
+def role_fit_breakdown_from_model(raw: dict | None, rng: random.Random) -> RoleFitBreakdown:
+    if not raw:
+        return stub_role_fit_breakdown(rng)
+
+    projected_minutes = float(raw.get("projected_minutes", raw.get("expected_minutes", 0.0)) or 0.0)
+    ci = raw.get("confidence_interval")
+    if not ci:
+        ci = (
+            raw.get("minutes_ci_lower", max(projected_minutes - 6.0, 0.0)),
+            raw.get("minutes_ci_upper", min(projected_minutes + 6.0, 40.0)),
+        )
+    ci_lower = float(ci[0])
+    ci_upper = float(ci[1])
+    starter_probability = raw.get("starter_probability")
+    if starter_probability is None:
+        starter_probability = max(0.0, min(1.0, (projected_minutes - 18.0) / 12.0))
+    rotation_probability = raw.get("rotation_probability")
+    if rotation_probability is None:
+        rotation_probability = max(0.0, min(1.0, (projected_minutes - 8.0) / 12.0))
+    depth_chart_position = raw.get("depth_chart_position")
+    if depth_chart_position is None:
+        depth_chart_position = 1 if projected_minutes >= 24.0 else 2 if projected_minutes >= 16.0 else 3
+
+    return RoleFitBreakdown(
+        projected_minutes=round(projected_minutes, 1),
+        confidence_interval=(round(ci_lower, 1), round(ci_upper, 1)),
+        starter_probability=round(float(starter_probability), 3),
+        depth_chart_position=int(depth_chart_position),
+        expected_usage=raw.get("expected_usage"),
+        usage_role=raw.get("usage_role"),
+        usage_role_confidence=raw.get("usage_role_confidence"),
+        rotation_probability=round(float(rotation_probability), 3),
+        displaced_minutes=raw.get("displaced_minutes"),
+        data_quality_flags=raw.get("data_quality_flags"),
+    )
+
+
 def stub_gap_breakdown(rng: random.Random) -> GapMatchBreakdown:
     n = rng.randint(1, 3)
     features = rng.sample(GAP_FEATURES, n)
@@ -119,6 +156,7 @@ def real_fit_score(
     bd = row.breakdown or {}
     scheme_bd = bd.get("scheme", {})
     gap_bd = bd.get("gap", {})
+    role_bd = bd.get("role_fit", {})
 
     return FitScoreResponse(
         player_id=str(row.player_id),
@@ -136,7 +174,7 @@ def real_fit_score(
                 rim_attack_match=scheme_bd.get("rim_attack_match", 50.0),
                 ball_movement_match=scheme_bd.get("ball_movement_match", 50.0),
             ),
-            role_fit=stub_role_fit_breakdown(rng),
+            role_fit=role_fit_breakdown_from_model(role_bd, rng),
             gap=GapMatchBreakdown(
                 archetype_needed=gap_bd.get("archetype_needed", False),
                 position_depth_score=gap_bd.get("position_depth_score", 50.0),

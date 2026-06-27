@@ -56,3 +56,4 @@ data/hoopr/
 notebooks/data/
 data/features/
 data/models/*.pkl
+data/model_validation/

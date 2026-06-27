@@ -89,6 +89,29 @@ usage are roster- and staff-dependent outcomes, not generic player traits. The n
 answers "how good is the player?"; Playing Time answers "how much of that player will this roster
 actually use, and in what role?"
 
+### Live portal season convention
+
+PortalPoint stores completed CBB stat seasons by season-ending year. For example:
+
+```text
+player_season_stats.season = 2026
+    -> completed 2025-26 player/team stats
+
+roster_snapshots.season = 2026
+transfer_portal_events.season = 2026
+    -> June 2026 roster/portal planning context after the 2025-26 season
+
+playing_time_projections.season = 2027
+    -> projected opportunity for the next playing season, 2026-27
+```
+
+The production live run should score `target_season=2027` while using
+`source_season=2026`, `roster_season=2026`, `fit_context_season=2026`, and
+`team_context_season=2026`. The output row's `season` is always the projected playing season.
+The context seasons should be recorded in `opportunity_drivers` so downstream destination-adjusted
+player projections can trace which source stats, roster snapshot, team context, and pairwise fit
+context fed the row.
+
 The first production version should remain efficient and sturdy:
 
 - Use one row per `(player_id, school_id, season)` candidate-destination pair.
@@ -755,6 +778,30 @@ Recommended uniqueness:
 UNIQUE (player_id, school_id, season, model_version)
 ```
 
+`opportunity_drivers` should carry the traceable downstream contract for destination-adjusted
+player projections:
+
+```text
+target_season
+source_stat_season
+roster_context_season
+fit_context_season
+team_context_season
+neutral_projection_model_version
+roster_open_minutes
+returning_minutes_position
+same_position_prior_minutes
+position_crowding_ratio
+opportunity_to_prior_minutes_ratio
+prior_minutes
+rotation_probability_model
+starter_probability_model
+heavy_minutes_probability
+high_usage_probability
+candidate_changes_school
+is_portal_candidate
+```
+
 ### Fit-score compatibility
 
 Also update the existing fit-score table:
@@ -772,10 +819,13 @@ Fields to update:
 | `role_fit` | Derived from `playing_time_projections.role_fit` |
 | `overall_fit` | Recomputed using existing component weights |
 | `breakdown.role_fit` | Summary JSON copied from `playing_time_projections` |
-| `model_version` | `playing-time-rotation-v1` |
+| `model_version` | `playing-time-rotation-v2` |
 
-Preserve existing `scheme_fit`, `gap_match`, and `program_fit`. Do not overwrite them while writing
-playing-time results.
+For next-season live scoring, `player_team_fit_scores` may not already have rows for the target
+season. The sync step should upsert target-season fit rows by copying `scheme_fit`, `gap_match`,
+`program_fit`, weights, `breakdown`, and `is_portal_candidate` from the fit context season, then
+replace only the Role Fit component with the current Playing Time output. This keeps all-pairs
+scoring available while preserving the upstream component model ownership boundaries.
 
 ---
 
@@ -808,16 +858,19 @@ sync_role_fit_scores(...)
 `scripts/run_playing_time.py` should:
 
 1. Load training examples at observed player-school-season grain.
-2. Fit or load the minutes-share and usage models.
-3. Calibrate minutes intervals on temporal holdout seasons.
-4. Build the production inference grid for the target season.
-5. Score expected minutes, minutes share, usage, intervals, and data-quality flags.
-6. Derive usage role from player archetype, skill state, team system, expected usage, and roster need.
-7. Allocate displaced minutes with roster constraints.
-8. Compute `role_fit`.
-9. Upsert `playing_time_projections`.
-10. Sync `player_team_fit_scores.role_fit`, `overall_fit`, and `breakdown.role_fit`.
-11. Log MLflow metrics, feature config, coverage counts, interval widths, and score distributions.
+2. Resolve the season contract (`target_season`, `source_season`, `roster_season`,
+   `fit_context_season`, `team_context_season`).
+3. Fit or load the minutes-share and usage models using only completed seasons through the source
+   season.
+4. Calibrate minutes intervals on temporal holdout seasons.
+5. Build the production inference grid for the target season from fit-context all-pairs rows.
+6. Score expected minutes, minutes share, usage, intervals, and data-quality flags.
+7. Derive usage role from player archetype, skill state, team system, expected usage, and roster need.
+8. Allocate displaced minutes with roster constraints.
+9. Compute `role_fit`.
+10. Upsert `playing_time_projections`.
+11. Sync/upsert `player_team_fit_scores.role_fit`, `overall_fit`, and `breakdown.role_fit`.
+12. Log MLflow metrics, feature config, coverage counts, interval widths, and score distributions.
 
 ---
 
@@ -826,9 +879,12 @@ sync_role_fit_scores(...)
 ### Cell 0 - Setup
 
 ```python
-MODEL_VERSION = "playing-time-rotation-v1"
-TRAIN_SEASONS = range(2020, 2026)
-PROJECTION_SEASON = 2026
+MODEL_VERSION = "playing-time-rotation-v2"
+TRAIN_SEASONS = range(2021, 2027)
+SOURCE_SEASON = 2026
+ROSTER_SEASON = 2026
+FIT_CONTEXT_SEASON = 2026
+PROJECTION_SEASON = 2027
 ```
 
 ### Cell 1 - Roster Coverage Audit

@@ -15,6 +15,7 @@ from portalpoint.api.schemas.player import (
     PlayerStats,
     Position,
 )
+from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
 from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
@@ -22,6 +23,7 @@ from portalpoint.db.models import (
     PlayerArchetype as PlayerArchetypeORM,
     PlayerProjection as PlayerProjectionORM,
     PlayerSeasonStats,
+    PlayingTimeProjection as PlayingTimeProjectionORM,
     School,
     Transfer,
     TransferPortalEvent,
@@ -306,6 +308,60 @@ async def get_player_projection(
         skill_percentiles=row.skill_percentiles,
         uncertainty=row.uncertainty,
         explanation=row.explanation,
+        model_version=row.model_version,
+        computed_at=row.computed_at,
+    )
+
+
+@router.get("/{player_id}/playing-time", response_model=PlayingTimeProjectionResponse)
+async def get_player_playing_time(
+    player_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+    school_id: int = Query(...),
+    season: int | None = Query(
+        default=None,
+        description="Season to fetch. Defaults to the latest unexpired projection for the pair.",
+    ),
+):
+    stmt = select(PlayingTimeProjectionORM).where(
+        PlayingTimeProjectionORM.player_id == player_id,
+        PlayingTimeProjectionORM.school_id == school_id,
+        PlayingTimeProjectionORM.expires_at > datetime.now(timezone.utc),
+    )
+    if season is not None:
+        stmt = stmt.where(PlayingTimeProjectionORM.season == season)
+    stmt = stmt.order_by(
+        PlayingTimeProjectionORM.season.desc(),
+        PlayingTimeProjectionORM.computed_at.desc(),
+    ).limit(1)
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        detail = f"No playing-time projection found for player {player_id} and school {school_id}"
+        if season is not None:
+            detail += f" in season {season}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    return PlayingTimeProjectionResponse(
+        player_id=str(row.player_id),
+        school_id=row.school_id,
+        season=row.season,
+        roster_snapshot_id=row.roster_snapshot_id,
+        expected_minutes=row.expected_minutes,
+        expected_minutes_share=row.expected_minutes_share,
+        minutes_ci_lower=row.minutes_ci_lower,
+        minutes_ci_upper=row.minutes_ci_upper,
+        expected_usage=row.expected_usage,
+        usage_role=row.usage_role,
+        usage_role_confidence=row.usage_role_confidence,
+        starter_probability=row.starter_probability,
+        rotation_probability=row.rotation_probability,
+        displaced_minutes=row.displaced_minutes,
+        opportunity_drivers=row.opportunity_drivers,
+        data_quality_flags=row.data_quality_flags,
+        scenario_overrides=row.scenario_overrides,
+        role_fit=row.role_fit,
         model_version=row.model_version,
         computed_at=row.computed_at,
     )

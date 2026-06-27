@@ -15,7 +15,7 @@ def test_roster_gap_requires_auth(client):
 
 
 def test_roster_gap_404_when_no_school_or_snapshot(client, H):
-    # Test user has school_id=301 (seed_test_data) but no roster_state_features
+    # Test user has school_id=9900301 (seed_test_data) but no roster_state_features
     # row for it — the real "don't fabricate" 404, not a 500.
     r = client.get("/api/schools/roster-gap", headers=H)
     assert r.status_code == 404
@@ -26,9 +26,9 @@ def test_system_profile_requires_auth(client):
 
 
 def test_system_profile_response_shape(client, H):
-    # Test user's school_id=301 has a seeded team_system_profiles row (seed_test_data.py).
+    # Test user's school_id=9900301 has a seeded team_system_profiles row (seed_test_data.py).
     data = client.get("/api/schools/system-profile", headers=H).json()
-    assert data["school_id"] == 301
+    assert data["school_id"] == 9900301
     assert "system_label" in data
     assert "offense_label" in data
     assert "defense_label" in data

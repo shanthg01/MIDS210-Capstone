@@ -26,6 +26,12 @@ class RoleFitBreakdown(BaseModel):
     confidence_interval: tuple[float, float]  # [10th-pct, 90th-pct] from Bayesian model
     starter_probability: float = Field(..., ge=0.0, le=1.0)
     depth_chart_position: int  # 1 = projected starter
+    expected_usage: float | None = Field(default=None, ge=0.0, le=100.0)
+    usage_role: str | None = None
+    usage_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    rotation_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    displaced_minutes: dict | None = None
+    data_quality_flags: dict | None = None
 
 
 class GapFeatureGap(BaseModel):
