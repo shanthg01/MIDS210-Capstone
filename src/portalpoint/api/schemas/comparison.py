@@ -27,7 +27,7 @@ class TradeOff(BaseModel):
     factor: str
     description: str
     best_player_name: str
-    best_player_id: int
+    best_player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
 
 
 class ComparisonPlayerEntry(BaseModel):

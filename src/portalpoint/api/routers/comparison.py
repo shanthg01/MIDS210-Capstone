@@ -49,7 +49,7 @@ async def _player_info(db: DbSession, player_ids: list[int]) -> dict[int, Player
 
     found: dict[int, PlayerBase] = {
         p.id: PlayerBase(
-            player_id=p.id,
+            player_id=str(p.id),
             full_name=p.full_name,
             position=_safe_position(p.position),
             class_year=_safe_class_year(p.class_year),
@@ -62,7 +62,7 @@ async def _player_info(db: DbSession, player_ids: list[int]) -> dict[int, Player
     for pid in player_ids:
         if pid not in found:
             found[pid] = PlayerBase(
-                player_id=pid,
+                player_id=str(pid),
                 full_name=f"Player #{pid}",
                 position=Position.SG,
                 class_year=ClassYear.JUNIOR,
@@ -76,7 +76,7 @@ def _stub_prediction(program_id: int, player_id: int) -> PredictionResponse:
     # STUB — replace with Model 5 (transfer success predictor) output
     rng = random.Random(program_id * 1000 + player_id + 999)
     return PredictionResponse(
-        player_id=player_id,
+        player_id=str(player_id),
         school_id=program_id,
         predicted_per_change=round(rng.uniform(0.5, 5.5), 1),
         predicted_minutes=round(rng.uniform(18.0, 28.0), 1),

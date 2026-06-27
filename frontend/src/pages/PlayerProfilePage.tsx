@@ -18,10 +18,11 @@ import BarChartIcon from '@mui/icons-material/BarChart';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { getPlayer } from '../api/players';
+import { getPlayer, getPlayerProjection } from '../api/players';
 import { addToShortlist } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import type { PlayerStats } from '../types/api';
+import ProjectionCard from '../components/ProjectionCard';
 
 function StatCell({ label, value }: { label: string; value: string | number }) {
   return (
@@ -101,7 +102,9 @@ function StatsSection({ stats }: { stats: PlayerStats }) {
 
 export default function PlayerProfilePage() {
   const { id } = useParams<{ id: string }>();
-  const playerId = Number(id);
+  // Stays a string end-to-end — player_id is a 63-bit hash; Number() would
+  // silently corrupt it past JS's 53-bit safe-integer limit (the original bug).
+  const playerId = id ?? '';
   const { userId } = useAuth();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -113,7 +116,15 @@ export default function PlayerProfilePage() {
   const { data: player, isLoading, error } = useQuery({
     queryKey: ['player', playerId],
     queryFn: () => getPlayer(playerId),
-    enabled: !Number.isNaN(playerId),
+    enabled: !!playerId,
+  });
+
+  // 404 (no projection row for this player) is expected, not retried — handled via the `error` flag below.
+  const { data: projection, isLoading: projectionLoading } = useQuery({
+    queryKey: ['playerProjection', playerId],
+    queryFn: () => getPlayerProjection(playerId),
+    enabled: !!playerId,
+    retry: false,
   });
 
   async function handleAdd() {
@@ -249,6 +260,12 @@ export default function PlayerProfilePage() {
       <Divider sx={{ mb: 3 }} />
 
       {addError && <Alert severity="error" sx={{ mb: 2 }}>{addError}</Alert>}
+
+      {projectionLoading ? (
+        <Skeleton variant="rectangular" height={220} sx={{ mb: 3, borderRadius: 1 }} />
+      ) : projection ? (
+        <ProjectionCard projection={projection} />
+      ) : null}
 
       {player.current_season_stats ? (
         <StatsSection stats={player.current_season_stats} />

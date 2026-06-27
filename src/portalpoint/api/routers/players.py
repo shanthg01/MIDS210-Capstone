@@ -16,6 +16,7 @@ from portalpoint.api.schemas.player import (
     Position,
 )
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
+from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
     Player,
     PlayerArchetype as PlayerArchetypeORM,
@@ -60,6 +61,24 @@ def _safe_class_year(raw: str) -> ClassYear:
     return _CLASS_MAP.get(key, ClassYear.SENIOR)
 
 
+def _parse_min_stats(raw: list[str] | None) -> list[tuple[StatKey, float]]:
+    """Each entry formatted '<stat_key>:<min_value>' (e.g. 'usage_rate:20') —
+    a hard filter passed explicitly per-request, not pulled server-side from
+    saved preferences, since /search stays public (no CurrentUser)."""
+    if not raw:
+        return []
+    parsed: list[tuple[StatKey, float]] = []
+    for entry in raw:
+        key, _, value = entry.partition(":")
+        try:
+            stat = StatKey(key)
+            min_value = float(value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid min_stat entry: {entry!r}")
+        parsed.append((stat, min_value))
+    return parsed
+
+
 def _build_stats(s: PlayerSeasonStats) -> PlayerStats | None:
     try:
         ts = s.true_shooting_pct or 0.0
@@ -100,7 +119,14 @@ async def search_players(
         description="Restrict to players with a matched Entered/Committed transfer_portal_events "
         "row for their latest season — the 'browse the portal' view, not generic player search.",
     ),
+    min_stat: list[str] | None = Query(
+        default=None,
+        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — AND'd together "
+        "as a hard floor on the player's latest-season player_season_stats row. Valid stat_key values: "
+        + ", ".join(k.value for k in StatKey),
+    ),
 ):
+    min_stats = _parse_min_stats(min_stat)
     # Latest season subquery — avoids N+1 and multi-row joins
     latest_season_sq = (
         select(
@@ -134,10 +160,13 @@ async def search_players(
             & (TransferPortalEvent.status.in_(AVAILABLE_STATUSES)),
         )
 
+    for stat, min_value in min_stats:
+        stmt = stmt.where(getattr(PlayerSeasonStats, stat.value) >= min_value)
+
     rows = (await db.execute(stmt)).all()
     results = [
         PlayerBase(
-            player_id=p.id,
+            player_id=str(p.id),
             full_name=p.full_name,
             position=_safe_position(p.position),
             class_year=_safe_class_year(p.class_year),
@@ -206,7 +235,7 @@ async def get_player(player_id: int, db: DbSession):
     ).scalar_one_or_none()
 
     return PlayerProfile(
-        player_id=player.id,
+        player_id=str(player.id),
         full_name=player.full_name,
         position=_safe_position(player.position),
         height_inches=player.height_inches,
@@ -232,14 +261,22 @@ async def get_player_projection(
         description="Season to fetch. Defaults to the player's latest available projection.",
     ),
 ):
-    """Neutral talent projection (Cross-Season model's next-season forecast).
-    Real model output, not a stub — 404 if the player has no projection row
-    rather than synthesizing one, since fabricating a fake skill/value
-    breakdown would be actively misleading for a product surface like this."""
+    """Neutral talent projection. Real model output, not a stub — 404 if the
+    player has no projection row rather than synthesizing one, since
+    fabricating a fake skill/value breakdown would be actively misleading for
+    a product surface like this.
+
+    Accepts either real, populated model_version (Phase 0 shrinkage or Phase 2a
+    neutral), most recent first — not narrowed to PLAYER_PROJECTION_MODEL_VERSION
+    (the cross-season *forecast* variant) alone, since that version has only 2
+    rows in the whole table (real bug found 2026-06-26: every other player's
+    real projection was 404ing because of this filter)."""
     stmt = select(PlayerProjectionORM).where(
         PlayerProjectionORM.player_id == player_id,
         PlayerProjectionORM.projection_mode == "neutral",
-        PlayerProjectionORM.model_version == PLAYER_PROJECTION_MODEL_VERSION,
+        PlayerProjectionORM.model_version.in_(
+            [PLAYER_PROJECTION_MODEL_VERSION, "player-projection-shrinkage-v1", "player-projection-phase2a-v1"]
+        ),
         PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
     )
     if season is not None:
@@ -257,7 +294,7 @@ async def get_player_projection(
         raise HTTPException(status_code=404, detail=detail)
 
     return PlayerProjectionResponse(
-        player_id=row.player_id,
+        player_id=str(row.player_id),
         season=row.season,
         projection_mode=row.projection_mode,
         value_per_100=row.value_per_100,
@@ -279,6 +316,6 @@ async def claim_player(player_id: int, body: ClaimPlayerRequest, current_user: C
     # STUB — replace with identity verification flow in Phase 2
     return ClaimPlayerResponse(
         success=True,
-        player_id=player_id,
+        player_id=str(player_id),
         message="Player profile linked to your account",
     )

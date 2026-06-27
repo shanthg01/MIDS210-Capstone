@@ -15,9 +15,30 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
-import { getPlayer } from '../api/players';
+import { getPlayer, getPlayerProjection } from '../api/players';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
+import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
+import ProjectionCard from '../components/ProjectionCard';
+
+// Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
+// convention as SettingsPage's STAT_LABELS / ProjectionCard's SKILL_LABELS.
+const GAP_FEATURE_LABELS: Record<string, string> = {
+  usage_rate: 'Usage Rate',
+  true_shooting_pct: 'True Shooting %',
+  assist_rate: 'Assist Rate',
+  tov_pct_inverse: 'Turnover Avoidance',
+  off_reb_pct: 'Off. Rebound %',
+  def_reb_pct: 'Def. Rebound %',
+  block_pct: 'Block %',
+  steal_pct: 'Steal %',
+  free_throw_rate: 'Free Throw Rate',
+  three_point_rate: '3PT Rate',
+  rim_rate: 'Rim Rate',
+  mid_range_rate: 'Mid-Range Rate',
+  fg3_pct: '3PT %',
+  rim_pct: 'Rim %',
+};
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
@@ -134,36 +155,51 @@ function OverallPanel({
           /100
         </Typography>
       </Box>
-      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1 }}>
-        {[
-          { label: 'Gap Match', value: gap, component: 'gap_match' },
-          { label: 'Scheme', value: scheme, component: 'scheme_fit' },
-          { label: 'Role Fit', value: role, component: 'role_fit' },
-          { label: 'Program Fit', value: program, component: 'program_fit' },
-        ].map(({ label, value, component }) => {
-          const c = scoreColor(value);
-          const isLive = LIVE_COMPONENTS.has(component);
-          return (
-            <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Box
-                  sx={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    bgcolor: isLive ? 'success.main' : 'grey.400',
-                  }}
-                />
-                <Typography variant="body2" color="text.secondary">
-                  {label}
+      <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
+          {[
+            { label: 'Gap Match', value: gap, component: 'gap_match' },
+            { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+            { label: 'Role Fit', value: role, component: 'role_fit' },
+            { label: 'Program Fit', value: program, component: 'program_fit' },
+          ].map(({ label, value, component }) => {
+            const c = scoreColor(value);
+            const isLive = LIVE_COMPONENTS.has(component);
+            return (
+              <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Box
+                    sx={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      bgcolor: isLive ? 'success.main' : 'grey.400',
+                    }}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {label}
+                  </Typography>
+                </Box>
+                <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
+                  {fmtScore(value)}
                 </Typography>
               </Box>
-              <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
-                {fmtScore(value)}
-              </Typography>
-            </Box>
-          );
-        })}
+            );
+          })}
+        </Box>
+
+        <Box sx={{ flex: '1 1 240px' }}>
+          <FitRadarChart
+            size={180}
+            data={[
+              { label: 'Gap Match', value: gap, component: 'gap_match' },
+              { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+              { label: 'Role Fit', value: role, component: 'role_fit' },
+              { label: 'Program Fit', value: program, component: 'program_fit' },
+            ]}
+          />
+          <RadarLegend />
+        </Box>
       </Box>
     </Paper>
   );
@@ -272,34 +308,51 @@ function ProjectionPanel({
 
 export default function FitScorePage() {
   const { player_id } = useParams<{ player_id: string }>();
-  const playerId = Number(player_id);
-  const { userId } = useAuth();
+  // Stays a string end-to-end — player_id is a 63-bit hash; Number() would
+  // silently corrupt it past JS's 53-bit safe-integer limit (the original bug).
+  const playerId = player_id ?? '';
+  const { schoolId } = useAuth();
   const navigate = useNavigate();
-
-  // school_id: use userId as proxy — stub seeds with player_id * 1000 + school_id,
-  // so any consistent integer gives stable deterministic results
-  const schoolId = userId ?? 1;
 
   const playerQuery = useQuery({
     queryKey: ['player', playerId],
     queryFn: () => getPlayer(playerId),
-    enabled: !Number.isNaN(playerId),
+    enabled: !!playerId,
   });
 
   const fitQuery = useQuery({
     queryKey: ['fitScore', playerId, schoolId],
-    queryFn: () => getFitScore(playerId, schoolId),
-    enabled: !Number.isNaN(playerId),
+    queryFn: () => getFitScore(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
   });
 
   const projQuery = useQuery({
     queryKey: ['projection', playerId, schoolId],
-    queryFn: () => getTeamRatingProjection(playerId, schoolId),
-    enabled: !Number.isNaN(playerId),
+    queryFn: () => getTeamRatingProjection(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
+  });
+
+  // Context-neutral — independent of schoolId, unlike everything else on this
+  // page. 404 (no projection row yet) is expected, not retried.
+  const playerProjectionQuery = useQuery({
+    queryKey: ['playerProjection', playerId],
+    queryFn: () => getPlayerProjection(playerId),
+    enabled: !!playerId,
+    retry: false,
   });
 
   const isLoading = playerQuery.isLoading || fitQuery.isLoading || projQuery.isLoading;
   const hasError = playerQuery.isError || fitQuery.isError;
+
+  if (schoolId === null) {
+    return (
+      <Alert severity="warning">
+        No school set up for your account yet.{' '}
+        <Link component={RouterLink} to="/settings">Set up your program in Settings</Link>{' '}
+        to see fit scores.
+      </Alert>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -449,31 +502,36 @@ export default function FitScorePage() {
               {fmtScore(fit.breakdown.gap.position_depth_score)}
             </Typography>
           </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Uniqueness Bonus
-            </Typography>
-            <Typography
-              variant="h6"
-              fontWeight={700}
-              color={fit.breakdown.gap.uniqueness_bonus > 0 ? 'success.main' : 'text.secondary'}
-            >
-              +{fmtScore(fit.breakdown.gap.uniqueness_bonus)}
-            </Typography>
-          </Box>
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Redundancy Penalty
-            </Typography>
-            <Typography
-              variant="h6"
-              fontWeight={700}
-              color={fit.breakdown.gap.redundancy_penalty > 0 ? 'error.main' : 'text.secondary'}
-            >
-              -{fmtScore(fit.breakdown.gap.redundancy_penalty)}
-            </Typography>
-          </Box>
+          <Tooltip title="Confidence in the gap score itself — blends how reliable this player's position assignment, sample size, and stat features are" placement="top">
+            <Box sx={{ cursor: 'help' }}>
+              <Typography variant="caption" color="text.secondary">
+                Gap Confidence
+              </Typography>
+              <Typography variant="h6" fontWeight={700}>
+                {(fit.breakdown.gap.gap_reliability * 100).toFixed(0)}%
+              </Typography>
+            </Box>
+          </Tooltip>
         </Box>
+
+        {fit.breakdown.gap.top_gap_features.length > 0 && (
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75 }}>
+              Top stat gaps this player fills
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+              {fit.breakdown.gap.top_gap_features.map((f) => (
+                <Chip
+                  key={f.feature}
+                  size="small"
+                  variant="outlined"
+                  color="success"
+                  label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
       </SectionPaper>
 
       {/* Program Fit breakdown */}
@@ -486,6 +544,18 @@ export default function FitScorePage() {
         <SubBar label="Cultural Fit" value={fit.breakdown.program_fit.cultural_score} />
         <SubBar label="NIL Budget Alignment" value={fit.breakdown.program_fit.nil_budget_alignment} />
       </SectionPaper>
+
+      {/* Player Projection — context-neutral, not part of the 4-component score above */}
+      {playerProjectionQuery.data && (
+        <Box sx={{ mb: 3 }}>
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            The projection below is <strong>context-neutral</strong> — this player's intrinsic
+            talent/value, independent of this school's scheme or roster. It is not one of the
+            4 fit components above.
+          </Alert>
+          <ProjectionCard projection={playerProjectionQuery.data} />
+        </Box>
+      )}
 
       {/* Team Rating Projection */}
       {proj && <ProjectionPanel data={proj} />}

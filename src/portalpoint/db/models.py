@@ -1230,6 +1230,36 @@ class UserPreference(Base):
     user: Mapped[User] = relationship(back_populates="preferences")
 
 
+class UserPreferenceProfile(Base):
+    """Named, saved snapshots of weights+filters a user can switch between
+    (e.g. "Wing search" vs "Backup PG search") — additive on top of
+    UserPreference, which stays the single "active" row fit_scores.py reads.
+    Activating a profile copies its fields into that row; this table is never
+    read by the fit-score computation path itself."""
+
+    __tablename__ = "user_preference_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_user_preference_profiles_user_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7)
+    importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
+    importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5)
+    importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.20)
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30)
+    weight_role: Mapped[float] = mapped_column(Float, default=0.25)
+    weight_program: Mapped[float] = mapped_column(Float, default=0.25)
+    filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped[User] = relationship()
+
+
 class UserFeedback(Base):
     __tablename__ = "user_feedback"
 

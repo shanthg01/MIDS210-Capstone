@@ -79,7 +79,10 @@ def test_gap_breakdown_present(client, H):
     gap = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()["breakdown"]["gap"]
     assert isinstance(gap["archetype_needed"], bool)
     assert 0 <= gap["position_depth_score"] <= 100
-    assert gap["redundancy_penalty"] <= 0
+    assert 0.0 <= gap["gap_reliability"] <= 1.0
+    assert isinstance(gap["top_gap_features"], list)
+    for f in gap["top_gap_features"]:
+        assert "feature" in f and "gap" in f
 
 
 def test_deterministic(client, H):
