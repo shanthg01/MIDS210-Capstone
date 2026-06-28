@@ -40,9 +40,9 @@ from datetime import datetime, timedelta, timezone
 
 import mlflow
 import pandas as pd
-from psycopg2.extras import execute_values
 from sqlalchemy import text
 
+from portalpoint.modeling.db_writers import upsert_with_season_replace
 from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 from portalpoint.modeling.recommendations import (
@@ -101,9 +101,6 @@ SELECT
 FROM player_team_fit_scores ptf
 JOIN players p
     ON p.id = ptf.player_id
-LEFT JOIN transfers t
-    ON t.player_id    = ptf.player_id
-   AND t.to_school_id = ptf.school_id
 -- future — uncomment when Model 5 ready:
 -- LEFT JOIN predictions pr
 --     ON pr.player_id = ptf.player_id AND pr.school_id = ptf.school_id
@@ -112,23 +109,18 @@ LEFT JOIN transfers t
 --     ON trp.player_id = ptf.player_id AND trp.school_id = ptf.school_id
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
-  AND t.commitment_date IS NULL          -- availability gate
+  AND ptf.is_portal_candidate = true
 ORDER BY ptf.overall_fit DESC
 LIMIT 50
 """
 
-UPSERT_SQL = """
+DELETE_SQL = "DELETE FROM recommendations WHERE user_id = %s"
+
+INSERT_SQL = """
 INSERT INTO recommendations
     (user_id, player_id, rank, overall_fit, reasoning,
      model_version, generated_at, expires_at)
 VALUES %s
-ON CONFLICT (user_id, player_id) DO UPDATE SET
-    rank          = EXCLUDED.rank,
-    overall_fit   = EXCLUDED.overall_fit,
-    reasoning     = EXCLUDED.reasoning,
-    model_version = EXCLUDED.model_version,
-    generated_at  = EXCLUDED.generated_at,
-    expires_at    = EXCLUDED.expires_at
 """
 
 
@@ -169,10 +161,13 @@ def upsert_recommendations(engine, top10: pd.DataFrame, user_id: int) -> int:
         )
         for _, row in top10.iterrows()
     ]
-    with engine.connect() as conn:
-        raw = conn.connection.cursor()
-        execute_values(raw, UPSERT_SQL, records)
-        conn.connection.commit()
+    upsert_with_season_replace(
+        engine,
+        INSERT_SQL,
+        records,
+        delete_sql=DELETE_SQL,
+        delete_params=(user_id,),
+    )
     return len(records)
 
 
