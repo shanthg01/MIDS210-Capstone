@@ -6,7 +6,7 @@ Status: proposal. Applies layered multi-agent pattern from `AGENT_ARCHITECTURE.m
 
 CLAUDE.md already commits to "Explainability over black-box — multi-component scoring so users understand *why* a school ranks highly." Today the 4 fit components (`gap_match`, `scheme_fit`, `role_fit`, `program_fit`) are numbers in `player_team_fit_scores`. Nothing turns them into the sentence a coach actually wants: *"Why is this kid a top-5 fit for us?"* Model 7 (Recommendation Engine) is unbuilt and needs to fuse SVD + content + fit scores anyway — this pipeline is the natural place to add the narrative layer on top of that fusion, not a separate bolt-on.
 
-**Scope boundary:** this pipeline does not compute fit scores. `gap_match`/`scheme_fit` (real) and `role_fit`/`program_fit` (stubbed until Models 4/5/6 land) stay exactly where they are — `src/portalpoint/modeling/`. The agent pipeline *consumes* those numbers and produces ranking + narrative. Keeps the deterministic ML math out of LLM-land entirely (no hallucinated numbers — every figure quoted in a report must trace to a DB row).
+**Scope boundary:** this pipeline does not compute fit scores. `gap_match`/`scheme_fit` are real; `role_fit` is implemented in branch through `playing_time_projections` / `playing-time-rotation-v2` but needs the full 2027 all-school write before reports should treat it as production; `program_fit` remains stubbed. These scores stay exactly where they are — `src/portalpoint/modeling/`. The agent pipeline *consumes* those numbers and produces ranking + narrative. Keeps the deterministic ML math out of LLM-land entirely (no hallucinated numbers — every figure quoted in a report must trace to a DB row).
 
 ## Pipeline shape
 
@@ -47,7 +47,7 @@ LLM agents, sonnet tier — judgment calls, but each is scoped to interpreting o
 
 ### Output
 
-Terminal status (`complete` / `partial` / `failed`) derived from whether `narrative_report` and `ranked_position` exist (pattern item #9) — not a threaded success flag. `partial` covers the common case: role_fit/program_fit still stubbed, so reports run today with 2/4 components real and should say so explicitly rather than pretending full confidence.
+Terminal status (`complete` / `partial` / `failed`) derived from whether `narrative_report` and `ranked_position` exist (pattern item #9) — not a threaded success flag. `partial` covers the common case: Role Fit may be missing until the full 2027 Playing Time write lands, and Program Fit is still stubbed, so reports should state component coverage explicitly rather than pretending full confidence.
 
 ## State schema (`state/schema.py` equivalent)
 

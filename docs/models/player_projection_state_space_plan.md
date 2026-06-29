@@ -969,6 +969,20 @@ The destination adapter should skip or flag rows when any of these are missing:
 
 No production destination row should be written when the playing-time projection is missing.
 
+For the live 2026 portal cycle, the destination adapter should use:
+
+```text
+neutral player_projections.season = 2027
+playing_time_projections.season = 2027
+playing_time_projections.opportunity_drivers.source_stat_season = 2026
+playing_time_projections.opportunity_drivers.roster_context_season = 2026
+```
+
+In other words, the destination-adjusted projection row's `season` is the next playing season
+(2026-27 -> `2027`), while source stats and roster context are anchored to the completed 2025-26
+season / June 2026 planning cycle. The adapter should preserve these context seasons in its own
+explanation JSON so projected box-score deltas can be audited later.
+
 #### Destination script contract
 
 Create:

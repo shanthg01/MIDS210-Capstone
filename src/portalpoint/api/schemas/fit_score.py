@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 
 
 class FitWeights(BaseModel):
-    """User-adjustable component weights. Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25."""
+    """User-adjustable component weights.
+
+    Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25.
+    """
     gap: float = Field(default=0.20, ge=0.0, le=1.0)
     scheme: float = Field(default=0.30, ge=0.0, le=1.0)
     role_fit: float = Field(default=0.25, ge=0.0, le=1.0)
@@ -26,6 +29,12 @@ class RoleFitBreakdown(BaseModel):
     confidence_interval: tuple[float, float]  # [10th-pct, 90th-pct] from Bayesian model
     starter_probability: float = Field(..., ge=0.0, le=1.0)
     depth_chart_position: int  # 1 = projected starter
+    expected_usage: float | None = Field(default=None, ge=0.0, le=100.0)
+    usage_role: str | None = None
+    usage_role_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    rotation_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    displaced_minutes: dict | None = None
+    data_quality_flags: dict | None = None
 
 
 class GapFeatureGap(BaseModel):

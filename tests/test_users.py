@@ -173,7 +173,7 @@ def test_delete_preference_profile_returns_404_when_missing(client, user_id, H):
 
 
 def test_update_school_requires_auth(client, user_id):
-    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 301})
+    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 9900301})
     assert r.status_code == 401
 
 
@@ -183,15 +183,15 @@ def test_update_school_404_for_nonexistent_school(client, user_id, H):
 
 
 def test_update_school_succeeds_and_restores(client, user_id, H):
-    # school_id=302 (seed_test_data.py's second seeded school — real in every
+    # school_id=9900302 (seed_test_data.py's second seeded school — real in every
     # environment, unlike a locally-ingested id) is the swap target.
-    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 302}, headers=H)
+    r = client.put(f"/api/users/{user_id}/school", json={"school_id": 9900302}, headers=H)
     assert r.status_code == 200
-    assert r.json()["school_id"] == 302
+    assert r.json()["school_id"] == 9900302
 
     # Restore — test_auth.py / test_schools.py assume this user's school_id is
-    # 301, set at signup; this is a shared dev DB, not a per-test transaction,
+    # 9900301, set at signup; this is a shared dev DB, not a per-test transaction,
     # so leaving it changed would break those tests on the next run.
-    restore = client.put(f"/api/users/{user_id}/school", json={"school_id": 301}, headers=H)
+    restore = client.put(f"/api/users/{user_id}/school", json={"school_id": 9900301}, headers=H)
     assert restore.status_code == 200
-    assert restore.json()["school_id"] == 301
+    assert restore.json()["school_id"] == 9900301

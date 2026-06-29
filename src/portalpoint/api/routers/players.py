@@ -5,9 +5,9 @@ from sqlalchemy import func, select
 
 from portalpoint.api.deps import CurrentUser, DbSession
 from portalpoint.api.schemas.player import (
-    ClassYear,
     ClaimPlayerRequest,
     ClaimPlayerResponse,
+    ClassYear,
     PlayerArchetype,
     PlayerBase,
     PlayerProfile,
@@ -16,19 +16,29 @@ from portalpoint.api.schemas.player import (
     Position,
 )
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
+from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
 from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
     Player,
-    PlayerArchetype as PlayerArchetypeORM,
-    PlayerProjection as PlayerProjectionORM,
     PlayerSeasonStats,
     School,
     Transfer,
     TransferPortalEvent,
 )
+from portalpoint.db.models import (
+    PlayerArchetype as PlayerArchetypeORM,
+)
+from portalpoint.db.models import (
+    PlayerProjection as PlayerProjectionORM,
+)
+from portalpoint.db.models import (
+    PlayingTimeProjection as PlayingTimeProjectionORM,
+)
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import resolved_minutes_per_game
-from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import (
+    MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
+)
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -121,8 +131,9 @@ async def search_players(
     ),
     min_stat: list[str] | None = Query(
         default=None,
-        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — AND'd together "
-        "as a hard floor on the player's latest-season player_season_stats row. Valid stat_key values: "
+        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — "
+        "AND'd together as a hard floor on the player's latest-season "
+        "player_season_stats row. Valid stat_key values: "
         + ", ".join(k.value for k in StatKey),
     ),
 ):
@@ -190,7 +201,11 @@ async def get_player(player_id: int, db: DbSession):
     # Latest season stats + school
     stats_row = (
         await db.execute(
-            select(PlayerSeasonStats, School.name.label("school_name"), School.id.label("school_id"))
+            select(
+                PlayerSeasonStats,
+                School.name.label("school_name"),
+                School.id.label("school_id"),
+            )
             .join(School, School.id == PlayerSeasonStats.school_id)
             .where(PlayerSeasonStats.player_id == player_id)
             .order_by(PlayerSeasonStats.season.desc())
@@ -275,7 +290,11 @@ async def get_player_projection(
         PlayerProjectionORM.player_id == player_id,
         PlayerProjectionORM.projection_mode == "neutral",
         PlayerProjectionORM.model_version.in_(
-            [PLAYER_PROJECTION_MODEL_VERSION, "player-projection-shrinkage-v1", "player-projection-phase2a-v1"]
+            [
+                PLAYER_PROJECTION_MODEL_VERSION,
+                "player-projection-shrinkage-v1",
+                "player-projection-phase2a-v1",
+            ]
         ),
         PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
     )
@@ -306,6 +325,60 @@ async def get_player_projection(
         skill_percentiles=row.skill_percentiles,
         uncertainty=row.uncertainty,
         explanation=row.explanation,
+        model_version=row.model_version,
+        computed_at=row.computed_at,
+    )
+
+
+@router.get("/{player_id}/playing-time", response_model=PlayingTimeProjectionResponse)
+async def get_player_playing_time(
+    player_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+    school_id: int = Query(...),
+    season: int | None = Query(
+        default=None,
+        description="Season to fetch. Defaults to the latest unexpired projection for the pair.",
+    ),
+):
+    stmt = select(PlayingTimeProjectionORM).where(
+        PlayingTimeProjectionORM.player_id == player_id,
+        PlayingTimeProjectionORM.school_id == school_id,
+        PlayingTimeProjectionORM.expires_at > datetime.now(timezone.utc),
+    )
+    if season is not None:
+        stmt = stmt.where(PlayingTimeProjectionORM.season == season)
+    stmt = stmt.order_by(
+        PlayingTimeProjectionORM.season.desc(),
+        PlayingTimeProjectionORM.computed_at.desc(),
+    ).limit(1)
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        detail = f"No playing-time projection found for player {player_id} and school {school_id}"
+        if season is not None:
+            detail += f" in season {season}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    return PlayingTimeProjectionResponse(
+        player_id=str(row.player_id),
+        school_id=row.school_id,
+        season=row.season,
+        roster_snapshot_id=row.roster_snapshot_id,
+        expected_minutes=row.expected_minutes,
+        expected_minutes_share=row.expected_minutes_share,
+        minutes_ci_lower=row.minutes_ci_lower,
+        minutes_ci_upper=row.minutes_ci_upper,
+        expected_usage=row.expected_usage,
+        usage_role=row.usage_role,
+        usage_role_confidence=row.usage_role_confidence,
+        starter_probability=row.starter_probability,
+        rotation_probability=row.rotation_probability,
+        displaced_minutes=row.displaced_minutes,
+        opportunity_drivers=row.opportunity_drivers,
+        data_quality_flags=row.data_quality_flags,
+        scenario_overrides=row.scenario_overrides,
+        role_fit=row.role_fit,
         model_version=row.model_version,
         computed_at=row.computed_at,
     )
