@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 
 
 class FitWeights(BaseModel):
-    """User-adjustable component weights. Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25."""
+    """User-adjustable component weights.
+
+    Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25.
+    """
     gap: float = Field(default=0.20, ge=0.0, le=1.0)
     scheme: float = Field(default=0.30, ge=0.0, le=1.0)
     role_fit: float = Field(default=0.25, ge=0.0, le=1.0)

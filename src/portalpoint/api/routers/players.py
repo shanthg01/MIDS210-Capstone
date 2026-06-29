@@ -5,9 +5,9 @@ from sqlalchemy import func, select
 
 from portalpoint.api.deps import CurrentUser, DbSession
 from portalpoint.api.schemas.player import (
-    ClassYear,
     ClaimPlayerRequest,
     ClaimPlayerResponse,
+    ClassYear,
     PlayerArchetype,
     PlayerBase,
     PlayerProfile,
@@ -15,22 +15,30 @@ from portalpoint.api.schemas.player import (
     PlayerStats,
     Position,
 )
-from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
+from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
 from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
     Player,
-    PlayerArchetype as PlayerArchetypeORM,
-    PlayerProjection as PlayerProjectionORM,
     PlayerSeasonStats,
-    PlayingTimeProjection as PlayingTimeProjectionORM,
     School,
     Transfer,
     TransferPortalEvent,
 )
+from portalpoint.db.models import (
+    PlayerArchetype as PlayerArchetypeORM,
+)
+from portalpoint.db.models import (
+    PlayerProjection as PlayerProjectionORM,
+)
+from portalpoint.db.models import (
+    PlayingTimeProjection as PlayingTimeProjectionORM,
+)
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import resolved_minutes_per_game
-from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import (
+    MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
+)
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -123,8 +131,9 @@ async def search_players(
     ),
     min_stat: list[str] | None = Query(
         default=None,
-        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — AND'd together "
-        "as a hard floor on the player's latest-season player_season_stats row. Valid stat_key values: "
+        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — "
+        "AND'd together as a hard floor on the player's latest-season "
+        "player_season_stats row. Valid stat_key values: "
         + ", ".join(k.value for k in StatKey),
     ),
 ):
@@ -192,7 +201,11 @@ async def get_player(player_id: int, db: DbSession):
     # Latest season stats + school
     stats_row = (
         await db.execute(
-            select(PlayerSeasonStats, School.name.label("school_name"), School.id.label("school_id"))
+            select(
+                PlayerSeasonStats,
+                School.name.label("school_name"),
+                School.id.label("school_id"),
+            )
             .join(School, School.id == PlayerSeasonStats.school_id)
             .where(PlayerSeasonStats.player_id == player_id)
             .order_by(PlayerSeasonStats.season.desc())
@@ -277,7 +290,11 @@ async def get_player_projection(
         PlayerProjectionORM.player_id == player_id,
         PlayerProjectionORM.projection_mode == "neutral",
         PlayerProjectionORM.model_version.in_(
-            [PLAYER_PROJECTION_MODEL_VERSION, "player-projection-shrinkage-v1", "player-projection-phase2a-v1"]
+            [
+                PLAYER_PROJECTION_MODEL_VERSION,
+                "player-projection-shrinkage-v1",
+                "player-projection-phase2a-v1",
+            ]
         ),
         PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
     )

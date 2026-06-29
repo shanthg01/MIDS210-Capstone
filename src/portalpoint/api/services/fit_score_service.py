@@ -59,7 +59,12 @@ def role_fit_breakdown_from_model(raw: dict | None, rng: random.Random) -> RoleF
         rotation_probability = max(0.0, min(1.0, (projected_minutes - 8.0) / 12.0))
     depth_chart_position = raw.get("depth_chart_position")
     if depth_chart_position is None:
-        depth_chart_position = 1 if projected_minutes >= 24.0 else 2 if projected_minutes >= 16.0 else 3
+        if projected_minutes >= 24.0:
+            depth_chart_position = 1
+        elif projected_minutes >= 16.0:
+            depth_chart_position = 2
+        else:
+            depth_chart_position = 3
 
     return RoleFitBreakdown(
         projected_minutes=round(projected_minutes, 1),
