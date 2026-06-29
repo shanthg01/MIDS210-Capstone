@@ -178,14 +178,25 @@ def apply_player_filter(df: pd.DataFrame, include_player_ids: list[int]) -> pd.D
     return df[df["player_id"].isin(set(map(int, include_player_ids)))].reset_index(drop=True)
 
 
-def score_frame(models: pt.PlayingTimeModels, frame: pd.DataFrame) -> pd.DataFrame:
+def score_frame(
+    models: pt.PlayingTimeModels, frame: pd.DataFrame, *, compress_usage: bool = True
+) -> pd.DataFrame:
     scored = pt.predict_minutes_usage(models, frame)
     if scored.empty:
         return scored
-    roles = scored.apply(pt.derive_usage_role, axis=1)
-    scored["usage_role"] = [r[0] for r in roles]
-    scored["usage_role_confidence"] = [r[1] for r in roles]
-    scored["role_fit"] = scored.apply(pt.compute_role_fit_score, axis=1)
+    if compress_usage:
+        # Compress usage to a per-school budget *before* role/role_fit so both reflect the
+        # same expected_usage that ends up written to playing_time_projections, not the raw
+        # value. Only correct for genuine candidate pools (build_inference_pairs' all-pairs
+        # frame, where many candidates compete for the same roster slot) — NOT for
+        # validation/training rows, which are real, already-disjoint roster members whose
+        # usage already sums close to budget; compressing those double-penalizes accuracy
+        # (confirmed: usage_mae roughly tripled in a real validation run before this guard).
+        scored = pt.compress_usage_to_roster_budget(scored)
+    usage_roles, usage_role_confidences = pt.derive_usage_roles(scored)
+    scored["usage_role"] = usage_roles
+    scored["usage_role_confidence"] = usage_role_confidences
+    scored["role_fit"] = pt.compute_role_fit_scores(scored)
     return scored
 
 
@@ -254,21 +265,41 @@ VALIDATION_ARTIFACT_COLUMNS = [
 ]
 
 
+def resolve_holdout_seasons(train_seasons: list[int], n_folds: int = 3) -> list[int]:
+    """Rolling-origin holdout seasons: most recent seasons with >=2 prior train seasons each.
+
+    Mirrors Player Projection's 3-fold rolling-origin convention (see Gap D/G in
+    docs/models/player_projection_state_space_plan.md) instead of this model's original
+    single-holdout (`season == max(train_seasons)` only), which is noisier with only one
+    season's worth of validation signal.
+    """
+    ordered = sorted(set(int(s) for s in train_seasons))
+    holdouts: list[int] = []
+    for season in reversed(ordered):
+        if len([s for s in ordered if s < season]) < 2:
+            continue
+        holdouts.append(season)
+        if len(holdouts) >= n_folds:
+            break
+    return sorted(holdouts)
+
+
 def validation_predictions(
     train_df: pd.DataFrame,
     train_seasons: list[int],
     *,
     model_family: str,
+    holdout_season: int | None = None,
 ) -> tuple[dict[str, float], pd.DataFrame]:
     if len(train_seasons) < 3:
         return {}, pd.DataFrame()
-    holdout = max(train_seasons)
+    holdout = int(holdout_season) if holdout_season is not None else max(train_seasons)
     fit_df = train_df[train_df["season"] < holdout].reset_index(drop=True)
     val_df = train_df[train_df["season"] == holdout].reset_index(drop=True)
     if fit_df.empty or val_df.empty:
         return {}, pd.DataFrame()
     models = pt.fit_minutes_usage_models(fit_df, model_family=model_family)
-    scored = score_frame(models, val_df)
+    scored = score_frame(models, val_df, compress_usage=False)
     scored["covered"] = (scored["actual_minutes"] >= scored["minutes_ci_lower"]) & (
         scored["actual_minutes"] <= scored["minutes_ci_upper"]
     )
@@ -307,6 +338,75 @@ def validation_metrics(
 ) -> dict[str, float]:
     metrics, _ = validation_predictions(train_df, train_seasons, model_family=model_family)
     return metrics
+
+
+_NUMERIC_METRIC_KEYS_TO_AVERAGE = (
+    "minutes_mae",
+    "minutes_rmse",
+    "minutes_bias",
+    "usage_mae",
+    "usage_rmse",
+    "usage_bias",
+    "interval_coverage",
+    "interval_coverage_error_80pct",
+    "avg_interval_width",
+    "median_interval_width",
+    "interval_width_to_mae_ratio",
+    "minutes_distribution_tvd",
+    "usage_distribution_tvd",
+    "n_validation_rows",
+)
+
+
+def rolling_origin_validation(
+    train_df: pd.DataFrame,
+    train_seasons: list[int],
+    *,
+    model_family: str,
+    n_folds: int = 3,
+) -> tuple[dict[str, float], list[tuple[int, dict[str, float], pd.DataFrame]]]:
+    """Multi-fold rolling-origin validation, replacing the original single-holdout fold.
+
+    Returns mean-across-folds metrics under the *same* keys `validation_predictions` always
+    used (so the MLflow promotion gate's `minutes_rmse` metric name in `log_mlflow` stays
+    correct — renaming or dropping that key was exactly the bug class that caused a false
+    auto-promotion for Player Projection's Phase 2a gate; see
+    docs/models/player_projection_state_space_plan.md §22), plus per-fold metrics under
+    `{metric}_fold_{season}` suffixes for detail. The per-fold `(holdout, metrics, scored)`
+    list is also returned so callers (e.g. `write_validation_artifacts`) can still produce
+    one artifact per fold, same as before this model had multiple folds.
+    """
+    holdout_seasons = resolve_holdout_seasons(train_seasons, n_folds=n_folds)
+    if not holdout_seasons:
+        return {}, []
+
+    fold_results: list[tuple[int, dict[str, float], pd.DataFrame]] = []
+    for holdout in holdout_seasons:
+        metrics, scored = validation_predictions(
+            train_df,
+            train_seasons,
+            model_family=model_family,
+            holdout_season=holdout,
+        )
+        if not metrics:
+            continue
+        fold_results.append((holdout, metrics, scored))
+
+    if not fold_results:
+        return {}, []
+
+    aggregated: dict[str, float] = {}
+    for key in _NUMERIC_METRIC_KEYS_TO_AVERAGE:
+        values = [m[key] for _, m, _ in fold_results if key in m]
+        if values:
+            aggregated[key] = float(np.mean(values))
+    for holdout, metrics, _ in fold_results:
+        for key, value in metrics.items():
+            if isinstance(value, int | float):
+                aggregated[f"{key}_fold_{holdout}"] = float(value)
+    aggregated["n_validation_folds"] = float(len(fold_results))
+    aggregated["model_family"] = model_family
+    return aggregated, fold_results
 
 
 def _cohort_summary(scored: pd.DataFrame, cohort_col: str) -> list[dict]:
@@ -598,12 +698,24 @@ def main() -> None:
 
     train_df = pt.build_training_examples(engine, train_seasons)
     log.info("Training examples: %s rows across seasons %s", f"{len(train_df):,}", train_seasons)
+    fallback_rate = pt.neutral_projection_fallback_rate(train_df)
+    log_fn = log.warning if fallback_rate > 0.01 else log.info
+    log_fn(
+        "Same-season neutral-projection fallback rate: %.4f (fraction of rows whose joined "
+        "player_projections row was not %s — those rows had value_per_100/skill_percentiles/"
+        "uncertainty nulled by null_leaking_neutral_projection_features() to prevent same-season "
+        "production from leaking into minutes/usage labels; a high rate means most rows are "
+        "training on roster/fit/team context alone until player-proj-phase2a-fcast-v1 is "
+        "backfilled for these seasons)",
+        fallback_rate,
+        pt.PLAYER_PROJECTION_MODEL_VERSION,
+    )
     benchmark_families = list(dict.fromkeys([*args.benchmark_model_families, args.model_family]))
     benchmark_results: dict[str, dict[str, float]] = {}
     val_metrics: dict[str, float] = {}
     validation_artifacts: list[Path] = []
     for model_family in benchmark_families:
-        family_metrics, family_scored = validation_predictions(
+        family_metrics, fold_results = rolling_origin_validation(
             train_df,
             train_seasons,
             model_family=model_family,
@@ -612,25 +724,32 @@ def main() -> None:
             continue
         benchmark_results[model_family] = family_metrics
         log.info(
-            "Holdout validation metrics [%s]: %s",
+            "Rolling-origin validation metrics [%s, %d fold(s)]: %s",
             model_family,
-            {k: round(v, 4) for k, v in family_metrics.items() if isinstance(v, int | float)},
+            int(family_metrics.get("n_validation_folds", 0)),
+            {
+                k: round(v, 4)
+                for k, v in family_metrics.items()
+                if isinstance(v, int | float) and "_fold_" not in k
+            },
         )
         if not args.skip_validation_artifact:
-            family_artifacts = write_validation_artifacts(
-                family_scored,
-                family_metrics,
-                args.validation_artifact_dir,
-                train_seasons,
-                model_family,
-            )
-            validation_artifacts.extend(family_artifacts)
-            if family_artifacts:
-                log.info(
-                    "Wrote validation artifacts [%s]: %s",
+            for holdout, fold_metrics, fold_scored in fold_results:
+                family_artifacts = write_validation_artifacts(
+                    fold_scored,
+                    fold_metrics,
+                    args.validation_artifact_dir,
+                    train_seasons,
                     model_family,
-                    ", ".join(str(path) for path in family_artifacts),
                 )
+                validation_artifacts.extend(family_artifacts)
+                if family_artifacts:
+                    log.info(
+                        "Wrote validation artifacts [%s, fold=%s]: %s",
+                        model_family,
+                        holdout,
+                        ", ".join(str(path) for path in family_artifacts),
+                    )
         if model_family == args.model_family:
             val_metrics = family_metrics
     if benchmark_results:

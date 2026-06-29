@@ -7,7 +7,7 @@ derived Role Fit score that gets synced back onto player_team_fit_scores.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
@@ -34,10 +34,20 @@ MODEL_VERSION = "playing-time-rotation-v2"
 PLAYER_PROJECTION_MODEL_VERSION = "player-proj-phase2a-fcast-v1"
 DEFAULT_MODEL_FAMILY = "hist_gradient_boosting"
 MODEL_FAMILIES = {"extra_trees", "hist_gradient_boosting", "lightgbm"}
-MIN_TRAIN_GAMES = 3
+MIN_TRAIN_GAMES = 5  # matches player_projection.py's MIN_GAMES label-reliability convention
 STANDARD_TEAM_MINUTES = 200.0
 MAX_PLAYER_MINUTES = 40.0
 SYNTHETIC_SCHOOL_ID_FLOOR = 9_900_000
+
+# PERF: prepare_playing_time_frame/derive_usage_role/compute_role_fit_score/
+# allocate_displaced_minutes/uncertainty_multiplier/data_quality_flags previously used
+# per-row .apply(axis=1)/.iterrows()+JSON-dict parsing (same wall Scheme Fit hit going
+# all-pairs, see CLAUDE.md TODO #5). Vectorized into whole-frame numpy/pandas twins
+# (derive_usage_roles, compute_role_fit_scores, uncertainty_multipliers,
+# allocate_displaced_minutes_batch, data_quality_flags_batch) — the scalar per-row
+# functions are now thin single-row wrappers around them, kept for tests/callers that
+# genuinely have one row. Verified bit-for-bit identical output against a pre-refactor
+# real-data snapshot before/after.
 
 NUMERIC_FEATURES = [
     "value_per_100",
@@ -223,6 +233,7 @@ SELECT
     np.value_ci_upper,
     np.skill_percentiles,
     np.uncertainty,
+    np.model_version AS neutral_projection_model_version,
     fit.gap_match,
     fit.scheme_fit,
     tss.adj_em AS team_adj_em,
@@ -648,6 +659,8 @@ class PlayingTimeModels:
     starter_model: Any | None = None
     heavy_minutes_model: Any | None = None
     high_usage_model: Any | None = None
+    freshman_minutes_share_by_group: dict[str, float] = field(default_factory=dict)
+    freshman_usage_by_group: dict[str, float] = field(default_factory=dict)
 
 
 class TreeQuantileRegressor:
@@ -683,6 +696,22 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _numeric_column_or_default(df: pd.DataFrame, name: str, default: Any) -> np.ndarray:
+    """Numeric column as a float ndarray, robust to a missing column.
+
+    `df.get(name, default)` does NOT behave like a per-row fallback when `name` isn't a
+    column — pandas mirrors dict.get() exactly, returning the bare `default` object
+    verbatim, so a chained `.fillna()`/`.to_numpy()` crashes (`AttributeError`) the moment a
+    caller's frame is missing that column. `default` can be a scalar or an array the same
+    length as `df` (e.g. a per-row fallback like `minutes / 28.0`).
+    """
+    if name in df.columns:
+        values = pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=np.float64)
+    else:
+        values = np.full(len(df), np.nan, dtype=np.float64)
+    return np.where(np.isnan(values), default, values)
 
 
 def _json_dict(value: Any) -> dict:
@@ -837,31 +866,59 @@ def prepare_playing_time_frame(df: pd.DataFrame, *, include_labels: bool) -> pd.
     groups = normalized_position.apply(position_group)
     for group in ["guard", "wing", "forward", "big"]:
         out[f"position_group_{group}"] = (groups == group).astype(float)
-    out["position_confidence"] = out.apply(max_position_confidence, axis=1)
-    out["roster_open_minutes"] = out.apply(
-        lambda r: open_minutes_for_position(r.get("open_minutes_by_position"), r.get("position")),
-        axis=1,
+    # Vectorized position-confidence: max across the 5 pos_confidence_* columns directly,
+    # rather than a per-row Python function call (max_position_confidence) via .apply(axis=1)
+    # — that pattern reconstructs a full pd.Series per row just to find a max of 5 numbers.
+    confidence_cols = [
+        "pos_confidence_pg",
+        "pos_confidence_sg",
+        "pos_confidence_sf",
+        "pos_confidence_pf",
+        "pos_confidence_c",
+    ]
+    present_confidence_cols = [c for c in confidence_cols if c in out.columns]
+    if present_confidence_cols:
+        confidence_values = out[present_confidence_cols].apply(pd.to_numeric, errors="coerce")
+        out["position_confidence"] = confidence_values.max(axis=1).clip(0.0, 1.0).fillna(0.5)
+    else:
+        out["position_confidence"] = 0.5
+
+    # Vectorized position-keyed JSON lookups: zip() over raw column values instead of
+    # .apply(axis=1) — .apply(axis=1) rebuilds a full pd.Series per row before the lambda
+    # ever runs; zip() hands open_minutes_for_position/position_json_value the raw values
+    # directly, same per-row dict-parsing logic, no per-row Series-construction overhead.
+    positions = out.get("position", pd.Series("", index=out.index))
+    open_minutes_by_position = out.get(
+        "open_minutes_by_position", pd.Series(None, index=out.index)
     )
-    out["returning_minutes_position"] = out.apply(
-        lambda r: position_json_value(r.get("returning_minutes_by_position"), r.get("position")),
-        axis=1,
-    )
-    out["departing_minutes_position"] = out.apply(
-        lambda r: position_json_value(r.get("departing_minutes_by_position"), r.get("position")),
-        axis=1,
-    )
-    out["incoming_transfer_minutes_position"] = out.apply(
-        lambda r: position_json_value(
-            r.get("incoming_transfer_minutes_by_position"), r.get("position")
-        ),
-        axis=1,
-    )
-    out["open_usage_position"] = out.apply(
-        lambda r: position_json_value(
-            r.get("open_usage_by_position"), r.get("position"), high=100.0
-        ),
-        axis=1,
-    )
+    out["roster_open_minutes"] = [
+        open_minutes_for_position(v, p) for v, p in zip(open_minutes_by_position, positions)
+    ]
+    out["returning_minutes_position"] = [
+        position_json_value(v, p)
+        for v, p in zip(
+            out.get("returning_minutes_by_position", pd.Series(None, index=out.index)), positions
+        )
+    ]
+    out["departing_minutes_position"] = [
+        position_json_value(v, p)
+        for v, p in zip(
+            out.get("departing_minutes_by_position", pd.Series(None, index=out.index)), positions
+        )
+    ]
+    out["incoming_transfer_minutes_position"] = [
+        position_json_value(v, p)
+        for v, p in zip(
+            out.get("incoming_transfer_minutes_by_position", pd.Series(None, index=out.index)),
+            positions,
+        )
+    ]
+    out["open_usage_position"] = [
+        position_json_value(v, p, high=100.0)
+        for v, p in zip(
+            out.get("open_usage_by_position", pd.Series(None, index=out.index)), positions
+        )
+    ]
     out["position_opportunity_delta"] = (
         out["departing_minutes_position"].fillna(0.0)
         + out["incoming_transfer_minutes_position"].fillna(0.0)
@@ -1163,6 +1220,58 @@ def append_role_probability_features(
     return np.column_stack([x, p_rotation, p_starter, p_heavy, p_high_usage])
 
 
+def neutral_projection_fallback_rate(df: pd.DataFrame) -> float:
+    """Fraction of rows whose joined `player_projections` row is not the forecast model.
+
+    `TRAINING_SQL`'s `neutral_projection` CTE prefers `PLAYER_PROJECTION_MODEL_VERSION`
+    (a strict one-step-ahead forecast: source season S-1 production -> projection for
+    season S) but falls back to any other available model_version when that forecast row
+    is missing. Same-season model versions (e.g. Phase 0/Phase 2a's own-season output) are
+    computed from that season's own actual production, so a fallback row's `value_per_100`
+    would leak the answer into predicting that season's `actual_minutes_share`/
+    `actual_usage_rate`. A non-trivial fallback rate here means real leakage exposure, not
+    just missing data.
+    """
+    if df.empty or "neutral_projection_model_version" not in df.columns:
+        return 0.0
+    version = df["neutral_projection_model_version"]
+    fallback = version.notna() & (version != PLAYER_PROJECTION_MODEL_VERSION)
+    return float(fallback.mean())
+
+
+NEUTRAL_PROJECTION_FEATURE_COLUMNS = (
+    "value_per_100",
+    "value_ci_lower",
+    "value_ci_upper",
+    "skill_percentiles",
+    "uncertainty",
+)
+
+
+def null_leaking_neutral_projection_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Blank out same-season-leakage-risk projection features on fallback rows.
+
+    Dropping fallback rows outright isn't viable — `neutral_projection_fallback_rate`
+    can be the entire training/inference set whenever the forecast model
+    (`PLAYER_PROJECTION_MODEL_VERSION`) hasn't been backfilled for the seasons in scope
+    (confirmed locally: 100% fallback before that backfill ran). The row's own
+    `actual_minutes_share`/`actual_usage_rate` label is real ground truth either way —
+    only the *joined* same-season projection features carry the leak. Nulling just those
+    columns lets the row fall back to median-imputation in `feature_matrix`, the same path
+    already used for "no projection joined at all", instead of losing the row or training
+    on a leaked signal.
+    """
+    if df.empty or "neutral_projection_model_version" not in df.columns:
+        return df
+    out = df.copy()
+    version = out["neutral_projection_model_version"]
+    fallback = version.notna() & (version != PLAYER_PROJECTION_MODEL_VERSION)
+    for col in NEUTRAL_PROJECTION_FEATURE_COLUMNS:
+        if col in out.columns:
+            out.loc[fallback, col] = np.nan
+    return out
+
+
 def build_training_examples(engine, seasons: Sequence[int]) -> pd.DataFrame:
     params = {
         "seasons": list(seasons),
@@ -1171,6 +1280,7 @@ def build_training_examples(engine, seasons: Sequence[int]) -> pd.DataFrame:
         "synthetic_school_id_floor": SYNTHETIC_SCHOOL_ID_FLOOR,
     }
     raw = read_sql_frame(engine, TRAINING_SQL, params)
+    raw = null_leaking_neutral_projection_features(raw)
     frame = prepare_playing_time_frame(raw, include_labels=True)
     return frame.dropna(subset=["actual_minutes_share", "actual_usage_rate"]).reset_index(drop=True)
 
@@ -1199,14 +1309,133 @@ def build_inference_pairs(
         "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
     }
     raw = read_sql_frame(engine, INFERENCE_SQL, params)
+    raw = null_leaking_neutral_projection_features(raw)
     return prepare_playing_time_frame(raw, include_labels=False)
+
+
+POSITION_GROUPS = ("guard", "wing", "forward", "big", "unknown")
+
+
+def freshman_position_group_priors(
+    train_df: pd.DataFrame, y_minutes: np.ndarray, y_usage: np.ndarray
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Position-group median minutes-share/usage among true freshmen in the training set.
+
+    Used by `apply_freshman_prior_shrinkage` as the prior to blend a freshman/newcomer's
+    prediction toward, since their `is_no_prior_college_season=1` rows have nothing for the
+    roster-opportunity features to anchor on beyond `roster_open_minutes` (no
+    recruiting-rank signal is ingested anywhere in this repo). Computed from the training
+    freshman rows themselves (not all players at that position), since "what does a
+    typical true freshman at this position actually do" is the relevant prior — not diluted
+    by veteran medians.
+    """
+    is_freshman = (
+        pd.to_numeric(train_df.get("is_no_prior_college_season", 0.0), errors="coerce")
+        .fillna(0.0)
+        .to_numpy()
+        >= 0.5
+    )
+    overall_share = float(y_minutes[is_freshman].mean()) if is_freshman.any() else float(
+        np.mean(y_minutes)
+    )
+    overall_usage = float(y_usage[is_freshman].mean()) if is_freshman.any() else float(
+        np.mean(y_usage)
+    )
+    groups = (
+        train_df.get("position", pd.Series("", index=train_df.index))
+        .fillna("")
+        .astype(str)
+        .apply(position_group)
+        .to_numpy()
+    )
+    minutes_share_by_group: dict[str, float] = {}
+    usage_by_group: dict[str, float] = {}
+    for grp in POSITION_GROUPS:
+        grp_mask = is_freshman & (groups == grp)
+        if grp_mask.any():
+            minutes_share_by_group[grp] = float(y_minutes[grp_mask].mean())
+            usage_by_group[grp] = float(y_usage[grp_mask].mean())
+        else:
+            minutes_share_by_group[grp] = overall_share
+            usage_by_group[grp] = overall_usage
+    return minutes_share_by_group, usage_by_group
+
+
+FRESHMAN_PRIOR_BLEND = 0.45
+
+
+def apply_freshman_prior_shrinkage(
+    df: pd.DataFrame,
+    share: np.ndarray,
+    usage: np.ndarray,
+    minutes_share_by_group: dict[str, float],
+    usage_by_group: dict[str, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Blend freshman/newcomer predictions toward a position-group historical prior.
+
+    Partial mitigation, not a fix — a real fix needs recruiting-rank/class data this repo
+    doesn't ingest yet (see docs/models/playing_time_rotation_model_plan.md's known
+    limitations). This only softens reliance on `roster_open_minutes` extrapolation for
+    rows with zero prior college seasons, blended `FRESHMAN_PRIOR_BLEND` of the way toward
+    what true freshmen at the same position group actually did historically, lightly scaled
+    by destination quality (`team_adj_em`) since a stronger program's freshmen tend to play
+    a bit more than a weak program's, all else equal.
+    """
+    if not minutes_share_by_group or not usage_by_group:
+        return share, usage
+    is_freshman = (
+        pd.to_numeric(df.get("is_no_prior_college_season", 0.0), errors="coerce")
+        .fillna(0.0)
+        .to_numpy()
+        >= 0.5
+    )
+    if not is_freshman.any():
+        return share, usage
+
+    groups = (
+        df.get("position", pd.Series("", index=df.index))
+        .fillna("")
+        .astype(str)
+        .apply(position_group)
+    )
+    fallback_share = float(np.mean(list(minutes_share_by_group.values())))
+    fallback_usage = float(np.mean(list(usage_by_group.values())))
+    prior_share = groups.map(minutes_share_by_group).fillna(fallback_share).to_numpy()
+    prior_usage = groups.map(usage_by_group).fillna(fallback_usage).to_numpy()
+
+    adj_em = pd.to_numeric(df.get("team_adj_em", 0.0), errors="coerce").fillna(0.0).to_numpy()
+    quality_scale = np.clip(1.0 + adj_em / 100.0, 0.7, 1.3)
+    prior_share = np.clip(prior_share * quality_scale, 0.0, 0.95)
+    prior_usage = np.clip(prior_usage * quality_scale, 0.0, 100.0)
+
+    blended_share = np.where(
+        is_freshman,
+        (1.0 - FRESHMAN_PRIOR_BLEND) * share + FRESHMAN_PRIOR_BLEND * prior_share,
+        share,
+    )
+    blended_usage = np.where(
+        is_freshman,
+        (1.0 - FRESHMAN_PRIOR_BLEND) * usage + FRESHMAN_PRIOR_BLEND * prior_usage,
+        usage,
+    )
+    return blended_share, blended_usage
 
 
 def fit_minutes_usage_models(
     train_df: pd.DataFrame,
     *,
     model_family: str = DEFAULT_MODEL_FAMILY,
+    apply_freshman_shrinkage: bool = False,
 ) -> PlayingTimeModels:
+    """`apply_freshman_shrinkage` defaults False — measured on real rolling-origin holdout
+    data to *increase* minutes_mae/minutes_rmse (~+11%) vs. leaving freshman rows to the
+    tree models' own features. Same situation as Player Projection's Gap B context
+    adjustment (see docs/models/player_projection_state_space_plan.md §22): a
+    theoretically-motivated mitigation for a real, acknowledged limitation (no
+    recruiting-rank signal for true freshmen) that empirically underperforms on this data.
+    Available and tested (`freshman_position_group_priors`/`apply_freshman_prior_shrinkage`)
+    for future investigation, not enabled by default.
+    """
     if train_df.empty:
         raise ValueError("No playing-time training rows available")
     model_family = _validate_model_family(model_family)
@@ -1307,6 +1536,12 @@ def fit_minutes_usage_models(
         "train_high_usage_rate": float(y_high_usage.mean()),
         "n_training_rows": float(len(train_df)),
     }
+    freshman_minutes_share_by_group: dict[str, float] = {}
+    freshman_usage_by_group: dict[str, float] = {}
+    if apply_freshman_shrinkage:
+        freshman_minutes_share_by_group, freshman_usage_by_group = freshman_position_group_priors(
+            train_df, y_minutes, y_usage
+        )
     return PlayingTimeModels(
         minutes_model,
         usage_model,
@@ -1321,16 +1556,33 @@ def fit_minutes_usage_models(
         starter_model,
         heavy_minutes_model,
         high_usage_model,
+        freshman_minutes_share_by_group,
+        freshman_usage_by_group,
     )
 
 
-def uncertainty_multiplier(row: pd.Series) -> float:
-    sample_rel = clamp(_as_float(row.get("sample_reliability"), 0.0), 0.0, 1.0)
-    proj_rel = clamp(_as_float(row.get("projection_reliability"), 0.5), 0.0, 1.0)
-    roster_rel = clamp(_as_float(row.get("roster_reliability"), 0.5), 0.0, 1.0)
-    pos_rel = clamp(_as_float(row.get("position_confidence"), 0.5), 0.0, 1.0)
-    transfer_conf = clamp(_as_float(row.get("transfer_match_confidence"), 1.0), 0.0, 1.0)
-    missing = _as_float(row.get("missing_feature_count"), 0.0)
+def uncertainty_multipliers(df: pd.DataFrame) -> np.ndarray:
+    """Vectorized form of `uncertainty_multiplier` — same formula, whole-frame at once.
+
+    Replaces a per-row `for _, row in df.iterrows(): uncertainty_multiplier(row)` loop in
+    `predict_minutes_usage` — `iterrows()` is the most expensive row-iteration pattern in
+    pandas (materializes a full `pd.Series` per row, dtype-merging across mixed column
+    types). `uncertainty_multiplier(row)` stays as a single-row convenience wrapper around
+    this for tests/callers that genuinely have one row.
+    """
+    n = len(df)
+    if n == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    def col(name: str, default: float) -> np.ndarray:
+        return _numeric_column_or_default(df, name, default)
+
+    sample_rel = np.clip(col("sample_reliability", 0.0), 0.0, 1.0)
+    proj_rel = np.clip(col("projection_reliability", 0.5), 0.0, 1.0)
+    roster_rel = np.clip(col("roster_reliability", 0.5), 0.0, 1.0)
+    pos_rel = np.clip(col("position_confidence", 0.5), 0.0, 1.0)
+    transfer_conf = np.clip(col("transfer_match_confidence", 1.0), 0.0, 1.0)
+    missing = col("missing_feature_count", 0.0)
     multiplier = (
         0.60
         + 0.55 * (1.0 - sample_rel)
@@ -1338,23 +1590,56 @@ def uncertainty_multiplier(row: pd.Series) -> float:
         + 0.20 * (1.0 - roster_rel)
         + 0.18 * (1.0 - pos_rel)
         + 0.18 * (1.0 - transfer_conf)
-        + min(0.25, missing * 0.025)
+        + np.minimum(0.25, missing * 0.025)
     )
-    return clamp(multiplier, 0.60, 2.10)
+    return np.clip(multiplier, 0.60, 2.10)
+
+
+def uncertainty_multiplier(row: pd.Series) -> float:
+    return float(uncertainty_multipliers(pd.DataFrame([row]))[0])
+
+
+def data_quality_flags_batch(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Vectorized form of `data_quality_flags` — whole-frame at once, returns one dict per row.
+
+    `build_playing_time_records` previously called `data_quality_flags(pd.Series(r))` inside
+    its per-row loop, reconstructing a full `pd.Series` from a namedtuple-derived dict on
+    every row just to read a handful of scalar fields — the same `.apply(axis=1)`-shaped cost
+    even though it wasn't literally `.apply()`. This computes every row's flags up front as
+    plain arrays, leaving the loop to just zip them into per-row dicts (dict construction
+    itself is the only genuinely row-shaped part — JSON output has to be row-shaped).
+    """
+    n = len(df)
+    if n == 0:
+        return []
+
+    def col(name: str, default: float) -> np.ndarray:
+        return _numeric_column_or_default(df, name, default)
+
+    low_sample = col("sample_reliability", 0.0) < 0.45
+    wide_projection = col("projection_ci_width", 0.0) > 7.5
+    low_position_confidence = col("position_confidence", 1.0) < 0.65
+    missing_roster_context = col("roster_reliability", 0.0) < 0.6
+    low_transfer_match_confidence = col("transfer_match_confidence", 1.0) < 0.75
+    missing_feature_count = col("missing_feature_count", 0.0)
+    multipliers = uncertainty_multipliers(df)
+
+    return [
+        {
+            "low_sample": bool(low_sample[i]),
+            "wide_player_projection": bool(wide_projection[i]),
+            "low_position_confidence": bool(low_position_confidence[i]),
+            "missing_roster_context": bool(missing_roster_context[i]),
+            "low_transfer_match_confidence": bool(low_transfer_match_confidence[i]),
+            "missing_feature_count": int(missing_feature_count[i]),
+            "uncertainty_multiplier": round(float(multipliers[i]), 3),
+        }
+        for i in range(n)
+    ]
 
 
 def data_quality_flags(row: pd.Series) -> dict[str, Any]:
-    return {
-        "low_sample": bool(_as_float(row.get("sample_reliability"), 0.0) < 0.45),
-        "wide_player_projection": bool(_as_float(row.get("projection_ci_width"), 0.0) > 7.5),
-        "low_position_confidence": bool(_as_float(row.get("position_confidence"), 1.0) < 0.65),
-        "missing_roster_context": bool(_as_float(row.get("roster_reliability"), 0.0) < 0.6),
-        "low_transfer_match_confidence": bool(
-            _as_float(row.get("transfer_match_confidence"), 1.0) < 0.75
-        ),
-        "missing_feature_count": int(_as_float(row.get("missing_feature_count"), 0.0)),
-        "uncertainty_multiplier": round(uncertainty_multiplier(row), 3),
-    }
+    return data_quality_flags_batch(pd.DataFrame([row]))[0]
 
 
 def predict_minutes_usage(models: PlayingTimeModels, df: pd.DataFrame) -> pd.DataFrame:
@@ -1384,6 +1669,9 @@ def predict_minutes_usage(models: PlayingTimeModels, df: pd.DataFrame) -> pd.Dat
     )
     share = np.clip(models.minutes_model.predict(x_minutes_aug), 0.0, 0.95)
     usage = np.clip(models.usage_model.predict(x_usage_aug), 0.0, 100.0)
+    share, usage = apply_freshman_prior_shrinkage(
+        out, share, usage, models.freshman_minutes_share_by_group, models.freshman_usage_by_group
+    )
     lower_share = (
         np.clip(models.lower_model.predict(x_minutes_aug), 0.0, 0.95)
         if models.lower_model
@@ -1405,84 +1693,208 @@ def predict_minutes_usage(models: PlayingTimeModels, df: pd.DataFrame) -> pd.Dat
     base_lower = np.minimum(lower_share, share) * MAX_PLAYER_MINUTES
     base_upper = np.maximum(upper_share, share) * MAX_PLAYER_MINUTES
 
-    ci_lower: list[float] = []
-    ci_upper: list[float] = []
-    for pos, (_, row) in enumerate(out.iterrows()):
-        expected = float(row["expected_minutes"])
-        half_width = max(expected - float(base_lower[pos]), float(base_upper[pos]) - expected, 1.5)
-        half_width *= uncertainty_multiplier(row)
-        ci_lower.append(round(clamp(expected - half_width, 0.0, MAX_PLAYER_MINUTES), 2))
-        ci_upper.append(round(clamp(expected + half_width, 0.0, MAX_PLAYER_MINUTES), 2))
-    out["minutes_ci_lower"] = ci_lower
-    out["minutes_ci_upper"] = ci_upper
+    # Vectorized CI bounds — was previously a python `for _, row in out.iterrows()` loop
+    # calling uncertainty_multiplier(row) per row; iterrows() is the single most expensive
+    # row-iteration pattern in pandas (full pd.Series materialized per row).
+    expected = out["expected_minutes"].to_numpy(dtype=np.float64)
+    half_width = np.maximum(np.maximum(expected - base_lower, base_upper - expected), 1.5)
+    half_width = half_width * uncertainty_multipliers(out)
+    out["minutes_ci_lower"] = np.round(np.clip(expected - half_width, 0.0, MAX_PLAYER_MINUTES), 2)
+    out["minutes_ci_upper"] = np.round(np.clip(expected + half_width, 0.0, MAX_PLAYER_MINUTES), 2)
     return out
 
 
+def compress_usage_to_roster_budget(
+    df: pd.DataFrame, *, pull_strength: float = 0.6
+) -> pd.DataFrame:
+    """Soft-pull each candidate's usage toward the team's actual open usage at their position.
+
+    `expected_usage` from `predict_minutes_usage` is scored independently per
+    (player, school) candidate row — intentional for counterfactual scoring ("what would
+    this player's usage look like at this school"), but unconstrained it can put
+    starter-level usage on every candidate simultaneously (PR #43's own acknowledged
+    follow-up). The fix is anchored per-row to `open_usage_position` (a real
+    per-team-per-position open-usage figure from `roster_state_features`), not a sum across
+    every candidate row for a school — a school's inference candidate pool is the *entire*
+    eligible player population scored against it (thousands of rows), not a short list of
+    real competitors, so summing all of them to one ~100 budget crushes nearly every
+    candidate toward zero regardless of how good any individual prediction was (confirmed
+    on real data: usage_mae roughly tripled in a holdout run before this per-row redesign).
+    Only the excess above the position's open-usage figure is pulled down, scaled by
+    `pull_strength` and loosened for candidates the model is more confident will actually
+    play real minutes here (`rotation_probability_model * expected_minutes_share`) — since
+    `open_usage_position` is itself a rough average, not a hard ceiling, a confident
+    candidate can still legitimately exceed it. Rows without reliable roster context
+    (`roster_reliability < 0.6`, i.e. no roster snapshot joined) are left uncompressed
+    rather than crushed toward a meaningless default-zero cap. Raw, uncompressed usage is
+    preserved in `expected_usage_raw` so the counterfactual signal isn't lost — only
+    `expected_usage` (what gets written to `playing_time_projections` and used downstream
+    by `derive_usage_role`/`compute_role_fit_score`) changes.
+    """
+    if df.empty or "expected_usage" not in df.columns:
+        return df
+    out = df.copy()
+    out["expected_usage_raw"] = out["expected_usage"].astype(float)
+
+    cap = pd.to_numeric(out.get("open_usage_position"), errors="coerce")
+    roster_reliable = pd.to_numeric(out.get("roster_reliability"), errors="coerce").fillna(
+        0.0
+    ) >= 0.6
+    has_cap = cap.notna() & roster_reliable
+
+    rotation_prob = pd.to_numeric(
+        out.get("rotation_probability_model", 0.5), errors="coerce"
+    ).fillna(0.5).clip(0.0, 1.0)
+    minutes_share = pd.to_numeric(
+        out.get("expected_minutes_share", 0.5), errors="coerce"
+    ).fillna(0.5).clip(0.0, 1.0)
+    confidence = (rotation_prob * minutes_share).clip(0.0, 1.0)
+    effective_pull = pull_strength * (1.0 - 0.5 * confidence)
+
+    excess = (out["expected_usage_raw"] - cap.fillna(0.0)).clip(lower=0.0)
+    reduction = np.where(has_cap, excess * effective_pull, 0.0)
+    out["expected_usage"] = (out["expected_usage_raw"] - reduction).clip(lower=0.0)
+    return out
+
+
+ROLE_CATEGORIES = (
+    "primary_creator",
+    "secondary_creator",
+    "connector",
+    "play_finisher",
+    "spacing_specialist",
+    "rim_runner_rebounder",
+    "defensive_specialist",
+    "depth",
+)
+
+
+def derive_usage_roles(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized form of `derive_usage_role` — same role-scoring rules, whole-frame at once.
+
+    `derive_usage_role(row)` stays as a single-row wrapper for tests/callers with one row.
+    `ROLE_CATEGORIES`'s order matches the original dict's insertion order exactly —
+    `np.argmax` returns the first index on ties, replicating the stability of Python's
+    `sorted(role_scores.items(), key=..., reverse=True)` (ties keep their original relative
+    order; `reverse=True` only flips the comparison, not tie order).
+    """
+    n = len(df)
+    if n == 0:
+        return np.array([], dtype=object), np.array([], dtype=np.float64)
+
+    usage = _numeric_column_or_default(df, "expected_usage", 0.0)
+    minutes = _numeric_column_or_default(df, "expected_minutes", 0.0)
+    archetype = (
+        df.get("archetype_label", pd.Series("", index=df.index))
+        .fillna("")
+        .astype(str)
+        .str.lower()
+    )
+    skill_percentiles_col = df.get("skill_percentiles", pd.Series(None, index=df.index))
+    pct_dicts = [_json_dict(v) for v in skill_percentiles_col]
+    shooting_3p = np.array([_as_float(d.get("shooting_3p")) for d in pct_dicts])
+    passing_creation = np.array([_as_float(d.get("passing_creation")) for d in pct_dicts])
+    steal_disruption = np.array([_as_float(d.get("steal_disruption")) for d in pct_dicts])
+    block_rim_protection = np.array([_as_float(d.get("block_rim_protection")) for d in pct_dicts])
+
+    scores = {role: np.zeros(n, dtype=np.float64) for role in ROLE_CATEGORIES}
+
+    scores["primary_creator"] += np.where((usage >= 25) & (minutes >= 24), 3.0, 0.0)
+    scores["secondary_creator"] += np.where(usage >= 20, 2.0, 0.0)
+
+    connector_mask = (usage >= 14) & (usage <= 22)
+    scores["connector"] += np.where(connector_mask, 1.5, 0.0)
+    scores["play_finisher"] += np.where(connector_mask, 1.0, 0.0)
+
+    scores["depth"] += np.where((usage < 15) | (minutes < 10), 2.0, 0.0)
+
+    spacing_mask = (
+        archetype.str.contains("shoot").to_numpy()
+        | archetype.str.contains("spacing").to_numpy()
+        | (shooting_3p >= 65)
+    )
+    scores["spacing_specialist"] += np.where(spacing_mask, 2.5, 0.0)
+
+    creator_mask = (
+        archetype.str.contains("playmaker").to_numpy()
+        | archetype.str.contains("creator").to_numpy()
+        | (passing_creation >= 65)
+    )
+    scores["primary_creator"] += np.where(creator_mask, 1.5, 0.0)
+    scores["secondary_creator"] += np.where(creator_mask, 1.5, 0.0)
+
+    rim_mask = (
+        archetype.str.contains("big").to_numpy()
+        | archetype.str.contains("rim").to_numpy()
+        | archetype.str.contains("rebound").to_numpy()
+    )
+    scores["rim_runner_rebounder"] += np.where(rim_mask, 2.5, 0.0)
+
+    defense_mask = (
+        archetype.str.contains("def").to_numpy()
+        | (steal_disruption >= 70)
+        | (block_rim_protection >= 70)
+    )
+    scores["defensive_specialist"] += np.where(defense_mask, 2.0, 0.0)
+
+    scores["depth"] -= np.where(minutes >= 18, 1.5, 0.0)
+
+    score_matrix = np.column_stack([scores[role] for role in ROLE_CATEGORIES])
+    top_idx = np.argmax(score_matrix, axis=1)
+    top_role = np.array(ROLE_CATEGORIES, dtype=object)[top_idx]
+    sorted_scores = np.sort(score_matrix, axis=1)
+    top_score = sorted_scores[:, -1]
+    runner_up = sorted_scores[:, -2]
+
+    sample_rel = _numeric_column_or_default(df, "sample_reliability", 0.0)
+    confidence_base = 0.45 + 0.12 * np.maximum(top_score - runner_up, 0.0)
+    confidence = np.clip(confidence_base + 0.20 * sample_rel, 0.25, 0.95)
+    return top_role, confidence
+
+
 def derive_usage_role(row: pd.Series) -> tuple[str, float]:
-    usage = _as_float(row.get("expected_usage"), 0.0)
-    minutes = _as_float(row.get("expected_minutes"), 0.0)
-    archetype = str(row.get("archetype_label") or "").lower()
-    pct = _json_dict(row.get("skill_percentiles"))
+    roles, confidences = derive_usage_roles(pd.DataFrame([row]))
+    return roles[0], float(confidences[0])
 
-    role_scores = {
-        "primary_creator": 0.0,
-        "secondary_creator": 0.0,
-        "connector": 0.0,
-        "play_finisher": 0.0,
-        "spacing_specialist": 0.0,
-        "rim_runner_rebounder": 0.0,
-        "defensive_specialist": 0.0,
-        "depth": 0.0,
-    }
-    if usage >= 25 and minutes >= 24:
-        role_scores["primary_creator"] += 3.0
-    if usage >= 20:
-        role_scores["secondary_creator"] += 2.0
-    if 14 <= usage <= 22:
-        role_scores["connector"] += 1.5
-        role_scores["play_finisher"] += 1.0
-    if usage < 15 or minutes < 10:
-        role_scores["depth"] += 2.0
-    if "shoot" in archetype or "spacing" in archetype or _as_float(pct.get("shooting_3p")) >= 65:
-        role_scores["spacing_specialist"] += 2.5
-    if (
-        "playmaker" in archetype
-        or "creator" in archetype
-        or _as_float(pct.get("passing_creation")) >= 65
-    ):
-        role_scores["primary_creator"] += 1.5
-        role_scores["secondary_creator"] += 1.5
-    if "big" in archetype or "rim" in archetype or "rebound" in archetype:
-        role_scores["rim_runner_rebounder"] += 2.5
-    if (
-        "def" in archetype
-        or _as_float(pct.get("steal_disruption")) >= 70
-        or _as_float(pct.get("block_rim_protection")) >= 70
-    ):
-        role_scores["defensive_specialist"] += 2.0
-    if minutes >= 18:
-        role_scores["depth"] -= 1.5
 
-    ordered = sorted(role_scores.items(), key=lambda item: item[1], reverse=True)
-    top_role, top_score = ordered[0]
-    runner_up = ordered[1][1]
-    confidence_base = 0.45 + 0.12 * max(top_score - runner_up, 0.0)
-    confidence = confidence_base + 0.20 * _as_float(row.get("sample_reliability"), 0.0)
-    return top_role, clamp(confidence, 0.25, 0.95)
+def allocate_displaced_minutes_batch(df: pd.DataFrame) -> list[dict[str, float]]:
+    """Vectorized form of `allocate_displaced_minutes` — whole-frame at once.
+
+    Same `pd.Series(r)`-per-row reconstruction cost as `data_quality_flags` had — see that
+    function's docstring.
+    """
+    n = len(df)
+    if n == 0:
+        return []
+
+    expected = _numeric_column_or_default(df, "expected_minutes", 0.0)
+    open_minutes = np.clip(
+        _numeric_column_or_default(df, "roster_open_minutes", 0.0),
+        0.0,
+        STANDARD_TEAM_MINUTES,
+    )
+    replacement = np.minimum(
+        expected, np.where(open_minutes > 0, open_minutes / 5.0, expected * 0.35)
+    )
+    remaining = np.maximum(expected - replacement, 0.0)
+    same_position = remaining * 0.65
+    flexible = remaining - same_position
+
+    replacement_r = np.round(replacement, 2)
+    same_position_r = np.round(same_position, 2)
+    flexible_r = np.round(flexible, 2)
+    return [
+        {
+            "replacement_slot": float(replacement_r[i]),
+            "same_position_depth": float(same_position_r[i]),
+            "flexible_bench": float(flexible_r[i]),
+        }
+        for i in range(n)
+    ]
 
 
 def allocate_displaced_minutes(row: pd.Series) -> dict[str, float]:
-    expected = _as_float(row.get("expected_minutes"), 0.0)
-    open_minutes = clamp(_as_float(row.get("roster_open_minutes"), 0.0), 0.0, STANDARD_TEAM_MINUTES)
-    replacement = min(expected, open_minutes / 5.0 if open_minutes > 0 else expected * 0.35)
-    remaining = max(expected - replacement, 0.0)
-    same_position = remaining * 0.65
-    flexible = remaining - same_position
-    return {
-        "replacement_slot": round(replacement, 2),
-        "same_position_depth": round(same_position, 2),
-        "flexible_bench": round(flexible, 2),
-    }
+    return allocate_displaced_minutes_batch(pd.DataFrame([row]))[0]
 
 
 def starter_probability(minutes: float, ci_lower: float, ci_upper: float) -> float:
@@ -1499,24 +1911,37 @@ def rotation_probability(minutes: float, ci_lower: float, ci_upper: float) -> fl
     return clamp(1.0 / (1.0 + np.exp(-(minutes - 12.0) / spread)), 0.0, 1.0)
 
 
-def compute_role_fit_score(row: pd.Series) -> float:
-    minutes = _as_float(row.get("expected_minutes"), 0.0)
-    usage = _as_float(row.get("expected_usage"), 0.0)
-    ci_width = _as_float(row.get("minutes_ci_upper"), minutes) - _as_float(
-        row.get("minutes_ci_lower"), minutes
-    )
-    crowding = max(_as_float(row.get("roster_player_count"), 12.0) - 12.0, 0.0)
-    open_minutes = clamp(_as_float(row.get("roster_open_minutes"), 0.0), 0.0, STANDARD_TEAM_MINUTES)
-    rotation_prob = clamp(
-        _as_float(row.get("rotation_probability_model"), minutes / 28.0), 0.0, 1.0
-    )
-    starter_prob = clamp(_as_float(row.get("starter_probability_model"), minutes / 32.0), 0.0, 1.0)
-    minutes_score = clamp(minutes / 28.0 * 100.0, 0.0, 100.0)
-    usage_score = clamp(100.0 - abs(usage - 20.0) * 2.0, 40.0, 100.0)
-    opportunity_score = clamp((open_minutes / 80.0) * 100.0, 35.0, 100.0)
-    role_path_score = clamp(65.0 * rotation_prob + 35.0 * starter_prob, 0.0, 100.0)
-    uncertainty_penalty = clamp(ci_width / 16.0 * 18.0, 0.0, 25.0)
-    crowding_penalty = clamp(crowding * 1.25, 0.0, 15.0)
+def compute_role_fit_scores(df: pd.DataFrame) -> np.ndarray:
+    """Vectorized form of `compute_role_fit_score` — same formula, whole-frame at once.
+
+    Was `scored.apply(pt.compute_role_fit_score, axis=1)` in `score_frame()` — pure scalar
+    arithmetic per row, so the only cost was the `.apply(axis=1)` row-reconstruction
+    overhead itself. `compute_role_fit_score(row)` stays as a single-row wrapper around
+    this for tests/callers that genuinely have one row.
+    """
+    n = len(df)
+    if n == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    def col(name: str, default) -> np.ndarray:
+        return _numeric_column_or_default(df, name, default)
+
+    minutes = col("expected_minutes", 0.0)
+    usage = col("expected_usage", 0.0)
+    ci_upper = col("minutes_ci_upper", minutes)
+    ci_lower = col("minutes_ci_lower", minutes)
+    ci_width = ci_upper - ci_lower
+    crowding = np.maximum(col("roster_player_count", 12.0) - 12.0, 0.0)
+    open_minutes = np.clip(col("roster_open_minutes", 0.0), 0.0, STANDARD_TEAM_MINUTES)
+    rotation_prob = np.clip(col("rotation_probability_model", minutes / 28.0), 0.0, 1.0)
+    starter_prob = np.clip(col("starter_probability_model", minutes / 32.0), 0.0, 1.0)
+
+    minutes_score = np.clip(minutes / 28.0 * 100.0, 0.0, 100.0)
+    usage_score = np.clip(100.0 - np.abs(usage - 20.0) * 2.0, 40.0, 100.0)
+    opportunity_score = np.clip((open_minutes / 80.0) * 100.0, 35.0, 100.0)
+    role_path_score = np.clip(65.0 * rotation_prob + 35.0 * starter_prob, 0.0, 100.0)
+    uncertainty_penalty = np.clip(ci_width / 16.0 * 18.0, 0.0, 25.0)
+    crowding_penalty = np.clip(crowding * 1.25, 0.0, 15.0)
     score = (
         0.48 * minutes_score
         + 0.22 * role_path_score
@@ -1525,7 +1950,11 @@ def compute_role_fit_score(row: pd.Series) -> float:
         - uncertainty_penalty
         - crowding_penalty
     )
-    return round(clamp(score, 0.0, 100.0), 2)
+    return np.round(np.clip(score, 0.0, 100.0), 2)
+
+
+def compute_role_fit_score(row: pd.Series) -> float:
+    return float(compute_role_fit_scores(pd.DataFrame([row]))[0])
 
 
 def build_playing_time_records(
@@ -1538,10 +1967,28 @@ def build_playing_time_records(
     expires = now + timedelta(days=expires_days)
     projection_records: list[tuple] = []
     fit_sync_records: list[tuple] = []
-    for row in scored_df.itertuples(index=False):
+
+    # Precomputed whole-frame once, outside the loop — neither data_quality_flags nor
+    # compute_role_fit_score actually reads usage_role/usage_role_confidence, so (unlike the
+    # role/role_conf fallback below, which genuinely needs a per-row value) there was never
+    # a reason to reconstruct a pd.Series per row for these. That per-row Series
+    # reconstruction (`pd.Series({**r, ...})`) was exactly the apply(axis=1)-shaped cost this
+    # vectorization pass targets, just inside an itertuples() loop instead of .apply().
+    displaced_batch = allocate_displaced_minutes_batch(scored_df)
+    flags_batch = data_quality_flags_batch(scored_df)
+    role_fit_batch = compute_role_fit_scores(scored_df)
+
+    for i, row in enumerate(scored_df.itertuples(index=False)):
         r = row._asdict()
-        role, role_conf = derive_usage_role(pd.Series(r))
-        displaced = allocate_displaced_minutes(pd.Series(r))
+        # `score_frame()` (scripts/run_playing_time.py) already computes usage_role/
+        # usage_role_confidence/role_fit before calling this function. Reuse those
+        # instead of recomputing — same deterministic output, half the row-apply cost.
+        if pd.notna(r.get("usage_role")) and pd.notna(r.get("usage_role_confidence")):
+            role = r["usage_role"]
+            role_conf = float(r["usage_role_confidence"])
+        else:
+            role, role_conf = derive_usage_role(pd.Series(r))
+        displaced = displaced_batch[i]
         sp = (
             clamp(float(r["starter_probability_model"]), 0.0, 1.0)
             if pd.notna(r.get("starter_probability_model"))
@@ -1556,9 +2003,8 @@ def build_playing_time_records(
                 r["expected_minutes"], r["minutes_ci_lower"], r["minutes_ci_upper"]
             )
         )
-        series = pd.Series({**r, "usage_role": role, "usage_role_confidence": role_conf})
-        flags = data_quality_flags(series)
-        role_fit = compute_role_fit_score(series)
+        flags = flags_batch[i]
+        role_fit = float(r["role_fit"]) if pd.notna(r.get("role_fit")) else float(role_fit_batch[i])
         opportunity = {
             "target_season": int(r["season"]),
             "source_stat_season": int(_as_float(r.get("source_stat_season"), r["season"])),
@@ -1598,6 +2044,9 @@ def build_playing_time_records(
                 _as_float(r.get("candidate_changes_school"), 0.0) >= 0.5
             ),
             "is_portal_candidate": bool(_as_float(r.get("is_portal_candidate"), 0.0) >= 0.5),
+            "expected_usage_raw": round(
+                _as_float(r.get("expected_usage_raw"), r.get("expected_usage", 0.0)), 2
+            ),
         }
         role_breakdown = {
             "projected_minutes": round(float(r["expected_minutes"]), 2),

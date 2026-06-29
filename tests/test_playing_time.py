@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import text
@@ -79,6 +80,173 @@ def test_label_construction_uses_min_pct():
     assert frame.loc[0, "is_no_prior_college_season"] == 1.0
     assert frame.loc[0, "career_season_index"] == 1.0
     assert frame.loc[0, "years_since_first_observed"] == 0.0
+
+
+def test_neutral_projection_fallback_rate_flags_non_forecast_rows():
+    frame = pd.DataFrame(
+        [
+            {"neutral_projection_model_version": pt.PLAYER_PROJECTION_MODEL_VERSION},
+            {"neutral_projection_model_version": pt.PLAYER_PROJECTION_MODEL_VERSION},
+            {"neutral_projection_model_version": "player-projection-shrinkage-v2"},
+            {"neutral_projection_model_version": None},
+        ]
+    )
+    rate = pt.neutral_projection_fallback_rate(frame)
+    assert rate == pytest.approx(0.25)
+
+
+def test_neutral_projection_fallback_rate_empty_frame():
+    assert pt.neutral_projection_fallback_rate(pd.DataFrame()) == 0.0
+
+
+def test_null_leaking_neutral_projection_features_blanks_fallback_rows_only():
+    frame = pd.DataFrame(
+        [
+            {
+                "neutral_projection_model_version": pt.PLAYER_PROJECTION_MODEL_VERSION,
+                "value_per_100": 5.0,
+                "value_ci_lower": 4.0,
+                "value_ci_upper": 6.0,
+                "skill_percentiles": {"shooting_3p": 70},
+                "uncertainty": 0.2,
+            },
+            {
+                "neutral_projection_model_version": "player-projection-shrinkage-v2",
+                "value_per_100": 9.0,
+                "value_ci_lower": 8.0,
+                "value_ci_upper": 10.0,
+                "skill_percentiles": {"shooting_3p": 80},
+                "uncertainty": 0.3,
+            },
+            {
+                "neutral_projection_model_version": None,
+                "value_per_100": 1.0,
+                "value_ci_lower": 0.5,
+                "value_ci_upper": 1.5,
+                "skill_percentiles": {},
+                "uncertainty": 0.1,
+            },
+        ]
+    )
+    out = pt.null_leaking_neutral_projection_features(frame)
+    # forecast row (row 0) untouched
+    assert out.loc[0, "value_per_100"] == 5.0
+    # same-season fallback row (row 1) nulled
+    for col in pt.NEUTRAL_PROJECTION_FEATURE_COLUMNS:
+        assert pd.isna(out.loc[1, col])
+    # no-projection-joined row (row 2, model_version is None) untouched — not a leakage risk
+    assert out.loc[2, "value_per_100"] == 1.0
+
+
+def test_compress_usage_to_roster_budget_pulls_excess_toward_open_usage_position():
+    frame = pd.DataFrame(
+        [
+            {
+                # exceeds open_usage_position (15.0), high confidence -> pulled less
+                "expected_usage": 30.0,
+                "open_usage_position": 15.0,
+                "roster_reliability": 0.9,
+                "rotation_probability_model": 0.95,
+                "expected_minutes_share": 0.90,
+            },
+            {
+                # same excess, low confidence -> pulled more than the row above
+                "expected_usage": 30.0,
+                "open_usage_position": 15.0,
+                "roster_reliability": 0.9,
+                "rotation_probability_model": 0.10,
+                "expected_minutes_share": 0.15,
+            },
+        ]
+    )
+    out = pt.compress_usage_to_roster_budget(frame)
+    assert out["expected_usage_raw"].tolist() == [30.0, 30.0]
+    assert out.loc[0, "expected_usage"] > out.loc[1, "expected_usage"]
+    # both still pulled down from the raw 30.0, neither crushed to (or below) the cap
+    assert 15.0 < out.loc[1, "expected_usage"] < out.loc[0, "expected_usage"] < 30.0
+
+
+def test_compress_usage_to_roster_budget_leaves_under_cap_rows_unchanged():
+    frame = pd.DataFrame(
+        [
+            {
+                "expected_usage": 12.0,
+                "open_usage_position": 20.0,
+                "roster_reliability": 0.9,
+                "rotation_probability_model": 0.5,
+                "expected_minutes_share": 0.5,
+            }
+        ]
+    )
+    out = pt.compress_usage_to_roster_budget(frame)
+    assert out.loc[0, "expected_usage"] == pytest.approx(12.0)
+
+
+def test_compress_usage_to_roster_budget_skips_unreliable_roster_context():
+    frame = pd.DataFrame(
+        [
+            {
+                "expected_usage": 30.0,
+                "open_usage_position": 5.0,
+                "roster_reliability": 0.45,
+                "rotation_probability_model": 0.5,
+                "expected_minutes_share": 0.5,
+            }
+        ]
+    )
+    out = pt.compress_usage_to_roster_budget(frame)
+    # missing/unreliable roster context -> leave raw usage alone rather than crush toward
+    # a cap that isn't really known
+    assert out.loc[0, "expected_usage"] == pytest.approx(30.0)
+
+
+def test_freshman_position_group_priors_use_freshman_rows_only():
+    train_df = pd.DataFrame(
+        {
+            "position": ["PG", "PG", "PG", "C"],
+            "is_no_prior_college_season": [1.0, 1.0, 0.0, 1.0],
+        }
+    )
+    y_minutes = np.array([0.20, 0.30, 0.90, 0.40])
+    y_usage = np.array([15.0, 17.0, 28.0, 18.0])
+    minutes_share_by_group, usage_by_group = pt.freshman_position_group_priors(
+        train_df, y_minutes, y_usage
+    )
+    # guard group's prior averages only the two freshman PG rows (0.20, 0.30), excludes
+    # the veteran PG row (0.90)
+    assert minutes_share_by_group["guard"] == pytest.approx(0.25)
+    assert usage_by_group["guard"] == pytest.approx(16.0)
+    assert minutes_share_by_group["big"] == pytest.approx(0.40)
+
+
+def test_apply_freshman_prior_shrinkage_only_affects_freshman_rows():
+    df = pd.DataFrame(
+        [
+            {"position": "PG", "is_no_prior_college_season": 1.0, "team_adj_em": 0.0},
+            {"position": "PG", "is_no_prior_college_season": 0.0, "team_adj_em": 0.0},
+        ]
+    )
+    raw_share = np.array([0.80, 0.80])
+    raw_usage = np.array([28.0, 28.0])
+    minutes_share_by_group = {grp: 0.20 for grp in pt.POSITION_GROUPS}
+    usage_by_group = {grp: 14.0 for grp in pt.POSITION_GROUPS}
+    blended_share, blended_usage = pt.apply_freshman_prior_shrinkage(
+        df, raw_share, raw_usage, minutes_share_by_group, usage_by_group
+    )
+    # freshman row (0) pulled toward the lower prior; non-freshman row (1) untouched
+    assert blended_share[0] < raw_share[0]
+    assert blended_share[1] == pytest.approx(0.80)
+    assert blended_usage[0] < raw_usage[0]
+    assert blended_usage[1] == pytest.approx(28.0)
+
+
+def test_apply_freshman_prior_shrinkage_noop_without_group_priors():
+    df = pd.DataFrame([{"position": "PG", "is_no_prior_college_season": 1.0}])
+    share, usage = pt.apply_freshman_prior_shrinkage(
+        df, np.array([0.80]), np.array([28.0]), {}, {}
+    )
+    assert share[0] == pytest.approx(0.80)
+    assert usage[0] == pytest.approx(28.0)
 
 
 def test_low_sample_player_gets_wider_interval():
@@ -162,6 +330,101 @@ def test_role_fit_does_not_depend_on_scheme_or_gap_fit():
     assert pt.compute_role_fit_score(base) == pt.compute_role_fit_score(high_fit)
 
 
+def test_compute_role_fit_scores_matches_per_row_scalar_on_multi_row_frame():
+    df = pd.DataFrame(
+        [
+            {
+                "expected_minutes": 24.0,
+                "expected_usage": 20.0,
+                "minutes_ci_lower": 21.0,
+                "minutes_ci_upper": 27.0,
+                "roster_player_count": 12,
+            },
+            {
+                "expected_minutes": 8.0,
+                "expected_usage": 10.0,
+                "minutes_ci_lower": 2.0,
+                "minutes_ci_upper": 14.0,
+                "roster_player_count": 18,
+            },
+        ]
+    )
+    vectorized = pt.compute_role_fit_scores(df)
+    scalar = [pt.compute_role_fit_score(row) for _, row in df.iterrows()]
+    assert vectorized.tolist() == pytest.approx(scalar)
+
+
+def test_compute_role_fit_scores_handles_entirely_missing_optional_columns():
+    # Regression: df.get(name, default) returns the bare scalar default when the column
+    # doesn't exist at all (not a broadcast Series) — chaining .fillna()/.to_numpy() on
+    # that crashed with AttributeError before _numeric_column_or_default fixed it. Only
+    # the columns build_playing_time_records always has present are included here.
+    df = pd.DataFrame([{"expected_minutes": 20.0, "expected_usage": 18.0}])
+    score = pt.compute_role_fit_scores(df)
+    assert len(score) == 1
+    assert 0.0 <= score[0] <= 100.0
+
+
+def test_derive_usage_roles_matches_per_row_scalar_on_multi_row_frame():
+    df = pd.DataFrame(
+        [
+            {
+                "expected_usage": 27.0,
+                "expected_minutes": 28.0,
+                "archetype_label": "Lead Scoring Playmaker",
+                "sample_reliability": 0.9,
+                "skill_percentiles": {"passing_creation": 85},
+            },
+            {
+                "expected_usage": 8.0,
+                "expected_minutes": 6.0,
+                "archetype_label": "",
+                "sample_reliability": 0.2,
+                "skill_percentiles": {},
+            },
+        ]
+    )
+    roles, confidences = pt.derive_usage_roles(df)
+    scalar_results = [pt.derive_usage_role(row) for _, row in df.iterrows()]
+    assert list(roles) == [r[0] for r in scalar_results]
+    assert confidences.tolist() == pytest.approx([r[1] for r in scalar_results])
+
+
+def test_derive_usage_roles_handles_entirely_missing_optional_columns():
+    df = pd.DataFrame([{"expected_usage": 5.0, "expected_minutes": 4.0}])
+    roles, confidences = pt.derive_usage_roles(df)
+    assert roles[0] == "depth"
+    assert 0.25 <= confidences[0] <= 0.95
+
+
+def test_data_quality_flags_batch_handles_entirely_missing_optional_columns():
+    df = pd.DataFrame([{"expected_minutes": 20.0}])
+    flags = pt.data_quality_flags_batch(df)
+    assert len(flags) == 1
+    assert flags[0]["missing_feature_count"] == 0
+    assert 0.60 <= flags[0]["uncertainty_multiplier"] <= 2.10
+
+
+def test_allocate_displaced_minutes_batch_handles_entirely_missing_optional_columns():
+    df = pd.DataFrame([{"expected_minutes": 20.0}])
+    displaced = pt.allocate_displaced_minutes_batch(df)
+    assert len(displaced) == 1
+    total = sum(displaced[0].values())
+    assert total == pytest.approx(20.0, abs=0.01)
+
+
+def test_uncertainty_multipliers_matches_scalar_on_multi_row_frame():
+    df = pd.DataFrame(
+        [
+            {"sample_reliability": 0.9, "projection_reliability": 0.9, "roster_reliability": 0.9},
+            {"sample_reliability": 0.1, "projection_reliability": 0.2, "roster_reliability": 0.3},
+        ]
+    )
+    vectorized = pt.uncertainty_multipliers(df)
+    scalar = [pt.uncertainty_multiplier(row) for _, row in df.iterrows()]
+    assert vectorized.tolist() == pytest.approx(scalar)
+
+
 def test_validation_metrics_include_calibration_and_tail_checks():
     scored = pd.DataFrame(
         [
@@ -217,6 +480,48 @@ def test_usage_role_derivation_is_archetype_aware():
     assert 0.0 <= confidence <= 1.0
 
 
+def test_build_records_reuses_precomputed_role_and_role_fit():
+    # Deliberately mismatched vs. what derive_usage_role/compute_role_fit_score would
+    # produce from these inputs, so a pass means the precomputed values were reused
+    # (not silently recomputed and overwritten).
+    scored = pd.DataFrame(
+        [
+            {
+                "player_id": TEST_PLAYER_ID,
+                "school_id": TEST_SCHOOL_ID,
+                "season": 2027,
+                "roster_snapshot_id": None,
+                "expected_minutes": 22.0,
+                "expected_minutes_share": 0.55,
+                "minutes_ci_lower": 17.0,
+                "minutes_ci_upper": 28.0,
+                "expected_usage": 19.5,
+                "usage_role": "sentinel_role",
+                "usage_role_confidence": 0.111,
+                "role_fit": 1.23,
+                "rotation_probability_model": 0.90,
+                "starter_probability_model": 0.41,
+                "heavy_minutes_probability": 0.12,
+                "high_usage_probability": 0.10,
+                "roster_open_minutes": 40.0,
+                "gap_match": 75.0,
+                "scheme_fit": 70.0,
+                "program_fit": 50.0,
+                "weight_gap": 0.20,
+                "weight_scheme": 0.30,
+                "weight_role": 0.25,
+                "weight_program": 0.25,
+                "fit_breakdown": {},
+            }
+        ]
+    )
+    projection_records, sync_records = pt.build_playing_time_records(scored)
+    assert projection_records[0][9] == "sentinel_role"
+    assert projection_records[0][10] == pytest.approx(0.111)
+    assert projection_records[0][17] == pytest.approx(1.23)
+    assert sync_records[0][5] == pytest.approx(1.23)
+
+
 def test_build_records_include_destination_projection_context():
     scored = pd.DataFrame(
         [
@@ -230,6 +535,7 @@ def test_build_records_include_destination_projection_context():
                 "minutes_ci_lower": 17.0,
                 "minutes_ci_upper": 28.0,
                 "expected_usage": 19.5,
+                "expected_usage_raw": 24.0,
                 "usage_role": "connector",
                 "usage_role_confidence": 0.72,
                 "rotation_probability_model": 0.90,
@@ -279,6 +585,7 @@ def test_build_records_include_destination_projection_context():
     assert opportunity["neutral_projection_model_version"] == "player-proj-phase2a-fcast-v1"
     assert opportunity["candidate_changes_school"] is True
     assert opportunity["is_portal_candidate"] is True
+    assert opportunity["expected_usage_raw"] == pytest.approx(24.0)
     assert role_breakdown["opportunity_drivers"]["target_season"] == 2027
 
 
