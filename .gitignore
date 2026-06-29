@@ -1,4 +1,8 @@
 CLAUDE.md
+.env
+
+# Data files (large, downloaded locally)
+data/
 .torvik_cache/
 
 # Jupyter
@@ -7,6 +11,7 @@ CLAUDE.md
 # Python
 __pycache__/
 *.py[cod]
+.ipynb_checkpoints/
 *.pyo
 .venv/
 *.egg-info/
