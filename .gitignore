@@ -62,3 +62,7 @@ notebooks/data/
 data/features/
 data/models/*.pkl
 data/model_validation/
+
+# DB dumps (contain full DB contents — never commit)
+*.dump
+*.sql.gz
