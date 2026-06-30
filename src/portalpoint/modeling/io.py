@@ -48,4 +48,4 @@ def get_sync_engine() -> Engine:
         "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5433/portalpoint"
     )
     sync_url = raw_url.replace("+asyncpg", "+psycopg2").replace("ssl=require", "sslmode=require")
-    return create_engine(sync_url, echo=False)
+    return create_engine(sync_url, echo=False, pool_pre_ping=True, pool_recycle=1800)
