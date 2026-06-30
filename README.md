@@ -36,7 +36,7 @@ See [`docs/status/STATUS.md`](docs/status/STATUS.md) for the status index, or ju
 | [uv](https://docs.astral.sh/uv/) | latest | Python package/venv manager |
 | Node.js | 18+ | Frontend build |
 | npm | 9+ | Frontend package manager |
-| Docker Desktop | latest | PostgreSQL + Redis |
+| Docker Desktop | latest | Redis (PostgreSQL is now shared AWS RDS — see [Team RDS access](#team-rds-access-aws)) |
 
 ---
 
@@ -50,19 +50,20 @@ cd MIDS210-Capstone
 cp .env.example .env
 ```
 
-Edit `.env` — the defaults work for local Docker. At minimum verify `JWT_SECRET` is set to any non-empty string for local dev.
+Edit `.env` — replace `<password>` in `DATABASE_URL` with the `portalpoint_app` password from Justin. See [Team RDS access](#team-rds-access-aws).
 
-**Teammates doing notebook / S3 work:** copy `.env.example` → `.env`, then add AWS keys from Justin (see [Team S3 access](#team-s3-access-aws) below).
+**Teammates doing notebook / S3 work:** also add AWS keys from Justin (see [Team S3 access](#team-s3-access-aws) below).
 
-### 2. Start infrastructure (PostgreSQL + Redis)
+### 2. Start infrastructure (Redis only — PostgreSQL is shared RDS)
 
 ```bash
-docker compose up -d
+docker compose up -d redis
 ```
 
 This starts:
-- PostgreSQL 15 on port **5433** (mapped to avoid conflict with local Postgres)
 - Redis 7 on port **6379**
+
+PostgreSQL is hosted on AWS RDS — no local Postgres container needed. See [Team RDS access](#team-rds-access-aws) to get connected.
 
 ### 3. Install Python dependencies and apply migrations
 
@@ -156,7 +157,7 @@ Copy `.env.example` to `.env`. All variables have sane defaults for local Docker
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:password@localhost:5433/portalpoint` | Port 5433 = Docker-mapped Postgres |
+| `DATABASE_URL` | `postgresql+asyncpg://portalpoint_app:<password>@portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432/portalpoint?ssl=require` | Shared AWS RDS — get password from Justin; see [Team RDS access](#team-rds-access-aws) |
 | `REDIS_URL` | `redis://localhost:6379` | |
 | `JWT_SECRET` | `change-me-in-production-use-a-long-random-string` | Any string works locally; use a random 32+ char string in production |
 | `JWT_ALGORITHM` | `HS256` | |
@@ -169,6 +170,29 @@ Copy `.env.example` to `.env`. All variables have sane defaults for local Docker
 | `S3_BUCKET` | `portalpoint-data` | Shared team bucket |
 
 **Token expiry note:** The default 1-hour expiry means you'll be logged out after 60 minutes. For active development, set `JWT_EXPIRY_SECONDS=86400` in `.env`.
+
+---
+
+## Team RDS access (AWS)
+
+Shared PostgreSQL 15 database on AWS RDS. All teammates connect to the same instance.
+
+**Full guide:** [`docs/aws_rds_setup.md`](docs/aws_rds_setup.md)
+
+### Classmate quick start
+
+1. Get `portalpoint_app` password from Justin (DM — never commit)
+2. Send Justin your public IP (`curl https://checkip.amazonaws.com`) to be added to the security group
+3. Set `DATABASE_URL` in `.env` with the real password replacing `<password>`
+4. Verify access: `uv run python -c "from portalpoint.modeling.io import get_sync_engine; get_sync_engine().connect().close(); print('OK')"`
+
+| Item | Value |
+|---|---|
+| Host | `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com` |
+| Port | `5432` |
+| Database | `portalpoint` |
+| Runtime user | `portalpoint_app` |
+| SSL | Required (`?ssl=require` in URL) |
 
 ---
 
@@ -375,7 +399,7 @@ MIDS210-Capstone/
 ├── alembic/                     # Database migrations
 ├── tests/                       # 111 pytest tests across 9 modules
 ├── .env.example                 # Environment variable template
-├── docker-compose.yml           # PostgreSQL 15 + Redis 7
+├── docker-compose.yml           # Redis 7 (PostgreSQL migrated to AWS RDS — only Redis needed locally)
 ├── docs/                        # Project documentation, diagrams, and model plans
 │   ├── status/
 │   │   ├── STATUS.md                # Status index
@@ -403,6 +427,7 @@ MIDS210-Capstone/
 | `docs/models/gap_matching_plan.md` | Gap Matching model plan and implementation handoff |
 | `docs/models/hoopr_integration_plan.md` | hoopR zone geometry, ESPN coordinate system, join strategy, execution order |
 | `docs/aws_s3_setup.md` | Team S3 onboarding — keys, bucket layout, smoke test |
+| `docs/aws_rds_setup.md` | Team RDS onboarding — password, IP allowlist, connection string, troubleshooting |
 | `docs/PortalPoint_Design_Document_MVP.md` | Full product spec, API design, ML pipeline, timeline |
 | `docs/PORTALPOINT_DESIGN_PALETTE.md` | Color tokens, typography, spacing — single source of truth for UI |
 | `docs/models/player_projection_state_space_plan.md` | State-space player projection system plan |
