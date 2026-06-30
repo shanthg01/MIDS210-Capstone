@@ -171,3 +171,26 @@ def test_get_player_projection_not_found_for_unprojected_player(client):
 def test_get_player_projection_not_found_for_unprojected_season(client):
     r = client.get("/api/players/101/projection?season=1999")
     assert r.status_code == 404
+
+
+def test_get_player_projection_school_id_param_accepted(client):
+    # school_id for a school with no destination rows yet → 404, not 422/500.
+    # Confirms the query param is wired and the right mode is attempted.
+    r = client.get("/api/players/101/projection?school_id=9900301")
+    assert r.status_code == 404
+    assert "destination" in r.json()["detail"].lower() or "school" in r.json()["detail"].lower()
+
+
+def test_get_player_projection_neutral_ignores_school_id_absence(client):
+    # Without school_id, projection_mode must be 'neutral' and school_id None.
+    data = client.get("/api/players/101/projection").json()
+    assert data["projection_mode"] == "neutral"
+    assert data.get("school_id") is None
+
+
+def test_get_player_projection_response_schema_includes_destination_fields(client):
+    # New schema fields must be present in neutral response (even if None).
+    data = client.get("/api/players/101/projection").json()
+    assert "school_id" in data
+    assert "projected_minutes" in data
+    assert "projected_usage" in data
