@@ -184,7 +184,7 @@ Shared PostgreSQL 15 database on AWS RDS. All teammates connect to the same inst
 1. Get `portalpoint-bastion.pem`, bastion public IP, and `portalpoint_app` password from Justin (DM — never commit)
 2. Open the tunnel, leave it running:
    ```powershell
-   ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N
+   ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N -o ServerAliveInterval=60 -o ServerAliveCountMax=3
    ```
 3. Set `DATABASE_URL` in `.env` to `localhost:5433` with the real password replacing `<password>` (see `.env.example`)
 4. Verify access: `uv run python -c "from portalpoint.modeling.io import get_sync_engine; get_sync_engine().connect().close(); print('OK')"`

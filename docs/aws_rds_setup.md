@@ -23,10 +23,10 @@ RDS has **no public access and no per-IP allowlist** — it only accepts connect
 3. **Open the SSH tunnel** — leave this running in its own terminal the whole time you're working:
 
    ```powershell
-   ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N
+   ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N -o ServerAliveInterval=60 -o ServerAliveCountMax=3
    ```
 
-   `-N` means no remote shell, just port forwarding — no output is expected, that's normal. `localhost:5433` on your machine now forwards to RDS port 5432 through the bastion.
+   `-N` means no remote shell, just port forwarding — no output is expected, that's normal. `localhost:5433` on your machine now forwards to RDS port 5432 through the bastion. `ServerAliveInterval=60` sends a keepalive every 60 seconds so the tunnel survives idle periods (without this, NAT tables expire the connection silently after ~2 minutes of inactivity).
 
 4. **Edit `.env`** — replace `<password>` with the real password (host stays `localhost`, port `5433` — the tunnel, not RDS directly):
 
