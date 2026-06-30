@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 25, 2026 (Player Projection Phase 2a real-data validated, beats Phase 0 on offense; see Data Pipeline section)
+**Last updated:** June 29, 2026 (AWS RDS PostgreSQL 15 migration complete; see Database and Deployment Stance sections)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -14,7 +14,7 @@ PortalPoint is local-first until beta.
 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
-| App database | Docker Postgres on port `5433` | Supabase Postgres optional for shared dev/staging |
+| App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
 | Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
 | API | Local FastAPI via `uvicorn` | EC2/ECS deferred |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
@@ -27,16 +27,17 @@ No EC2/ECS container deployment is planned before beta. GitHub Actions cron is p
 
 ## Local Runbook
 
-Start local infrastructure:
+Start local infrastructure (Redis only — Postgres is now shared RDS):
 
 ```bash
-docker compose up -d
+docker compose up -d redis
 ```
 
 Install and migrate:
 
 ```bash
 uv sync
+# Schema is managed on RDS — run alembic only when applying new migrations:
 uv run alembic upgrade head
 ```
 
@@ -74,7 +75,7 @@ Important values:
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Async SQLAlchemy URL for app/runtime. Local default uses Postgres `localhost:5433`. |
+| `DATABASE_URL` | Async SQLAlchemy URL for app/runtime. Now points to shared RDS — use `?ssl=require` suffix. See `docs/aws_rds_setup.md`. |
 | `REDIS_URL` | Redis URL for future caching. |
 | `JWT_SECRET` | Required for auth token signing. |
 | `JWT_EXPIRY_SECONDS` | Increase locally if frequent re-login is annoying. |
@@ -91,11 +92,13 @@ S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 
 | Component | State |
 |---|---|
-| Database | PostgreSQL 15 via Docker |
+| Database | **AWS RDS PostgreSQL 15** — migrated 2026-06-29; endpoint `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432` |
 | ORM | SQLAlchemy |
-| Migrations | Alembic |
-| Async app access | `postgresql+asyncpg://...` |
-| Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL for scripts/notebooks |
+| Migrations | Alembic — run `alembic upgrade head` against RDS when landing new migrations; `alembic stamp head` was run post-restore to sync the version table |
+| Async app access | `postgresql+asyncpg://...?ssl=require` — `ssl=require` required (RDS enforces TLS) |
+| Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL (`ssl=require` → `sslmode=require` translation added 2026-06-29) |
+| App user | `portalpoint_app` — scoped runtime user; master user (`portalpoint_master`) reserved for admin ops only |
+| Security group | `portalpoint-rds-sg` — port 5432 restricted to allowlisted team IPs; ask Justin to add your IP |
 
 Applied migration chain:
 
@@ -294,12 +297,13 @@ Do not set `MLFLOW_TRACKING_URI` to S3. S3 is for artifacts, not tracking metada
 | [`../diagram_4_database_architecture.md`](../diagram_4_database_architecture.md) | Database architecture reference. |
 | [`../dataflow_diagram.mmd`](../dataflow_diagram.mmd) | Mermaid dataflow diagram. |
 | [`../aws_s3_setup.md`](../aws_s3_setup.md) | S3 setup and teammate onboarding. |
+| [`../aws_rds_setup.md`](../aws_rds_setup.md) | RDS PostgreSQL setup and teammate onboarding. |
 
 ---
 
 ## Architecture Open Questions
 
-1. When should Supabase replace or supplement local Docker Postgres for shared development?
+1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`.
 2. ✅ Resolved — Redis caching is enabled in `fit_scores.py` (cache-aside, 30min TTL, fails open on Redis errors; see `src/portalpoint/db/redis_client.py`).
 3. Is GitHub Actions cron sufficient for scheduled ingest, or do we need Airflow near beta?
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?
