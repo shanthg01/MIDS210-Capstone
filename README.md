@@ -50,7 +50,7 @@ cd MIDS210-Capstone
 cp .env.example .env
 ```
 
-Edit `.env` — replace `<password>` in `DATABASE_URL` with the `portalpoint_app` password from Justin. See [Team RDS access](#team-rds-access-aws).
+RDS sits behind a bastion host — open the SSH tunnel first (leave it running), then edit `.env` and replace `<password>` in `DATABASE_URL` with the `portalpoint_app` password from Justin. See [Team RDS access](#team-rds-access-aws) for the tunnel command.
 
 **Teammates doing notebook / S3 work:** also add AWS keys from Justin (see [Team S3 access](#team-s3-access-aws) below).
 
@@ -175,21 +175,24 @@ Copy `.env.example` to `.env`. All variables have sane defaults for local Docker
 
 ## Team RDS access (AWS)
 
-Shared PostgreSQL 15 database on AWS RDS. All teammates connect to the same instance.
+Shared PostgreSQL 15 database on AWS RDS. All teammates connect to the same instance — through a bastion SSH tunnel, since RDS has no public access and no per-IP allowlist.
 
 **Full guide:** [`docs/aws_rds_setup.md`](docs/aws_rds_setup.md)
 
 ### Classmate quick start
 
-1. Get `portalpoint_app` password from Justin (DM — never commit)
-2. Send Justin your public IP (`curl https://checkip.amazonaws.com`) to be added to the security group
-3. Set `DATABASE_URL` in `.env` with the real password replacing `<password>`
+1. Get `portalpoint-bastion.pem`, bastion public IP, and `portalpoint_app` password from Justin (DM — never commit)
+2. Open the tunnel, leave it running:
+   ```powershell
+   ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N
+   ```
+3. Set `DATABASE_URL` in `.env` to `localhost:5433` with the real password replacing `<password>` (see `.env.example`)
 4. Verify access: `uv run python -c "from portalpoint.modeling.io import get_sync_engine; get_sync_engine().connect().close(); print('OK')"`
 
 | Item | Value |
 |---|---|
-| Host | `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com` |
-| Port | `5432` |
+| RDS host (behind bastion) | `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com` |
+| Local tunnel address (what you actually connect to) | `localhost:5433` |
 | Database | `portalpoint` |
 | Runtime user | `portalpoint_app` |
 | SSL | Required (`?ssl=require` in URL) |

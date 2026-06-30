@@ -66,3 +66,6 @@ data/model_validation/
 # DB dumps (contain full DB contents — never commit)
 *.dump
 *.sql.gz
+
+# SSH keys (never commit private keys)
+*.pem
