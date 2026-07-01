@@ -254,7 +254,7 @@ WITH transfer_rows AS (
         p.position              AS position
     FROM transfers t
     JOIN players p ON p.id = t.player_id
-    WHERE t.season = ANY(:train_seasons)
+    WHERE t.season + 1 = ANY(:train_seasons)
       AND t.pre_usage_rate IS NOT NULL
       AND t.player_id IS NOT NULL
 ),

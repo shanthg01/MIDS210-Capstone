@@ -309,7 +309,10 @@ async def get_player_projection(
         )
         if season is not None:
             stmt = stmt.where(PlayerProjectionORM.season == season)
-        stmt = stmt.order_by(PlayerProjectionORM.computed_at.desc()).limit(1)
+        stmt = stmt.order_by(
+            PlayerProjectionORM.season.desc(),
+            PlayerProjectionORM.computed_at.desc(),
+        ).limit(1)
     else:
         # Neutral projection — accepts any populated model version
         stmt = select(PlayerProjectionORM).where(
