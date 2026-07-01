@@ -162,12 +162,11 @@ class TestCompetitionTiers:
         assert int(tiers.iloc[0]) == 1
 
     def test_lowest_em_is_tier_4(self):
-        # rank(pct=True) for n values: minimum gets rank 1/n.
-        # Tier 4 boundary: pctile < 0.20 → need n ≥ 6 so 1/6 ≈ 0.167 < 0.20.
-        em = pd.Series([20.0, 10.0, 5.0, 0.0, -5.0, -15.0])
-        seasons = pd.Series([2026] * 6)
+        # Uses percent_rank semantics: the minimum gets percentile 0.0.
+        em = pd.Series([20.0, 0.0, -5.0, -15.0])
+        seasons = pd.Series([2026] * 4)
         tiers = assign_competition_tiers(em, seasons)
-        assert int(tiers.iloc[5]) == 4
+        assert int(tiers.iloc[3]) == 4
 
     def test_per_season_independence(self):
         # Season A: all high-em; Season B: all low-em → within each season, tiers still span
@@ -204,6 +203,32 @@ class TestRoleUsageDelta:
         assert scaler is not None
         assert len(features) > 0
         assert resid_std > 0
+
+    def test_model_prefers_residual_role_target_when_available(self):
+        rng = np.random.default_rng(42)
+        n = 80
+        usage_delta = np.linspace(-0.08, 0.08, n)
+        source_usage = np.full(n, 0.22)
+        training = pd.DataFrame({
+            "source_usage_rate": source_usage,
+            "dest_usage_rate": source_usage + usage_delta,
+            "neutral_value": rng.normal(0, 1, n),
+            "value_delta": -5.0 * usage_delta,
+            "role_usage_target": 5.0 * usage_delta,
+            "position": ["SG"] * n,
+            "skill_states": [{}] * n,
+        })
+        model, scaler, features, _ = fit_role_usage_model(training)
+        frame = pd.DataFrame({
+            "source_usage_rate": [0.20, 0.20],
+            "expected_usage": [0.16, 0.24],
+            "value_per_100": [0.0, 0.0],
+            "skill_states": [{}, {}],
+            "position": ["SG", "SG"],
+        })
+        delta = compute_role_usage_delta(frame, model, scaler, features)
+        assert delta.iloc[0] < 0
+        assert delta.iloc[1] > 0
 
     def test_returns_none_when_insufficient_data(self):
         tiny_df = pd.DataFrame({
@@ -300,23 +325,21 @@ class TestCompetitionLevelDelta:
     def test_moving_up_in_competition_negative_delta(self, minimal_training_df):
         mean_mat, std_mat = build_competition_tier_matrix(minimal_training_df)
         # Tier 4→1 (low-major to high-major) = hardest upgrade; expect negative mean delta
-        # (or at minimum, tier 4→1 < tier 1→4 in the raw matrix direction)
         tier41 = float(mean_mat.loc[4, 1])
+        assert tier41 < 0
+
+    def test_moving_down_in_competition_positive_delta(self, minimal_training_df):
+        mean_mat, std_mat = build_competition_tier_matrix(minimal_training_df)
         tier14 = float(mean_mat.loc[1, 4])
-        # The sign depends on training data but the matrix should be non-symmetric
-        # Just check it's a float (matrix populated)
-        assert isinstance(tier41, float)
-        assert isinstance(tier14, float)
+        assert tier14 > 0
 
     def test_zero_delta_for_same_tier(self, minimal_training_df):
         mean_mat, std_mat = build_competition_tier_matrix(minimal_training_df)
         frame = pd.DataFrame({
             "source_tier": [2, 2], "dest_tier": [2, 2]
         })
-        # Same-tier transitions should map to the trained mean (may or may not be zero
-        # depending on training data) — just verify it's bounded
         delta = compute_competition_level_delta(frame, mean_mat, std_mat)
-        assert (delta.abs() <= DELTA_CAPS["competition_level_delta"] + 1e-9).all()
+        assert (delta.abs() < 1e-9).all()
 
     def test_delta_bounded_by_cap(self, minimal_frame, minimal_training_df):
         mean_mat, std_mat = build_competition_tier_matrix(minimal_training_df)
@@ -480,6 +503,31 @@ class TestCalibrateCiScale:
 # ---------------------------------------------------------------------------
 
 class TestRateTranslation:
+    def test_per_game_uses_full_team_possessions(self, minimal_frame):
+        df = minimal_frame.head(1).copy()
+        df["adj_tempo"] = 80.0
+        df["expected_minutes"] = 20.0
+        df["expected_usage"] = df["source_usage_rate"]
+        df["destination_value_per_100"] = df["value_per_100"]
+        result = translate_rates_to_destination_stats(df, pd.DataFrame())
+        box = result["destination_box_score"].iloc[0]
+        assert box["pts_per_game"] == pytest.approx(7.2)
+        assert result["projected_possessions"].iloc[0] == pytest.approx(40.0)
+
+    def test_expected_usage_changes_scoring_projection(self, minimal_frame):
+        df = pd.concat([minimal_frame.head(1), minimal_frame.head(1)], ignore_index=True)
+        df["adj_tempo"] = 70.0
+        df["expected_minutes"] = 20.0
+        df["source_usage_rate"] = 0.20
+        df["expected_usage"] = [0.16, 0.24]
+        df["destination_value_per_100"] = df["value_per_100"]
+        result = translate_rates_to_destination_stats(df, pd.DataFrame())
+        low_box = result["destination_box_score"].iloc[0]
+        high_box = result["destination_box_score"].iloc[1]
+        assert high_box["pts_per_game"] > low_box["pts_per_game"]
+        assert result["box_score_adjustments"].iloc[0]["usage_factor"] == pytest.approx(0.8)
+        assert result["box_score_adjustments"].iloc[1]["usage_factor"] == pytest.approx(1.2)
+
     def test_per_game_scales_with_pace(self, minimal_frame):
         df = minimal_frame.copy()
         df["destination_value_per_100"] = df["value_per_100"]
@@ -534,8 +582,11 @@ class TestExplanationPayload:
             "roster_context_delta", "competition_level_delta", "total_context_delta",
             "destination_adjusted_value_per_100", "gap_match", "scheme_fit",
             "source_usage_rate", "dest_expected_usage", "dest_expected_minutes",
+            "projected_possessions", "projected_total_value", "uncertainty_adjustment",
             "source_tier", "dest_tier", "source_season", "target_season",
-            "neutral_model_version", "playing_time_model_version",
+            "neutral_model_version", "minutes_source_model_version",
+            "playing_time_model_version", "team_style_features_used",
+            "box_score_adjustments", "uncertainty_components",
         }
         for _, row_payload in explanations.items():
             assert required_keys.issubset(set(row_payload.keys()))
@@ -652,9 +703,106 @@ class TestBuildDestinationTrainingExamples:
         assert "usage_delta" in result.columns
         assert abs(float(result["usage_delta"].iloc[0]) - 0.08) < 1e-6
 
+    def test_percentage_usage_delta_normalized(self):
+        df = pd.DataFrame({
+            "player_id": [1],
+            "dest_off_rapm": [2.0],
+            "dest_def_rapm": [-1.0],
+            "dest_total_rapm": [1.0],
+            "neutral_value": [0.5],
+            "source_usage_rate": [20.0],
+            "dest_usage_rate": [28.0],
+            "source_adj_em": [5.0],
+            "dest_adj_em": [10.0],
+            "dest_season": [2025],
+            "source_season": [2024],
+            "position": ["SG"],
+        })
+        result = build_destination_training_examples(df)
+        assert abs(float(result["usage_delta"].iloc[0]) - 0.08) < 1e-6
+
+    def test_preserves_precomputed_full_distribution_tiers(self):
+        df = pd.DataFrame({
+            "player_id": [1],
+            "dest_off_rapm": [2.0],
+            "dest_def_rapm": [-1.0],
+            "dest_total_rapm": [1.0],
+            "neutral_value": [0.5],
+            "source_usage_rate": [0.20],
+            "dest_usage_rate": [0.28],
+            "source_adj_em": [-30.0],
+            "dest_adj_em": [35.0],
+            "source_tier": [4],
+            "dest_tier": [1],
+            "dest_season": [2025],
+            "source_season": [2024],
+            "position": ["SG"],
+        })
+        result = build_destination_training_examples(df)
+        assert int(result["source_tier"].iloc[0]) == 4
+        assert int(result["dest_tier"].iloc[0]) == 1
+
     def test_empty_input_returns_empty(self):
         result = build_destination_training_examples(pd.DataFrame())
         assert result.empty
+
+
+class TestBuildDestinationInferenceFrame:
+    def test_source_and_destination_tiers_use_team_context_distribution(self):
+        neutral_df = pd.DataFrame({
+            "player_id": [1],
+            "neutral_season": [2027],
+            "value_per_100": [2.0],
+            "value_ci_lower": [1.0],
+            "value_ci_upper": [3.0],
+            "projected_rates": [{}],
+            "projected_box_score": [{}],
+            "skill_states": [{}],
+            "skill_percentiles": [{}],
+            "uncertainty": [{}],
+            "neutral_model_version": ["player-proj-phase2a-fcast-v1"],
+        })
+        pt_df = pd.DataFrame({
+            "player_id": [1],
+            "school_id": [10],
+            "season": [2027],
+            "expected_minutes": [20.0],
+            "expected_minutes_share": [0.5],
+            "minutes_ci_lower": [15.0],
+            "minutes_ci_upper": [25.0],
+            "expected_usage": [0.2],
+            "usage_role": ["connector"],
+            "usage_role_confidence": [0.8],
+            "displaced_minutes": [5.0],
+            "data_quality_flags": [None],
+            "role_fit": [70.0],
+        })
+        team_context_df = pd.DataFrame({
+            "school_id": [99, 20, 30, 10],
+            "season": [2026, 2026, 2026, 2026],
+            "adj_em": [-20.0, 0.0, 10.0, 30.0],
+            "adj_tempo": [65.0, 66.0, 67.0, 68.0],
+        })
+        source_stats_df = pd.DataFrame({
+            "player_id": [1],
+            "source_school_id": [99],
+            "source_usage_rate": [0.22],
+            "source_min_pct": [60.0],
+            "source_games_played": [30],
+            "position": ["SG"],
+        })
+        result = build_destination_inference_frame(
+            neutral_df=neutral_df,
+            pt_df=pt_df,
+            team_context_df=team_context_df,
+            fit_context_df=pd.DataFrame(),
+            roster_df=pd.DataFrame(),
+            source_stats_df=source_stats_df,
+            target_season=2027,
+            source_season=2026,
+        )
+        assert int(result["source_tier"].iloc[0]) == 4
+        assert int(result["dest_tier"].iloc[0]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +874,12 @@ class TestEstimateUsageValueCoef:
         coef = estimate_usage_value_coef(neutral, source, fallback=1.5)
         assert abs(coef - 8.0) < 3.0  # OLS within 3 units of true coef
 
+    def test_recovers_approximate_slope_with_percentage_usage(self):
+        neutral, source = self._make_frames(n=200, coef=8.0)
+        source["source_usage_rate"] = source["source_usage_rate"] * 100.0
+        coef = estimate_usage_value_coef(neutral, source, fallback=1.5)
+        assert abs(coef - 8.0) < 3.0
+
     def test_coef_used_in_heuristic(self):
         df = pd.DataFrame({
             "source_usage_rate": [0.20],
@@ -737,6 +891,15 @@ class TestEstimateUsageValueCoef:
         # delta = (0.25 - 0.20) * coef
         assert abs(float(delta_default.iloc[0]) - 0.075) < 1e-9
         assert abs(float(delta_custom.iloc[0]) - 0.50) < 1e-9
+
+    def test_percentage_usage_coef_used_in_heuristic(self):
+        df = pd.DataFrame({
+            "source_usage_rate": [20.0],
+            "expected_usage": [25.0],
+            "value_per_100": [2.0],
+        })
+        delta = compute_role_usage_delta(df, None, None, [], linear_coef=10.0)
+        assert abs(float(delta.iloc[0]) - 0.50) < 1e-9
 
 
 # ---------------------------------------------------------------------------

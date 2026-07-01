@@ -121,15 +121,32 @@ def main() -> None:
 
     engine = get_sync_engine()
 
-    import mlflow
-    import mlflow.pyfunc
-    client = setup_mlflow("destination-projection")
-
     log.info(
         "Destination projection — target=%d source=%d train=%s portal_only=%s dry_run=%s",
         args.target_season, args.source_season, args.train_seasons,
         args.portal_only, args.dry_run,
     )
+
+    if args.dry_run:
+        metrics = run_destination_projection(
+            engine,
+            target_season=args.target_season,
+            source_season=args.source_season,
+            train_seasons=args.train_seasons,
+            player_id_subset=args.player_ids,
+            school_id_subset=args.school_ids,
+            portal_only=args.portal_only,
+            dry_run=True,
+        )
+        log.info("Dry-run destination projection complete. Metrics: %s", metrics)
+        if metrics.get("skipped"):
+            log.warning("Run skipped: %s", metrics["skipped"])
+            sys.exit(1)
+        return
+
+    import mlflow
+    import mlflow.pyfunc
+    client = setup_mlflow("destination-projection")
 
     class DestProjectionPyfunc(mlflow.pyfunc.PythonModel):
         """Marker artifact — destination projection is rule-based with no sklearn model to serialize."""

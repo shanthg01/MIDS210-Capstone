@@ -144,6 +144,7 @@ SELECT DISTINCT ON (player_id)
 FROM player_projections pp
 WHERE pp.school_id IS NULL
   AND pp.projection_mode = 'neutral'
+  AND pp.season = :target_season
   AND pp.player_id = ANY(:player_ids)
   AND pp.model_version = ANY(:model_versions)
 ORDER BY
@@ -280,12 +281,19 @@ dest_labels AS (
     SELECT player_id, season, off_adj_rapm, def_adj_rapm, adj_rapm_margin
     FROM hoop_explorer_player_stats
 ),
-source_team AS (
-    SELECT school_id, season, adj_em, adj_tempo
-    FROM team_season_stats
-),
-dest_team AS (
-    SELECT school_id, season, adj_em, adj_tempo, three_point_rate
+team_tiers AS (
+    SELECT
+        school_id,
+        season,
+        adj_em,
+        adj_tempo,
+        three_point_rate,
+        CASE
+            WHEN percent_rank() OVER (PARTITION BY season ORDER BY adj_em) >= 0.75 THEN 1
+            WHEN percent_rank() OVER (PARTITION BY season ORDER BY adj_em) >= 0.45 THEN 2
+            WHEN percent_rank() OVER (PARTITION BY season ORDER BY adj_em) >= 0.20 THEN 3
+            ELSE 4
+        END AS competition_tier
     FROM team_season_stats
 )
 SELECT
@@ -308,7 +316,9 @@ SELECT
     dl.def_adj_rapm             AS dest_def_rapm,
     dl.adj_rapm_margin          AS dest_total_rapm,
     st.adj_em                   AS source_adj_em,
+    st.competition_tier         AS source_tier,
     dt.adj_em                   AS dest_adj_em,
+    dt.competition_tier         AS dest_tier,
     dt.three_point_rate         AS dest_three_point_rate
 FROM transfer_rows tr
 JOIN dest_stats ds
@@ -321,10 +331,10 @@ JOIN source_proj sp
 JOIN dest_labels dl
     ON dl.player_id = tr.player_id
    AND dl.season = tr.dest_season
-LEFT JOIN source_team st
+LEFT JOIN team_tiers st
     ON st.school_id = tr.from_school_id
    AND st.season = tr.source_season
-LEFT JOIN dest_team dt
+LEFT JOIN team_tiers dt
     ON dt.school_id = tr.to_school_id
    AND dt.season = tr.dest_season
 WHERE ds.dest_usage_rate IS NOT NULL
@@ -375,9 +385,10 @@ def load_portal_candidates(engine: Engine, fit_context_season: int) -> list[int]
 def load_neutral_projections(
     engine: Engine,
     player_ids: list[int],
+    target_season: int,
     model_priority: list[str] = NEUTRAL_MODEL_PRIORITY,
 ) -> pd.DataFrame:
-    """Load best available neutral projection per player (tries model_priority in order)."""
+    """Load best available target-season neutral projection per player."""
     if not player_ids:
         return pd.DataFrame()
     with engine.connect() as conn:
@@ -386,13 +397,15 @@ def load_neutral_projections(
             conn,
             params={
                 "player_ids": player_ids,
+                "target_season": target_season,
                 "model_versions": model_priority,
                 "preferred_version": model_priority[0],
             },
         )
     log.info(
-        "Neutral projections: %d rows (versions: %s)",
+        "Neutral projections: %d rows for target season %d (versions: %s)",
         len(df),
+        target_season,
         df["neutral_model_version"].value_counts().to_dict() if not df.empty else {},
     )
     return df
@@ -525,7 +538,11 @@ def assign_competition_tiers(
     """
     tiers = pd.Series(index=adj_em_series.index, dtype="Int64")
     for season, grp in adj_em_series.groupby(season_series):
-        pctile = grp.rank(pct=True)
+        n = len(grp)
+        if n <= 1:
+            pctile = pd.Series(0.5, index=grp.index)
+        else:
+            pctile = (grp.rank(method="average") - 1.0) / (n - 1.0)
         season_tiers = pd.Series(4, index=grp.index, dtype="Int64")
         season_tiers[pctile >= TIER_PERCENTILE_CUTS[0]] = 1
         season_tiers[(pctile >= TIER_PERCENTILE_CUTS[1]) & (pctile < TIER_PERCENTILE_CUTS[0])] = 2
@@ -562,6 +579,15 @@ def _skill_pctile_feature(skill_percentiles_json: Any, skill: str, default: floa
     return float(skill_percentiles_json.get(skill, default))
 
 
+def _usage_fraction_series(values: pd.Series, default: float = 0.20) -> pd.Series:
+    """Return usage rates on 0-1 scale whether input is 0.20 or 20.0."""
+    s = pd.to_numeric(values, errors="coerce").fillna(default)
+    positive = s[s > 0]
+    if not positive.empty and positive.median() > 1.0:
+        s = s / 100.0
+    return s.clip(0.0, 0.75)
+
+
 _ROLE_USAGE_SKILL_FEATURES = [
     "shooting_3p",
     "free_throw_touch",
@@ -586,31 +612,52 @@ def _build_role_usage_features(df: pd.DataFrame) -> pd.DataFrame:
       - position dummies
       - source value_per_100 (controls for talent level)
     """
-    rows = []
-    for _, row in df.iterrows():
-        skill_states = row.get("skill_states") or {}
-        if isinstance(skill_states, str):
+    source_usage = _usage_fraction_series(
+        df.get("source_usage_rate", pd.Series(0.20, index=df.index)),
+        default=0.20,
+    )
+    dest_usage = _usage_fraction_series(
+        df.get("dest_usage_rate", pd.Series(0.20, index=df.index)),
+        default=0.20,
+    )
+    features = pd.DataFrame(index=df.index)
+    features["usage_delta"] = dest_usage - source_usage
+    features["source_usage_rate"] = source_usage
+    features["neutral_value"] = pd.to_numeric(
+        df.get("neutral_value", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+
+    def _parse_skill_states(val: Any) -> dict:
+        if not val:
+            return {}
+        if isinstance(val, str):
             try:
-                skill_states = json.loads(skill_states)
+                return json.loads(val)
             except (json.JSONDecodeError, TypeError):
-                skill_states = {}
+                return {}
+        if isinstance(val, dict):
+            return val
+        return {}
 
-        usage_delta = float(row.get("dest_usage_rate", 0) or 0) - float(
-            row.get("source_usage_rate", 0) or 0
-        )
-        feat: dict[str, float] = {
-            "usage_delta": usage_delta,
-            "source_usage_rate": float(row.get("source_usage_rate", 0) or 0),
-            "neutral_value": float(row.get("neutral_value", 0) or 0),
-        }
-        for skill in _ROLE_USAGE_SKILL_FEATURES:
-            feat[f"skill_{skill}"] = float(skill_states.get(skill, 0) or 0)
-        position = str(row.get("position", ""))
-        for pos in _POSITION_DUMMIES:
-            feat[f"pos_{pos.replace('/', '_').replace('-', '_')}"] = float(position == pos)
-        rows.append(feat)
+    skill_states = (
+        df["skill_states"].map(_parse_skill_states)
+        if "skill_states" in df.columns
+        else pd.Series([{}] * len(df), index=df.index)
+    )
+    for skill in _ROLE_USAGE_SKILL_FEATURES:
+        features[f"skill_{skill}"] = [
+            float(state.get(skill, 0) or 0) for state in skill_states.tolist()
+        ]
 
-    return pd.DataFrame(rows, index=df.index).fillna(0.0)
+    position = (
+        df.get("position", pd.Series("", index=df.index))
+        .fillna("")
+        .astype(str)
+    )
+    for pos in _POSITION_DUMMIES:
+        features[f"pos_{pos.replace('/', '_').replace('-', '_')}"] = (position == pos).astype(float)
+
+    return features.fillna(0.0)
 
 
 def build_destination_training_examples(
@@ -634,30 +681,36 @@ def build_destination_training_examples(
     ) - df["neutral_value"]
 
     # Usage delta: post minus pre
-    df["usage_delta"] = df["dest_usage_rate"].fillna(0.0) - df["source_usage_rate"].fillna(0.0)
+    df["usage_delta"] = (
+        _usage_fraction_series(df["dest_usage_rate"], default=0.20)
+        - _usage_fraction_series(df["source_usage_rate"], default=0.20)
+    )
 
     # Competition tiers (per-season percentile of adj_em)
-    all_schools_sql = text("""
-        SELECT school_id, season, adj_em FROM team_season_stats
-        WHERE season = ANY(:seasons)
-    """)
-    # Tiers computed inline from the two adj_em columns already in df
-    source_em = df["source_adj_em"].fillna(0.0)
-    dest_em = df["dest_adj_em"].fillna(0.0)
-    # Approximate tier via global quartile across transfer rows (proxy — full season
-    # context isn't loaded here; compute_level_tier in the inference path uses full table)
-    combined_em = pd.concat([source_em, dest_em])
-    q = [combined_em.quantile(c) for c in TIER_PERCENTILE_CUTS]
-    def _tier(val):
-        if val >= q[0]:
-            return 1
-        if val >= q[1]:
-            return 2
-        if val >= q[2]:
-            return 3
-        return 4
-    df["source_tier"] = source_em.apply(_tier).astype("Int64")
-    df["dest_tier"] = dest_em.apply(_tier).astype("Int64")
+    # Prefer SQL-computed tiers from the full team-season distribution. The fallback
+    # exists for unit tests and ad hoc frames that only carry adj_em columns.
+    if "source_tier" not in df.columns or "dest_tier" not in df.columns:
+        source_em = df["source_adj_em"].fillna(0.0)
+        dest_em = df["dest_adj_em"].fillna(0.0)
+        combined_em = pd.concat([source_em, dest_em])
+        q = [combined_em.quantile(c) for c in TIER_PERCENTILE_CUTS]
+
+        def _tier(val):
+            if val >= q[0]:
+                return 1
+            if val >= q[1]:
+                return 2
+            if val >= q[2]:
+                return 3
+            return 4
+
+        if "source_tier" not in df.columns:
+            df["source_tier"] = source_em.apply(_tier)
+        if "dest_tier" not in df.columns:
+            df["dest_tier"] = dest_em.apply(_tier)
+
+    df["source_tier"] = df["source_tier"].astype("Int64")
+    df["dest_tier"] = df["dest_tier"].astype("Int64")
     df["tier_delta"] = df["source_tier"] - df["dest_tier"]  # positive = moving up (harder)
 
     log.info(
@@ -679,10 +732,12 @@ def fit_role_usage_model(training_df: pd.DataFrame) -> tuple[Ridge | None, Stand
     Returns (model, scaler, feature_names, residual_std).
     Returns (None, None, [], 0.0) if insufficient training data.
 
-    Target: value_delta (realized destination RAPM - neutral projected value).
-    The model learns how usage_delta and skill texture jointly predict value change.
+    Target: role_usage_target when provided, otherwise value_delta. The production
+    pipeline sets role_usage_target to value_delta net of the competition-tier
+    adjustment so tier context is not learned once in Ridge and added again.
     """
-    df = training_df.dropna(subset=["value_delta", "source_usage_rate", "dest_usage_rate"])
+    target_col = "role_usage_target" if "role_usage_target" in training_df.columns else "value_delta"
+    df = training_df.dropna(subset=[target_col, "source_usage_rate", "dest_usage_rate"])
     df = df[df["dest_usage_rate"].notna() & df["source_usage_rate"].notna()]
 
     if len(df) < MIN_ROLE_USAGE_TRAIN_ROWS:
@@ -693,7 +748,7 @@ def fit_role_usage_model(training_df: pd.DataFrame) -> tuple[Ridge | None, Stand
         return None, None, [], 0.0
 
     X_df = _build_role_usage_features(df)
-    y = df["value_delta"].values
+    y = df[target_col].values
     feature_names = list(X_df.columns)
 
     scaler = StandardScaler()
@@ -747,7 +802,10 @@ def compute_role_usage_delta(
         X = scaler.transform(X_aligned.values)
         delta = pd.Series(model.predict(X), index=df.index)
     else:
-        usage_delta = df_work["dest_usage_rate"] - df_work["source_usage_rate"]
+        usage_delta = (
+            _usage_fraction_series(df_work["dest_usage_rate"], default=0.20)
+            - _usage_fraction_series(df_work["source_usage_rate"], default=0.20)
+        )
         delta = usage_delta * linear_coef
 
     return delta.clip(
@@ -796,7 +854,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     # 2. Passing creation × open ball-handler usage
     # Open usage = expected_usage at destination is meaningfully lower than typical primary-creator
     # Proxy: if dest usage < 0.25, there's room for a distributor to thrive
-    dest_usage = _col("expected_usage", 0.20)
+    dest_usage = _usage_fraction_series(_col("expected_usage", 0.20), default=0.20)
     open_usage_signal = (0.25 - dest_usage.clip(0, 0.35)) / 0.25  # 0→1 as usage opens up
     passing_score = (
         (_pctile("skill_pctile_passing_creation") - 50.0) / 50.0
@@ -877,9 +935,21 @@ def compute_roster_context_delta(df: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 def build_competition_tier_matrix(training_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build 4×4 tier transition matrix: mean and std of value_delta per cell.
+    """Build 4×4 tier transition matrix: conservative delta and empirical std.
 
-    Cells with fewer than MIN_COMPETITION_TIER_ROWS rows are regularized toward 0.
+    Observed transfer destinations are heavily selection-biased: players who land
+    at high-major programs are often already positive outliers versus the neutral
+    model. For all-pairs counterfactual scoring, use a monotonic basketball prior
+    for the mean transition effect and only blend in empirical cell means when
+    they agree with the expected direction.
+
+    - Moving up in competition (larger tier number -> smaller tier number) is a
+      conservative negative adjustment.
+    - Moving down is a smaller positive adjustment.
+    - Same-tier transitions are neutral.
+
+    Cells with fewer than MIN_COMPETITION_TIER_ROWS rows still contribute to std
+    only after regularization.
     Returns (mean_matrix, std_matrix) indexed by (source_tier, dest_tier) 1-4.
     """
     tiers = [1, 2, 3, 4]
@@ -894,15 +964,40 @@ def build_competition_tier_matrix(training_df: pd.DataFrame) -> tuple[pd.DataFra
         for dt in tiers:
             cell = df[(df["source_tier"] == st) & (df["dest_tier"] == dt)]["value_delta"]
             n = len(cell)
+            tier_delta = st - dt
+            if tier_delta > 0:
+                prior = -0.25 * tier_delta
+            elif tier_delta < 0:
+                prior = 0.15 * abs(tier_delta)
+            else:
+                prior = 0.0
+
             if n >= MIN_COMPETITION_TIER_ROWS:
-                mean_mat.loc[st, dt] = float(cell.mean())
+                empirical = float(cell.mean())
                 std_mat.loc[st, dt] = float(cell.std())
-                log.debug("Tier %d→%d: n=%d mean=%.3f std=%.3f", st, dt, n, mean_mat.loc[st, dt], std_mat.loc[st, dt])
             else:
                 # Regularize toward 0 with weight proportional to available n
                 weight = n / MIN_COMPETITION_TIER_ROWS
-                mean_mat.loc[st, dt] = float(cell.mean()) * weight if n > 0 else 0.0
-                log.debug("Tier %d→%d: sparse n=%d, regularized to %.3f", st, dt, n, mean_mat.loc[st, dt])
+                empirical = float(cell.mean()) * weight if n > 0 else 0.0
+
+            if tier_delta > 0:
+                empirical_same_direction = min(empirical, 0.0)
+            elif tier_delta < 0:
+                empirical_same_direction = max(empirical, 0.0)
+            else:
+                empirical_same_direction = 0.0
+
+            mean_mat.loc[st, dt] = float(
+                np.clip(
+                    0.8 * prior + 0.2 * empirical_same_direction,
+                    -DELTA_CAPS["competition_level_delta"],
+                    DELTA_CAPS["competition_level_delta"],
+                )
+            )
+            log.debug(
+                "Tier %d→%d: n=%d prior=%.3f empirical=%.3f final=%.3f std=%.3f",
+                st, dt, n, prior, empirical, mean_mat.loc[st, dt], std_mat.loc[st, dt],
+            )
 
     log.info("Competition tier matrix built (rows=%d):\n%s", len(df), mean_mat.round(3))
     return mean_mat, std_mat
@@ -1005,11 +1100,44 @@ def propagate_destination_uncertainty(
     # Staleness and data quality penalty
     dqf = df.get("data_quality_flags", pd.Series([None] * len(df), index=df.index))
     staleness_multiplier = pd.Series(
-        [1.5 if (isinstance(x, (dict, list)) and bool(x)) else 1.0 for x in dqf.tolist()],
+        [1.5 if (isinstance(x, (dict, list, str)) and bool(x)) else 1.0 for x in dqf.tolist()],
         index=df.index, dtype=float,
     )
 
-    total_std = (np.sqrt(neutral_var + pt_var + delta_var) * staleness_multiplier * ci_calibration_scale).clip(lower=0.1)
+    role_conf = df.get("usage_role_confidence", pd.Series(0.75, index=df.index)).fillna(0.75)
+    role_multiplier = (1.0 + (1.0 - role_conf.clip(0, 1)) * 0.25).clip(1.0, 1.25)
+
+    if {"source_tier", "dest_tier"}.issubset(df.columns):
+        tier_jump = (df["source_tier"].fillna(2).astype(float) - df["dest_tier"].fillna(2).astype(float)).abs()
+    else:
+        tier_jump = pd.Series(0.0, index=df.index)
+    tier_multiplier = (1.0 + 0.15 * tier_jump.clip(0, 3)).clip(1.0, 1.45)
+
+    games = df.get("source_games_played", pd.Series(30.0, index=df.index)).fillna(30.0)
+    sparse_history_multiplier = pd.Series(
+        np.where(games < 15, 1.15, 1.0), index=df.index, dtype=float
+    )
+
+    uncertainty_multiplier = (
+        staleness_multiplier
+        * role_multiplier
+        * tier_multiplier
+        * sparse_history_multiplier
+        * ci_calibration_scale
+    )
+    df["uncertainty_multiplier"] = uncertainty_multiplier
+    df["uncertainty_components"] = [
+        {
+            "data_quality_multiplier": round(float(staleness_multiplier.loc[idx]), 4),
+            "role_confidence_multiplier": round(float(role_multiplier.loc[idx]), 4),
+            "tier_jump_multiplier": round(float(tier_multiplier.loc[idx]), 4),
+            "sparse_history_multiplier": round(float(sparse_history_multiplier.loc[idx]), 4),
+            "ci_calibration_scale": round(float(ci_calibration_scale), 4),
+        }
+        for idx in df.index
+    ]
+
+    total_std = (np.sqrt(neutral_var + pt_var + delta_var) * uncertainty_multiplier).clip(lower=0.1)
 
     CI_Z = 1.2816  # ~80% interval, consistent with Phase 0
     df["value_ci_lower"] = df["destination_value_per_100"] - CI_Z * total_std
@@ -1070,11 +1198,42 @@ def translate_rates_to_destination_stats(
     pace = df.get("adj_tempo", pd.Series(68.0, index=df.index)).fillna(68.0)
     minutes = df.get("expected_minutes", pd.Series(20.0, index=df.index)).fillna(20.0)
 
-    # Possessions played ≈ pace × (minutes / 40) × 0.5 (one side of ball)
-    possessions = pace * (minutes / 40.0) * 0.5
+    # Team possessions available while the player is on the floor.
+    possessions = pace * (minutes / 40.0)
 
     raw_boxes = df["projected_box_score"].tolist() if "projected_box_score" in df.columns else [None] * len(df)
     factors = (possessions / 100.0).tolist()
+
+    source_usage = _usage_fraction_series(
+        df.get("source_usage_rate", pd.Series(0.20, index=df.index)),
+        default=0.20,
+    ).clip(0.05, 0.50)
+    dest_usage = _usage_fraction_series(
+        df.get("expected_usage", pd.Series(0.20, index=df.index)),
+        default=0.20,
+    ).clip(0.05, 0.50)
+    usage_factor = (dest_usage / source_usage).clip(0.80, 1.20)
+
+    passing_pct = df.get("skill_pctile_passing_creation", pd.Series(50.0, index=df.index)).fillna(50.0)
+    open_usage_signal = ((0.25 - dest_usage.clip(0, 0.35)) / 0.25).clip(0, 1)
+    passing_context = ((passing_pct - 50.0) / 50.0 * open_usage_signal * 0.10).clip(-0.08, 0.08)
+    assist_factor = (1.0 + 0.5 * (usage_factor - 1.0) + passing_context).clip(0.85, 1.15)
+    turnover_factor = (1.0 + 0.75 * (usage_factor - 1.0)).clip(0.85, 1.20)
+
+    positions = df.get("position", pd.Series("", index=df.index)).fillna("").astype(str).str.upper()
+    is_big = positions.isin(["PF", "C", "PF/C", "S-PF"])
+    frontcourt_need = df.get("team_frontcourt_need", pd.Series(0.0, index=df.index)).fillna(0.0).clip(0, 1)
+    rim_need = df.get("team_def_rim_need", pd.Series(0.0, index=df.index)).fillna(0.0).clip(0, 1)
+    rebound_factor = pd.Series(
+        np.where(is_big, 1.0 + 0.08 * frontcourt_need, 1.0),
+        index=df.index,
+        dtype=float,
+    ).clip(1.0, 1.08)
+    block_factor = pd.Series(
+        np.where(is_big, 1.0 + 0.08 * rim_need, 1.0),
+        index=df.index,
+        dtype=float,
+    ).clip(1.0, 1.08)
 
     def _parse_box(x):
         if isinstance(x, str):
@@ -1085,10 +1244,40 @@ def translate_rates_to_destination_stats(
         return x or {}
 
     parsed_boxes = [_parse_box(x) for x in raw_boxes]
+
+    def _rate_multiplier(key: str, i: int) -> float:
+        lower_key = key.lower()
+        if lower_key.startswith("pts"):
+            return float(usage_factor.iloc[i])
+        if lower_key.startswith("ast"):
+            return float(assist_factor.iloc[i])
+        if lower_key.startswith("tov") or lower_key.startswith("to_"):
+            return float(turnover_factor.iloc[i])
+        if lower_key.startswith("reb") or lower_key.startswith("oreb") or lower_key.startswith("dreb"):
+            return float(rebound_factor.iloc[i])
+        if lower_key.startswith("blk"):
+            return float(block_factor.iloc[i])
+        return 1.0
+
     df["destination_box_score"] = [
-        {k.replace("_per_40", "_per_game"): round(float(v or 0) * factors[i], 2) for k, v in box.items()}
+        {
+            k.replace("_per_40", "_per_game"): round(
+                float(v or 0) * _rate_multiplier(k, i) * factors[i], 2
+            )
+            for k, v in box.items()
+        }
         if box else {}
         for i, box in enumerate(parsed_boxes)
+    ]
+    df["box_score_adjustments"] = [
+        {
+            "usage_factor": round(float(usage_factor.iloc[i]), 4),
+            "assist_factor": round(float(assist_factor.iloc[i]), 4),
+            "turnover_factor": round(float(turnover_factor.iloc[i]), 4),
+            "rebound_factor": round(float(rebound_factor.iloc[i]), 4),
+            "block_factor": round(float(block_factor.iloc[i]), 4),
+        }
+        for i in range(len(df))
     ]
     df["projected_possessions"] = possessions
     df["destination_total_value"] = (
@@ -1147,7 +1336,10 @@ def build_destination_inference_frame(
 
     # Source stats (prior usage, position)
     if not source_stats_df.empty:
-        src_cols = ["player_id", "source_usage_rate", "source_min_pct", "source_games_played", "position"]
+        src_cols = [
+            "player_id", "source_school_id", "source_usage_rate",
+            "source_min_pct", "source_games_played", "position",
+        ]
         avail_src = [c for c in src_cols if c in source_stats_df.columns]
         frame = frame.merge(source_stats_df[avail_src], on="player_id", how="left")
 
@@ -1176,13 +1368,21 @@ def build_destination_inference_frame(
     # Derived style interaction features
     frame = _add_style_interaction_features(frame, source_stats_df)
 
-    # Competition tiers for each row
-    if "adj_em" in frame.columns:
-        all_em = frame[["school_id", "adj_em"]].drop_duplicates()
-        all_em["season"] = target_season
-        frame["dest_tier"] = assign_competition_tiers(frame["adj_em"], pd.Series(target_season, index=frame.index))
-    if "source_adj_em" not in frame.columns and not source_stats_df.empty:
-        frame["source_tier"] = 2  # default mid-major if source tier unavailable
+    # Competition tiers use the full school-season distribution, not the duplicated
+    # player×school inference frame. Source/destination both use the context season
+    # carried by team_context_df.
+    if not team_context_df.empty and {"school_id", "adj_em", "season"}.issubset(team_context_df.columns):
+        tier_df = team_context_df[["school_id", "season", "adj_em"]].drop_duplicates().copy()
+        tier_df["competition_tier"] = assign_competition_tiers(tier_df["adj_em"], tier_df["season"])
+        tier_lookup = tier_df.set_index("school_id")["competition_tier"].to_dict()
+        frame["dest_tier"] = frame["school_id"].map(tier_lookup).astype("Int64")
+        if "source_school_id" in frame.columns:
+            frame["source_tier"] = frame["source_school_id"].map(tier_lookup).astype("Int64")
+
+    if "source_tier" not in frame.columns:
+        frame["source_tier"] = pd.Series([pd.NA] * len(frame), index=frame.index, dtype="Int64")
+    if "dest_tier" not in frame.columns:
+        frame["dest_tier"] = pd.Series([pd.NA] * len(frame), index=frame.index, dtype="Int64")
 
     log.info(
         "Inference frame: %d (player, school) pairs | %d unique players | %d unique schools",
@@ -1243,7 +1443,10 @@ def _add_style_interaction_features(
     frame["team_def_rim_need"] = (1.0 - def_orb.clip(0.15, 0.40) / 0.40).clip(0, 1)
 
     # Usage crowding: expected_usage relative to avg (high = more crowded at destination)
-    dest_usage = frame.get("expected_usage", pd.Series(0.20, index=frame.index)).fillna(0.20)
+    dest_usage = _usage_fraction_series(
+        frame.get("expected_usage", pd.Series(0.20, index=frame.index)),
+        default=0.20,
+    )
     frame["team_usage_crowding"] = ((dest_usage - 0.20) / 0.10).clip(0, 1)
 
     # Frontcourt need: low incoming big minutes relative to departed big minutes
@@ -1283,6 +1486,13 @@ def build_explanation_payload(df: pd.DataFrame, source_season: int, target_seaso
         _col("source_usage_rate").round(4).tolist(),
         _col("expected_usage").round(4).tolist(),
         _col("expected_minutes").round(2).tolist(),
+        _col("projected_possessions").round(2).tolist(),
+        _col("destination_total_value").round(4).tolist(),
+        _col("uncertainty_multiplier", 1.0).round(4).tolist(),
+        _col("team_off_threepr", 0.35).round(4).tolist(),
+        _col("team_usage_crowding", 0.0).round(4).tolist(),
+        _col("team_def_rim_need", 0.0).round(4).tolist(),
+        _col("team_frontcourt_need", 0.0).round(4).tolist(),
     )
     src_tiers = _col("source_tier", 2.0).astype(int).tolist()
     dst_tiers = _col("dest_tier", 2.0).astype(int).tolist()
@@ -1291,6 +1501,16 @@ def build_explanation_payload(df: pd.DataFrame, source_season: int, target_seaso
     dqf_col = (df["data_quality_flags"] if "data_quality_flags" in df.columns
                else pd.Series([None] * len(df), index=df.index))
     dqf = [x or [] for x in dqf_col.tolist()]
+    uncertainty_components_col = (
+        df["uncertainty_components"] if "uncertainty_components" in df.columns
+        else pd.Series([{}] * len(df), index=df.index)
+    )
+    uncertainty_components = [x or {} for x in uncertainty_components_col.tolist()]
+    box_adjustments_col = (
+        df["box_score_adjustments"] if "box_score_adjustments" in df.columns
+        else pd.Series([{}] * len(df), index=df.index)
+    )
+    box_adjustments = [x or {} for x in box_adjustments_col.tolist()]
     n = len(df)
 
     payloads = [
@@ -1307,12 +1527,24 @@ def build_explanation_payload(df: pd.DataFrame, source_season: int, target_seaso
             "source_usage_rate": f_r4[9][i],
             "dest_expected_usage": f_r4[10][i],
             "dest_expected_minutes": f_r4[11][i],
+            "projected_possessions": f_r4[12][i],
+            "projected_total_value": f_r4[13][i],
+            "uncertainty_adjustment": f_r4[14][i],
             "source_tier": src_tiers[i],
             "dest_tier": dst_tiers[i],
             "source_season": source_season,
             "target_season": target_season,
             "neutral_model_version": neutral_mvs[i],
+            "minutes_source_model_version": PLAYING_TIME_MODEL_VERSION,
             "playing_time_model_version": PLAYING_TIME_MODEL_VERSION,
+            "team_style_features_used": {
+                "team_off_threepr": f_r4[15][i],
+                "team_usage_crowding": f_r4[16][i],
+                "team_def_rim_need": f_r4[17][i],
+                "team_frontcourt_need": f_r4[18][i],
+            },
+            "box_score_adjustments": box_adjustments[i],
+            "uncertainty_components": uncertainty_components[i],
             "data_quality_flags": dqf[i],
         }
         for i in range(n)
@@ -1411,6 +1643,9 @@ def estimate_usage_value_coef(
         neutral_df[["player_id", "value_per_100"]]
         .merge(source_stats_df[["player_id", "source_usage_rate"]], on="player_id")
         .dropna(subset=["value_per_100", "source_usage_rate"])
+    )
+    merged["source_usage_rate"] = _usage_fraction_series(
+        merged["source_usage_rate"], default=0.20
     )
     merged = merged[merged["source_usage_rate"].between(0.05, 0.50)]
     if len(merged) < 50:
@@ -1540,7 +1775,7 @@ def run_destination_projection(
         return {"n_candidates": 0, "n_records_written": 0}
 
     # --- 2. Load all inputs ---
-    neutral_df = load_neutral_projections(engine, candidate_ids)
+    neutral_df = load_neutral_projections(engine, candidate_ids, target_season)
     pt_df = load_playing_time_projections(engine, candidate_ids, target_season)
 
     if pt_df.empty:
@@ -1566,8 +1801,16 @@ def run_destination_projection(
     training_df = build_destination_training_examples(training_df)
 
     # --- 4. Fit delta models ---
-    role_model, role_scaler, role_feature_names, role_residual_std = fit_role_usage_model(training_df)
     tier_mean_mat, tier_std_mat = build_competition_tier_matrix(training_df)
+    if not training_df.empty:
+        training_df = training_df.copy()
+        training_df["competition_level_delta"] = compute_competition_level_delta(
+            training_df, tier_mean_mat, tier_std_mat
+        )
+        training_df["role_usage_target"] = (
+            training_df["value_delta"] - training_df["competition_level_delta"]
+        )
+    role_model, role_scaler, role_feature_names, role_residual_std = fit_role_usage_model(training_df)
 
     # --- 4a. Data-driven usage coefficient + rolling-origin CV ---
     usage_coef = estimate_usage_value_coef(neutral_df, source_stats_df)
