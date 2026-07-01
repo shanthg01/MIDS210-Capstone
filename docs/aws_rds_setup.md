@@ -26,9 +26,9 @@ RDS has **no public access and no per-IP allowlist** — it only accepts connect
    ssh -i portalpoint-bastion.pem -L 5433:portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432 ec2-user@<bastion-public-ip> -N -o ServerAliveInterval=60 -o ServerAliveCountMax=3
    ```
 
-   `-N` means no remote shell, just port forwarding — no output is expected, that's normal. `localhost:5433` on your machine now forwards to RDS port 5432 through the bastion. `ServerAliveInterval=60` sends a keepalive every 60 seconds so the tunnel survives idle periods (without this, NAT tables expire the connection silently after ~2 minutes of inactivity).
+   `-N` means no remote shell, just port forwarding — no output is expected, that's normal. `127.0.0.1:5433` on your machine now forwards to RDS port 5432 through the bastion. `ServerAliveInterval=60` sends a keepalive every 60 seconds so the tunnel survives idle periods (without this, NAT tables expire the connection silently after ~2 minutes of inactivity).
 
-4. **Edit `.env`** — replace `<password>` with the real password (host stays `localhost`, port `5433` — the tunnel, not RDS directly):
+4. **Edit `.env`** — replace `<password>` with the real password (use `127.0.0.1`, not `localhost` — avoids an IPv6 bind issue where SSH tunnels on some systems bind only to the IPv4 loopback, but `localhost` resolves to `::1`):
 
    ```env
    DATABASE_URL=postgresql+asyncpg://portalpoint_app:<password>@127.0.0.1:5433/portalpoint?ssl=require
@@ -97,8 +97,9 @@ Do **not** run `alembic downgrade` on the shared instance without coordinating w
 | Error | Likely cause | Fix |
 |---|---|---|
 | `Connection refused` (port 5433, your machine) | Tunnel not running | Start the `ssh -L 5433:...` command from step 3, leave it running in its own terminal |
-| `server does not support SSL, but SSL was required` (connecting to `::1`) | SSH tunnel bound to IPv4 only; `localhost` resolved to IPv6 | Use `127.0.0.1:5433` instead of `localhost:5433` in `DATABASE_URL` — `.env.example` already does this |
-| `Connection refused` on the RDS hostname itself, any port | Pointed `DATABASE_URL` at RDS directly instead of `localhost:5433` | RDS has no direct/public access — always connect through the tunnel |
+| `server does not support SSL, but SSL was required` (connecting via `::1`) | SSH tunnel bound to IPv4 only; `localhost` resolved to IPv6 | Use `127.0.0.1:5433` instead of `localhost:5433` in `DATABASE_URL` — `.env.example` already does this |
+| Port 5433 already in use | Local Docker `db` container still running from before migration | `docker compose stop db` — or start with `docker compose up -d redis` (not `up -d`, which would try to start `db` too — it now requires `--profile local-db`) |
+| `Connection refused` on the RDS hostname itself, any port | Pointed `DATABASE_URL` at RDS directly instead of `127.0.0.1:5433` | RDS has no direct/public access — always connect through the tunnel |
 | `Permission denied (publickey)` on `ssh` | Wrong/missing `.pem` key, or wrong permissions on it | Get `portalpoint-bastion.pem` from Justin; on Windows `icacls` isn't required but the path must be correct in the `-i` flag |
 | `fe_sendauth: no password supplied` | Password missing/empty in `.env`, or running a parallel/non-interactive client that didn't get the password | Check `.env` has real password; for ad-hoc CLI tests, pass `PGPASSWORD` env var instead of relying on an interactive prompt |
 | `SSL connection required` | Missing `?ssl=require` in URL | Add `?ssl=require` to `DATABASE_URL` in `.env` |
