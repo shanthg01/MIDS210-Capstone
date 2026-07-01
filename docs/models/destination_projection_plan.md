@@ -1,6 +1,6 @@
 # Destination-Adjusted Player Projection Plan
 
-**Status:** Complete — first real end-to-end run 2026-07-01; 454,790 rows written, 2,125 training rows, CV total_resid_std=2.967, @champion promoted  
+**Status:** Complete baseline — first real end-to-end run 2026-07-01; 454,790 rows written, 2,125 training rows, CV total_resid_std=2.967, @champion promoted. Known blocker before coach-facing box-score display: Jalik Dunkley sanity check surfaced per-game stat translation and usage-compression issues; value deltas remain reviewable, but projected PPG/RPG/APG should not be treated as production-ready until fixed.
 **Target module:** `src/portalpoint/modeling/destination_projection.py`  
 **Target script:** `scripts/run_destination_projection.py`  
 **Target notebook:** `notebooks/models/destination_projection.ipynb`  
@@ -564,16 +564,26 @@ R² is low but expected — high inherent noise in transfer outcomes, rule-based
 
 4. **`build_roster_state_features.py` first run had `incoming_minutes = 0`:** ran before the 247Sports matching fix populated real `player_id` on `transfers`. Re-ran post-fix — 357 rows with real `incoming_minutes`. Destination projection re-run consumed these real values.
 
+5. **Per-game box-score output is currently not reliable for scorer sanity checks:** Jalik Dunkley is the concrete smoke test. His 2026 Nicholls source row is real and correctly loaded (`29` games, `min_pct=65.5` ≈ 26.2 MPG, `usage_rate=21.9`, `points_per_game=12.43`). The neutral Phase 2a payload projects him at `pts_per_40=13.91`, `reb_per_40=7.85`, `ast_per_40=1.99`, with `value_per_100=1.953`. But the destination rows display only `5.26` PPG at Georgia State, `4.34` at Texas A&M, and `4.34` at Alabama. Root causes to fix before UI exposure:
+   - `projected_box_score` fields in the neutral payload are named and populated as `*_per_40`, but `translate_rates_to_destination_stats()` scales them by projected possessions divided by 100. That mixes a per-40-minute stat basis with a per-100-possession denominator and suppresses scorer box lines.
+   - Playing Time's constrained `expected_usage` may be too aggressive for one-player counterfactual destination projections. Dunkley's `opportunity_drivers.expected_usage_raw` is about `21`, but constrained destination `expected_usage` is `12.5` at Georgia State and about `10.8` at Texas A&M/Alabama. That may be appropriate for total roster accounting, but the destination adapter should either use the raw and constrained usage separately or apply a less global compression when evaluating one hypothetical transfer at a time.
+   - The neutral model itself reasonably regresses his source scoring from about 19 points/40 to 13.91 points/40, so not every drop is a bug. The suspicious part is the additional destination translation from a double-digit scorer into a 4-5 PPG player despite 21-28 projected minutes.
+
+**Current trust boundary after the Dunkley check:** destination-adjusted `value_per_100`, delta direction, and explanatory context are suitable for model review. Coach-facing per-game `projected_box_score` should be hidden or labeled experimental until the rate basis and usage-compression fixes land, then validated against a small named-player scorer/rebounder/playmaker checklist.
+
 ### Improvement roadmap
 
 In priority order (see CLAUDE.md Process Improvement TODO #10 for full detail):
 
-(a) Fit style/skill delta empirically — biggest R² gain potential; currently 6 hardcoded rules  
-(b) Fix `estimate_usage_value_coef` zero-overlap bug — OLS coefficient always falls back to 1.5  
-(c) Position-specific competition tier effects — extend 4×4 matrix to 4×4×5 (tier×tier×position)  
-(d) Re-run roster context with real incoming/outgoing minutes (done for this run)  
-(e) Add eligibility year + portal timing features (`portal_entry_date`, eligibility year)  
-(f) Impute missing `pre_usage_rate` from barttorvik (~8% of matched transfers excluded)  
-(g) Position-specific Ridge model — one per position or position dummies  
-(h) Serial transfer handling — multi-transfer players currently counted once per transfer event  
-(i) Use barttorvik stats as secondary RAPM label — expands training from ~14K HE rows to ~70K
+(a) Fix per-game box-score translation basis — use `projected_rates` per-100 fields with possessions, or use `projected_box_score` per-40 fields with `expected_minutes / 40`; do not mix the two. Add regression tests covering both payload shapes.
+(b) Inspect Playing Time usage-budget compression for destination one-player counterfactuals — keep raw vs. constrained usage in the adapter, and avoid treating every portal candidate as if they all join the roster simultaneously.
+(c) Add named-player projection sanity checks — start with Dunkley-like double-digit low/mid-major scorers, high-rebound bigs, and high-assist guards; compare source per-40, neutral per-40, destination minutes, usage, and displayed per-game box output.
+(d) Fit style/skill delta empirically — biggest R² gain potential; currently 6 hardcoded rules.
+(e) Fix `estimate_usage_value_coef` zero-overlap bug — OLS coefficient always falls back to 1.5.
+(f) Position-specific competition tier effects — extend 4×4 matrix to 4×4×5 (tier×tier×position).
+(g) Re-run roster context with real incoming/outgoing minutes (done for this run).
+(h) Add eligibility year + portal timing features (`portal_entry_date`, eligibility year).
+(i) Impute missing `pre_usage_rate` from barttorvik (~8% of matched transfers excluded).
+(j) Position-specific Ridge model — one per position or position dummies.
+(k) Serial transfer handling — multi-transfer players currently counted once per transfer event.
+(l) Use barttorvik stats as secondary RAPM label — expands training from ~14K HE rows to ~70K.
