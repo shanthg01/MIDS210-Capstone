@@ -38,7 +38,7 @@ from portalpoint.modeling.destination_projection import (
     NEUTRAL_MODEL_PRIORITY,
     run_destination_projection,
 )
-from portalpoint.modeling.io import find_repo_root, get_sync_engine
+from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import setup_mlflow
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -119,12 +119,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    repo_root = find_repo_root()
-    engine = get_sync_engine(repo_root)
-    setup_mlflow(repo_root)
+    engine = get_sync_engine()
 
     import mlflow
-    mlflow.set_experiment("destination-projection")
+    setup_mlflow("destination-projection")
 
     log.info(
         "Destination projection — target=%d source=%d train=%s portal_only=%s dry_run=%s",

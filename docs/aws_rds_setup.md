@@ -31,7 +31,7 @@ RDS has **no public access and no per-IP allowlist** — it only accepts connect
 4. **Edit `.env`** — replace `<password>` with the real password (host stays `localhost`, port `5433` — the tunnel, not RDS directly):
 
    ```env
-   DATABASE_URL=postgresql+asyncpg://portalpoint_app:<password>@localhost:5433/portalpoint?ssl=require
+   DATABASE_URL=postgresql+asyncpg://portalpoint_app:<password>@127.0.0.1:5433/portalpoint?ssl=require
    ```
 
 5. **Start local infrastructure** (Redis only — Postgres is now on RDS):
@@ -58,7 +58,7 @@ RDS has **no public access and no per-IP allowlist** — it only accepts connect
 |---|---|
 | RDS host (behind bastion, not directly reachable) | `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com` |
 | RDS port | `5432` |
-| Local tunnel host/port (what `.env` actually points at) | `localhost:5433` |
+| Local tunnel host/port (what `.env` actually points at) | `127.0.0.1:5433` |
 | Bastion public IP | get from Justin |
 | Bastion SSH user | `ec2-user` (Amazon Linux 2023) |
 | Bastion key | `portalpoint-bastion.pem` (get from Justin, never commit) |
@@ -97,6 +97,7 @@ Do **not** run `alembic downgrade` on the shared instance without coordinating w
 | Error | Likely cause | Fix |
 |---|---|---|
 | `Connection refused` (port 5433, your machine) | Tunnel not running | Start the `ssh -L 5433:...` command from step 3, leave it running in its own terminal |
+| `server does not support SSL, but SSL was required` (connecting to `::1`) | SSH tunnel bound to IPv4 only; `localhost` resolved to IPv6 | Use `127.0.0.1:5433` instead of `localhost:5433` in `DATABASE_URL` — `.env.example` already does this |
 | `Connection refused` on the RDS hostname itself, any port | Pointed `DATABASE_URL` at RDS directly instead of `localhost:5433` | RDS has no direct/public access — always connect through the tunnel |
 | `Permission denied (publickey)` on `ssh` | Wrong/missing `.pem` key, or wrong permissions on it | Get `portalpoint-bastion.pem` from Justin; on Windows `icacls` isn't required but the path must be correct in the `-i` flag |
 | `fe_sendauth: no password supplied` | Password missing/empty in `.env`, or running a parallel/non-interactive client that didn't get the password | Check `.env` has real password; for ad-hoc CLI tests, pass `PGPASSWORD` env var instead of relying on an interactive prompt |

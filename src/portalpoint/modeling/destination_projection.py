@@ -150,7 +150,7 @@ ORDER BY
     player_id,
     CASE
         WHEN model_version = :preferred_version THEN 0
-        ELSE array_position(:model_versions::text[], model_version)
+        ELSE array_position(CAST(:model_versions AS text[]), model_version)
     END
 """
 
@@ -174,7 +174,6 @@ SELECT
     pt.usage_role,
     pt.usage_role_confidence,
     pt.displaced_minutes,
-    pt.opportunity_drivers,
     pt.data_quality_flags,
     pt.role_fit
 FROM playing_time_projections pt
@@ -201,7 +200,6 @@ SELECT
     het.off_threepr,
     het.off_twoprimr,
     het.off_style_rim_attack_pct,
-    het.off_style_perimeter_sniper_pct,
     het.def_style_rim_attack_pct,
     het.def_orb,
     het.off_orb
@@ -218,8 +216,7 @@ SELECT
     pts.player_id,
     pts.school_id,
     pts.gap_match,
-    pts.scheme_fit,
-    pts.breakdown
+    pts.scheme_fit
 FROM player_team_fit_scores pts
 WHERE pts.season = :season
   AND pts.player_id = ANY(:player_ids)
@@ -276,7 +273,7 @@ source_proj AS (
       AND model_version = ANY(:model_versions)
     ORDER BY player_id, season,
         CASE WHEN model_version = :preferred_version THEN 0
-             ELSE array_position(:model_versions::text[], model_version) END
+             ELSE array_position(CAST(:model_versions AS text[]), model_version) END
 ),
 dest_labels AS (
     SELECT player_id, season, off_adj_rapm, def_adj_rapm, adj_rapm_margin
@@ -342,7 +339,7 @@ INSERT INTO player_projections
      skill_states, skill_percentiles, uncertainty,
      explanation, model_version, computed_at, expires_at)
 VALUES %s
-ON CONFLICT ON INDEX uq_player_projections_destination DO UPDATE SET
+ON CONFLICT (player_id, school_id, season, model_version) WHERE school_id IS NOT NULL DO UPDATE SET
     projection_mode   = EXCLUDED.projection_mode,
     value_per_100     = EXCLUDED.value_per_100,
     value_ci_lower    = EXCLUDED.value_ci_lower,
@@ -1007,8 +1004,9 @@ def propagate_destination_uncertainty(
 
     # Staleness and data quality penalty
     dqf = df.get("data_quality_flags", pd.Series([None] * len(df), index=df.index))
-    staleness_multiplier = dqf.apply(
-        lambda x: 1.5 if (x and (isinstance(x, dict) and x) or (isinstance(x, list) and x)) else 1.0
+    staleness_multiplier = pd.Series(
+        [1.5 if (isinstance(x, (dict, list)) and bool(x)) else 1.0 for x in dqf.tolist()],
+        index=df.index, dtype=float,
     )
 
     total_std = (np.sqrt(neutral_var + pt_var + delta_var) * staleness_multiplier * ci_calibration_scale).clip(lower=0.1)
@@ -1075,23 +1073,23 @@ def translate_rates_to_destination_stats(
     # Possessions played ≈ pace × (minutes / 40) × 0.5 (one side of ball)
     possessions = pace * (minutes / 40.0) * 0.5
 
-    def _translate_box(row: pd.Series) -> dict:
-        base = row.get("projected_box_score") or {}
-        if isinstance(base, str):
-            try:
-                base = json.loads(base)
-            except (json.JSONDecodeError, TypeError):
-                base = {}
-        if not base:
-            return {}
-        pos = float(possessions.loc[row.name] if row.name in possessions.index else 20.0)
-        factor = pos / 100.0  # per-100 → per-game via possessions
-        return {
-            k.replace("_per_40", "_per_game"): round(float(v or 0) * factor, 2)
-            for k, v in base.items()
-        }
+    raw_boxes = df["projected_box_score"].tolist() if "projected_box_score" in df.columns else [None] * len(df)
+    factors = (possessions / 100.0).tolist()
 
-    df["destination_box_score"] = df.apply(_translate_box, axis=1)
+    def _parse_box(x):
+        if isinstance(x, str):
+            try:
+                return json.loads(x)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return x or {}
+
+    parsed_boxes = [_parse_box(x) for x in raw_boxes]
+    df["destination_box_score"] = [
+        {k.replace("_per_40", "_per_game"): round(float(v or 0) * factors[i], 2) for k, v in box.items()}
+        if box else {}
+        for i, box in enumerate(parsed_boxes)
+    ]
     df["projected_possessions"] = possessions
     df["destination_total_value"] = (
         df["destination_value_per_100"] * possessions / 100.0
@@ -1268,31 +1266,58 @@ def _add_style_interaction_features(
 
 def build_explanation_payload(df: pd.DataFrame, source_season: int, target_season: int) -> pd.Series:
     """Build a JSON explanation dict per row summarizing all delta components."""
+    def _col(name: str, default: float = 0.0) -> pd.Series:
+        return df[name].fillna(default) if name in df.columns else pd.Series(default, index=df.index, dtype=float)
 
-    def _row_payload(row: pd.Series) -> dict:
-        return {
-            "neutral_value_per_100": round(float(row.get("value_per_100", 0) or 0), 4),
-            "role_usage_delta": round(float(row.get("role_usage_delta", 0) or 0), 4),
-            "style_skill_fit_delta": round(float(row.get("style_skill_fit_delta", 0) or 0), 4),
-            "roster_context_delta": round(float(row.get("roster_context_delta", 0) or 0), 4),
-            "competition_level_delta": round(float(row.get("competition_level_delta", 0) or 0), 4),
-            "total_context_delta": round(float(row.get("total_context_delta", 0) or 0), 4),
-            "destination_adjusted_value_per_100": round(float(row.get("destination_value_per_100", 0) or 0), 4),
-            "gap_match": round(float(row.get("gap_match", 50) or 50), 2),
-            "scheme_fit": round(float(row.get("scheme_fit", 50) or 50), 2),
-            "source_usage_rate": round(float(row.get("source_usage_rate", 0) or 0), 4),
-            "dest_expected_usage": round(float(row.get("expected_usage", 0) or 0), 4),
-            "dest_expected_minutes": round(float(row.get("expected_minutes", 0) or 0), 2),
-            "source_tier": int(row.get("source_tier", 2) or 2),
-            "dest_tier": int(row.get("dest_tier", 2) or 2),
+    # Vectorized: compute all scalar fields as arrays, zip into dicts at end
+    f_r4 = (
+        _col("value_per_100").round(4).tolist(),
+        _col("role_usage_delta").round(4).tolist(),
+        _col("style_skill_fit_delta").round(4).tolist(),
+        _col("roster_context_delta").round(4).tolist(),
+        _col("competition_level_delta").round(4).tolist(),
+        _col("total_context_delta").round(4).tolist(),
+        _col("destination_value_per_100").round(4).tolist(),
+        _col("gap_match", 50.0).round(2).tolist(),
+        _col("scheme_fit", 50.0).round(2).tolist(),
+        _col("source_usage_rate").round(4).tolist(),
+        _col("expected_usage").round(4).tolist(),
+        _col("expected_minutes").round(2).tolist(),
+    )
+    src_tiers = _col("source_tier", 2.0).astype(int).tolist()
+    dst_tiers = _col("dest_tier", 2.0).astype(int).tolist()
+    neutral_mvs = (df["neutral_model_version"].fillna("").astype(str).tolist()
+                   if "neutral_model_version" in df.columns else [""] * len(df))
+    dqf_col = (df["data_quality_flags"] if "data_quality_flags" in df.columns
+               else pd.Series([None] * len(df), index=df.index))
+    dqf = [x or [] for x in dqf_col.tolist()]
+    n = len(df)
+
+    payloads = [
+        {
+            "neutral_value_per_100": f_r4[0][i],
+            "role_usage_delta": f_r4[1][i],
+            "style_skill_fit_delta": f_r4[2][i],
+            "roster_context_delta": f_r4[3][i],
+            "competition_level_delta": f_r4[4][i],
+            "total_context_delta": f_r4[5][i],
+            "destination_adjusted_value_per_100": f_r4[6][i],
+            "gap_match": f_r4[7][i],
+            "scheme_fit": f_r4[8][i],
+            "source_usage_rate": f_r4[9][i],
+            "dest_expected_usage": f_r4[10][i],
+            "dest_expected_minutes": f_r4[11][i],
+            "source_tier": src_tiers[i],
+            "dest_tier": dst_tiers[i],
             "source_season": source_season,
             "target_season": target_season,
-            "neutral_model_version": str(row.get("neutral_model_version", "")),
+            "neutral_model_version": neutral_mvs[i],
             "playing_time_model_version": PLAYING_TIME_MODEL_VERSION,
-            "data_quality_flags": (row.get("data_quality_flags") or []),
+            "data_quality_flags": dqf[i],
         }
-
-    return df.apply(_row_payload, axis=1)
+        for i in range(n)
+    ]
+    return pd.Series(payloads, index=df.index)
 
 
 # ---------------------------------------------------------------------------
@@ -1311,32 +1336,41 @@ def build_destination_projection_records(
     """
     now = datetime.now(tz=timezone.utc)
     expires = now + timedelta(days=EXPIRES_DAYS)
-    records = []
 
-    for idx, row in df.iterrows():
-        expl = explanation_series.loc[idx] if idx in explanation_series.index else {}
-        records.append((
-            int(row["player_id"]),
-            int(row["school_id"]),
-            int(target_season),
-            "destination",
-            float(row.get("destination_value_per_100", 0) or 0),
-            float(row.get("value_ci_lower", 0) or 0),
-            float(row.get("value_ci_upper", 0) or 0),
-            row.get("expected_minutes"),                    # nullable float
-            row.get("expected_usage"),                      # nullable float
-            json.dumps(row.get("destination_box_score") or {}),
-            json.dumps(row.get("projected_rates") or {}),
-            json.dumps(row.get("skill_states") or {}),
-            json.dumps(row.get("skill_percentiles") or {}),
-            json.dumps(row.get("uncertainty") or {}),
-            json.dumps(expl),
-            MODEL_VERSION,
-            now,
-            expires,
-        ))
+    def _col(name: str, default=None):
+        return df[name].tolist() if name in df.columns else [default] * len(df)
 
-    return records
+    def _json_col(name: str) -> list[str]:
+        col = df[name] if name in df.columns else pd.Series([None] * len(df), index=df.index)
+        return [json.dumps(x or {}) for x in col.tolist()]
+
+    player_ids = [int(x) for x in df["player_id"].tolist()]
+    school_ids = [int(x) for x in df["school_id"].tolist()]
+    dest_vals = [float(x or 0) for x in _col("destination_value_per_100", 0)]
+    ci_lowers = [float(x or 0) for x in _col("value_ci_lower", 0)]
+    ci_uppers = [float(x or 0) for x in _col("value_ci_upper", 0)]
+    exp_mins = _col("expected_minutes")   # nullable float — keep as-is
+    exp_usages = _col("expected_usage")   # nullable float — keep as-is
+    box_scores = _json_col("destination_box_score")
+    proj_rates = _json_col("projected_rates")
+    skill_states = _json_col("skill_states")
+    skill_pcts = _json_col("skill_percentiles")
+    uncertainties = _json_col("uncertainty")
+    explanations = [json.dumps(explanation_series.iloc[i] if i < len(explanation_series) else {})
+                    for i in range(len(df))]
+
+    return list(zip(
+        player_ids, school_ids,
+        [int(target_season)] * len(df),
+        ["destination"] * len(df),
+        dest_vals, ci_lowers, ci_uppers,
+        exp_mins, exp_usages,
+        box_scores, proj_rates, skill_states, skill_pcts, uncertainties,
+        explanations,
+        [MODEL_VERSION] * len(df),
+        [now] * len(df),
+        [expires] * len(df),
+    ))
 
 
 def upsert_destination_projections(engine: Engine, records: list[tuple]) -> int:
