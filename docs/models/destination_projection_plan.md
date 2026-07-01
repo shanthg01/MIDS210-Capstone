@@ -1,6 +1,6 @@
 # Destination-Adjusted Player Projection Plan
 
-**Status:** Planned — not yet started  
+**Status:** Complete — first real end-to-end run 2026-07-01; 454,790 rows written, 2,125 training rows, CV total_resid_std=2.967, @champion promoted  
 **Target module:** `src/portalpoint/modeling/destination_projection.py`  
 **Target script:** `scripts/run_destination_projection.py`  
 **Target notebook:** `notebooks/models/destination_projection.ipynb`  
@@ -521,3 +521,59 @@ No new migrations required. `player_projections` destination partial index alrea
 3. **Gap B analogy:** Gap B (opponent context adjustment inside the Kalman filter) hurt Phase 2a. The destination adapter applies context at translation time, not inside the state model — different mechanism. But the underlying question (does adjusting for opponent strength help or hurt value prediction?) is still open and should be tested explicitly when the competition delta is validated.
 
 4. **Role/usage delta direction for non-transfers:** Portal candidates who have not yet committed have no known destination usage. The PT model projects usage for each hypothetical destination. Ensure the training set for the role/usage delta uses the same out-of-fold PT usage predictions — not `transfers.post_usage_rate`, which is realized (leaked) usage.
+
+---
+
+## 19. First Real Run — Results and Findings (2026-07-01)
+
+**Run complete.** 454,790 destination rows written for target_season=2027 under `model_version=player-destination-proj-v1`. MLflow `destination-projection` v2 promoted to @champion (Δ=+99.7% vs v1 which had 5 training rows due to the season offset bug — see below).
+
+### Real data counts
+
+| Metric | Value |
+|---|---|
+| Portal candidates (2026) | 1,253 |
+| Playing time pairs | 457,345 |
+| Inference pairs (after PT/neutral join) | 454,790 |
+| Training rows (role/usage Ridge) | 2,125 |
+| CV total_resid_std (mean fold RMSE) | 2.967 |
+| CV fold 1 (eval=2024) RMSE / R² | 2.917 / 0.071 |
+| CV fold 2 (eval=2025) RMSE / R² | 2.858 / 0.025 |
+| CV fold 3 (eval=2026) RMSE / R² | 3.124 / 0.068 |
+
+R² is low but expected — high inherent noise in transfer outcomes, rule-based style/roster deltas not yet fitted empirically.
+
+### Delta summary (2027 inference means)
+
+| Delta | Mean |
+|---|---|
+| role_usage_delta | +0.192 |
+| style_skill_fit_delta | -0.025 |
+| roster_context_delta | -0.326 |
+| competition_level_delta | +0.186 |
+| total_context_delta | +0.027 |
+| destination_value_mean | +0.527 |
+
+### Bugs found and fixed during first real run
+
+1. **Season offset in `_TRANSFER_TRAINING_SQL` (critical, 5 vs 2,125 training rows):** `247sports transfers.season` = portal entry year Y, but barttorvik records destination stats at season Y+1. The SQL used `dest_season = t.season` (portal year) and `source_season = t.season - 1`; changed to `dest_season = t.season + 1` and `source_season = t.season`. Also removed a redundant `WHERE season = ANY(:train_seasons)` filter from the `dest_labels` CTE that was filtering by portal year (wrong). Result: 5 rows → 2,125 rows.
+
+2. **247Sports player matching rate ~0%:** `_match_player()` was doing direct string equality on un-normalized names. Added `_normalize_name()` (NFD accent stripping, suffix removal, lowercase), position pre-filter (PG/SG/SF/PF/C exact match), two-pass strict (0.82) / relaxed (0.75) `difflib.SequenceMatcher` thresholds, and multi-season fallback (tries season-1 roster for unmatched). Match rate: 87-91% across all seasons. 21 tests in `tests/test_ingest_transfers_247sports.py` cover normalization and matching logic.
+
+3. **`estimate_usage_value_coef` always returns fallback 1.5:** "only 0 overlap rows" between `neutral_df` (Phase 2a forecast players) and `source_stats_df` (barttorvik 2026 source stats). Root cause not yet diagnosed — likely player-ID scope or `min_pct` filter mismatch between the two frames. OLS coefficient that would replace the hardcoded 1.5 is never computed. See improvement roadmap item (b).
+
+4. **`build_roster_state_features.py` first run had `incoming_minutes = 0`:** ran before the 247Sports matching fix populated real `player_id` on `transfers`. Re-ran post-fix — 357 rows with real `incoming_minutes`. Destination projection re-run consumed these real values.
+
+### Improvement roadmap
+
+In priority order (see CLAUDE.md Process Improvement TODO #10 for full detail):
+
+(a) Fit style/skill delta empirically — biggest R² gain potential; currently 6 hardcoded rules  
+(b) Fix `estimate_usage_value_coef` zero-overlap bug — OLS coefficient always falls back to 1.5  
+(c) Position-specific competition tier effects — extend 4×4 matrix to 4×4×5 (tier×tier×position)  
+(d) Re-run roster context with real incoming/outgoing minutes (done for this run)  
+(e) Add eligibility year + portal timing features (`portal_entry_date`, eligibility year)  
+(f) Impute missing `pre_usage_rate` from barttorvik (~8% of matched transfers excluded)  
+(g) Position-specific Ridge model — one per position or position dummies  
+(h) Serial transfer handling — multi-transfer players currently counted once per transfer event  
+(i) Use barttorvik stats as secondary RAPM label — expands training from ~14K HE rows to ~70K
