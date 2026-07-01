@@ -247,8 +247,8 @@ WITH transfer_rows AS (
         t.player_id,
         t.from_school_id,
         t.to_school_id,
-        t.season                AS dest_season,
-        t.season - 1            AS source_season,
+        t.season + 1            AS dest_season,
+        t.season                AS source_season,
         t.pre_usage_rate        AS source_usage_rate,
         p.position              AS position
     FROM transfers t
@@ -262,7 +262,7 @@ dest_stats AS (
     FROM player_season_stats
 ),
 source_proj AS (
-    -- Use neutral projection for the SOURCE season as the input feature
+    -- Neutral projection for the SOURCE season (year they last played at source school)
     SELECT DISTINCT ON (player_id, season)
         player_id, season AS proj_season,
         value_per_100, value_ci_lower, value_ci_upper,
@@ -276,9 +276,9 @@ source_proj AS (
              ELSE array_position(CAST(:model_versions AS text[]), model_version) END
 ),
 dest_labels AS (
+    -- No season filter here — JOIN condition restricts to dest_season (= portal year + 1)
     SELECT player_id, season, off_adj_rapm, def_adj_rapm, adj_rapm_margin
     FROM hoop_explorer_player_stats
-    WHERE season = ANY(:train_seasons)
 ),
 source_team AS (
     SELECT school_id, season, adj_em, adj_tempo
