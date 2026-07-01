@@ -32,6 +32,7 @@ from portalpoint.modeling.destination_projection import (
     build_destination_training_examples,
     build_explanation_payload,
     calibrate_ci_scale,
+    compute_cohort_validation,
     compute_competition_level_delta,
     compute_role_usage_delta,
     compute_roster_context_delta,
@@ -971,3 +972,106 @@ class TestRunRollingOriginCV:
         df = self._make_training_df(n_per_season=15)
         result = run_rolling_origin_cv(df, min_eval_rows=2)
         assert "cv_skipped" not in result or result.get("cv_skipped") != 1.0
+
+
+# ---------------------------------------------------------------------------
+# compute_cohort_validation
+# ---------------------------------------------------------------------------
+
+class TestCohortValidation:
+    def _make_training_df(self, n_per_season: int = 25):
+        """Rich training df with position, tier, and usage columns."""
+        rng = np.random.default_rng(42)
+        rows = []
+        for season in [2022, 2023, 2024, 2025]:
+            for i in range(n_per_season):
+                rows.append({
+                    "dest_season": season,
+                    "source_usage_rate": 0.20 + (i % 10) * 0.01,
+                    "dest_usage_rate": 0.22 + (i % 10) * 0.01,
+                    "neutral_value": float(i % 10),
+                    "value_delta": float(i % 10) * 0.1 + rng.normal(0, 0.5),
+                    "source_tier": int((i % 4) + 1),
+                    "dest_tier": int((i % 4) + 1),
+                    "position": ["PG", "SG", "SF", "PF", "C"][i % 5],
+                    "source_adj_em": 10.0,
+                    "dest_adj_em": 12.0,
+                    "dest_total_rapm": float(i % 10) * 0.5,
+                })
+        return pd.DataFrame(rows)
+
+    def test_empty_df_returns_empty_dict(self):
+        result = compute_cohort_validation(pd.DataFrame())
+        assert result == {}
+
+    def test_single_season_returns_empty_dict(self):
+        df = pd.DataFrame({
+            "dest_season": [2025] * 10,
+            "source_usage_rate": [0.20] * 10,
+            "dest_usage_rate": [0.22] * 10,
+            "neutral_value": list(range(10)),
+            "value_delta": [0.5] * 10,
+        })
+        result = compute_cohort_validation(df)
+        assert result == {}
+
+    def test_returns_dict(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df)
+        assert isinstance(result, dict)
+
+    def test_cohort_n_keys_present(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df)
+        # At least some cohort_*_n keys should appear
+        n_keys = [k for k in result if k.endswith("_n")]
+        assert len(n_keys) >= 3
+
+    def test_cohort_n_values_are_nonneg_ints(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df)
+        for k, v in result.items():
+            if k.endswith("_n"):
+                assert isinstance(v, int) and v >= 0, f"{k}={v}"
+
+    def test_spearman_none_when_below_min_cohort_n(self):
+        """Small cohort → spearman and rmse are None (not a KeyError)."""
+        df = self._make_training_df(n_per_season=25)
+        # wing (SF) has only n_per_season/5 per fold = 5 rows per season;
+        # with 4 seasons and rolling folds that's well below min_cohort_n=20
+        result = compute_cohort_validation(df, min_cohort_n=200)
+        # Every cohort should be below 200 → all spearman entries should be None
+        spearman_vals = [v for k, v in result.items() if k.endswith("_spearman")]
+        assert all(v is None for v in spearman_vals)
+
+    def test_spearman_in_valid_range_when_above_min_n(self):
+        df = self._make_training_df(n_per_season=25)
+        result = compute_cohort_validation(df, min_cohort_n=5)
+        for k, v in result.items():
+            if k.endswith("_spearman") and v is not None:
+                assert -1.0 <= v <= 1.0, f"{k}={v}"
+
+    def test_rmse_nonneg_when_above_min_n(self):
+        df = self._make_training_df(n_per_season=25)
+        result = compute_cohort_validation(df, min_cohort_n=5)
+        for k, v in result.items():
+            if k.endswith("_rmse") and v is not None:
+                assert v >= 0.0, f"{k}={v}"
+
+    def test_tier_cohort_keys_present_when_tier_cols_exist(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df, min_cohort_n=5)
+        tier_keys = [k for k in result if "tier_" in k]
+        assert len(tier_keys) >= 3  # tier_up_n, tier_same_n, tier_down_n at minimum
+
+    def test_position_cohort_keys_present_when_position_col_exists(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df, min_cohort_n=5)
+        pos_keys = [k for k in result if any(p in k for p in ("guard", "wing", "big"))]
+        assert len(pos_keys) >= 3  # guard/wing/big _n keys at minimum
+
+    def test_usage_cohort_keys_present(self):
+        df = self._make_training_df()
+        result = compute_cohort_validation(df, min_cohort_n=5)
+        usage_keys = [k for k in result if "usage" in k]
+        assert len(usage_keys) >= 2

@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from scipy.stats import spearmanr
+
 import numpy as np
 import pandas as pd
 from psycopg2.extras import execute_values
@@ -1740,6 +1742,97 @@ def run_rolling_origin_cv(
     return fold_results
 
 
+def compute_cohort_validation(
+    training_df: pd.DataFrame,
+    min_cohort_n: int = 20,
+) -> dict[str, Any]:
+    """Slice-based held-out validation using rolling-origin CV predictions.
+
+    Loops the same fold structure as run_rolling_origin_cv, collects held-out
+    (actual, predicted) pairs, then reports RMSE and Spearman correlation for:
+    - Tier direction: up (player moves to harder competition), same, down
+    - Position group: guard (PG/SG), wing (SF), big (PF/C)
+    - Usage context: high-usage scaling down, usage increase at destination
+    """
+    if training_df.empty or "dest_season" not in training_df.columns:
+        return {}
+
+    clean = training_df.dropna(
+        subset=["value_delta", "source_usage_rate", "dest_usage_rate", "dest_season"]
+    )
+    seasons = sorted(clean["dest_season"].unique())
+    if len(seasons) < 2:
+        return {}
+
+    # Collect held-out predictions from all CV folds
+    records: list[pd.DataFrame] = []
+    for eval_season in seasons[1:]:
+        train_seasons_cv = [s for s in seasons if s < eval_season]
+        train = clean[clean["dest_season"].isin(train_seasons_cv)]
+        eval_df = clean[clean["dest_season"] == eval_season].copy()
+        if len(eval_df) < 3:
+            continue
+        model, scaler, feature_names, _ = fit_role_usage_model(train)
+        eval_df["expected_usage"] = eval_df["dest_usage_rate"]
+        eval_df["value_per_100"] = eval_df.get(
+            "neutral_value", pd.Series(0.0, index=eval_df.index)
+        )
+        preds = compute_role_usage_delta(eval_df, model, scaler, feature_names)
+        eval_df = eval_df.copy()
+        eval_df["_predicted"] = preds.values
+        records.append(eval_df)
+
+    if not records:
+        return {}
+
+    pool = pd.concat(records, ignore_index=True)
+    results: dict[str, Any] = {}
+
+    def _cohort_stats(mask: pd.Series, name: str) -> None:
+        sub = pool[mask.reindex(pool.index, fill_value=False)]
+        n = len(sub)
+        results[f"cohort_{name}_n"] = n
+        if n < min_cohort_n:
+            results[f"cohort_{name}_spearman"] = None
+            results[f"cohort_{name}_rmse"] = None
+            log.info("Cohort %s: n=%d (below min_cohort_n=%d) — skipped", name, n, min_cohort_n)
+            return
+        corr, _ = spearmanr(sub["value_delta"], sub["_predicted"])
+        rmse = float(np.sqrt(np.mean((sub["value_delta"].values - sub["_predicted"].values) ** 2)))
+        results[f"cohort_{name}_spearman"] = round(float(corr), 3)
+        results[f"cohort_{name}_rmse"] = round(rmse, 3)
+        log.info(
+            "Cohort %-30s n=%-4d Spearman=%+.3f RMSE=%.3f",
+            name, n, corr, rmse,
+        )
+
+    # Tier direction (positive tier_delta = moving to harder competition)
+    if {"source_tier", "dest_tier"}.issubset(pool.columns):
+        tier_delta = (
+            pool["source_tier"].fillna(2).astype(float)
+            - pool["dest_tier"].fillna(2).astype(float)
+        )
+        _cohort_stats(tier_delta > 0, "tier_up")
+        _cohort_stats(tier_delta == 0, "tier_same")
+        _cohort_stats(tier_delta < 0, "tier_down")
+
+    # Position groups
+    if "position" in pool.columns:
+        pos = pool["position"].fillna("").astype(str).str.upper()
+        _cohort_stats(pos.isin(["PG", "SG"]), "guard")
+        _cohort_stats(pos.isin(["SF"]), "wing")
+        _cohort_stats(pos.isin(["PF", "C", "PF/C", "S-PF"]), "big")
+
+    # Usage context
+    src_u = _usage_fraction_series(pool["source_usage_rate"], default=0.20)
+    dst_u = _usage_fraction_series(pool["dest_usage_rate"], default=0.20)
+    usage_delta = dst_u - src_u
+    _cohort_stats((src_u > 0.25) & (usage_delta < -0.05), "high_usage_scaling_down")
+    _cohort_stats(usage_delta > 0.05, "usage_increase")
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # High-level pipeline entry point (called by run_destination_projection.py)
 # ---------------------------------------------------------------------------
@@ -1819,6 +1912,8 @@ def run_destination_projection(
     usage_coef = estimate_usage_value_coef(neutral_df, source_stats_df)
     cv_metrics = run_rolling_origin_cv(training_df)
     log.info("CV metrics: %s", cv_metrics)
+    cohort_metrics = compute_cohort_validation(training_df)
+    log.info("Cohort validation: %s", cohort_metrics)
 
     # --- 5. Build inference frame ---
     frame = build_destination_inference_frame(
@@ -1900,6 +1995,7 @@ def run_destination_projection(
         "destination_value_mean": float(frame["destination_value_per_100"].mean()),
         "destination_value_std": float(frame["destination_value_per_100"].std()),
         **cv_metrics,
+        **cohort_metrics,
     }
     log.info("Destination projection complete: %s", metrics)
     return metrics
