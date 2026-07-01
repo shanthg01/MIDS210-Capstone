@@ -503,15 +503,19 @@ class TestCalibrateCiScale:
 # ---------------------------------------------------------------------------
 
 class TestRateTranslation:
-    def test_per_game_uses_full_team_possessions(self, minimal_frame):
+    def test_per_game_uses_minutes_not_possessions(self, minimal_frame):
+        # projected_box_score fields are per-40-minute rates.
+        # pts_per_game = pts_per_40 * (minutes / 40) * usage_factor — pace irrelevant.
         df = minimal_frame.head(1).copy()
         df["adj_tempo"] = 80.0
         df["expected_minutes"] = 20.0
-        df["expected_usage"] = df["source_usage_rate"]
+        df["expected_usage"] = df["source_usage_rate"]  # usage_factor = 1.0
         df["destination_value_per_100"] = df["value_per_100"]
         result = translate_rates_to_destination_stats(df, pd.DataFrame())
         box = result["destination_box_score"].iloc[0]
-        assert box["pts_per_game"] == pytest.approx(7.2)
+        # pts_per_40=18.0, minutes=20, usage_factor=1.0 → 18.0 * (20/40) * 1.0 = 9.0
+        assert box["pts_per_game"] == pytest.approx(9.0)
+        # projected_possessions still uses pace: 80 * (20/40) = 40
         assert result["projected_possessions"].iloc[0] == pytest.approx(40.0)
 
     def test_expected_usage_changes_scoring_projection(self, minimal_frame):
@@ -524,26 +528,34 @@ class TestRateTranslation:
         result = translate_rates_to_destination_stats(df, pd.DataFrame())
         low_box = result["destination_box_score"].iloc[0]
         high_box = result["destination_box_score"].iloc[1]
+        # Same player (pts_per_40=18), same minutes — only usage_factor differs
+        # low: 18 * 0.5 * 0.80 = 7.2; high: 18 * 0.5 * 1.20 = 10.8
         assert high_box["pts_per_game"] > low_box["pts_per_game"]
         assert result["box_score_adjustments"].iloc[0]["usage_factor"] == pytest.approx(0.8)
         assert result["box_score_adjustments"].iloc[1]["usage_factor"] == pytest.approx(1.2)
 
-    def test_per_game_scales_with_pace(self, minimal_frame):
+    def test_pace_affects_possessions_not_per_game_stats(self, minimal_frame):
+        # Per-40 → per-game conversion only depends on minutes, not pace.
+        # Pace drives projected_possessions (and therefore destination_total_value),
+        # but not the per-game box-score stats.
         df = minimal_frame.copy()
         df["destination_value_per_100"] = df["value_per_100"]
-        # Higher pace → more per-game stats
         df_slow = df.copy()
         df_slow["adj_tempo"] = 60.0
         df_fast = df.copy()
         df_fast["adj_tempo"] = 80.0
         result_slow = translate_rates_to_destination_stats(df_slow, pd.DataFrame())
         result_fast = translate_rates_to_destination_stats(df_fast, pd.DataFrame())
-        # Fast-pace rows have more possessions → larger per-game totals
         slow_box = result_slow["destination_box_score"].iloc[0]
         fast_box = result_fast["destination_box_score"].iloc[0]
         if slow_box and fast_box:
             k = list(slow_box.keys())[0]
-            assert float(fast_box[k]) > float(slow_box[k])
+            assert float(fast_box[k]) == pytest.approx(float(slow_box[k]))
+        # But possessions — and therefore total value — DO scale with pace
+        assert (
+            result_fast["projected_possessions"].iloc[0]
+            > result_slow["projected_possessions"].iloc[0]
+        )
 
     def test_expected_minutes_zero_gives_zero_per_game(self, minimal_frame):
         df = minimal_frame.copy()

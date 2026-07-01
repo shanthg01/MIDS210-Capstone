@@ -1202,7 +1202,10 @@ def translate_rates_to_destination_stats(
     possessions = pace * (minutes / 40.0)
 
     raw_boxes = df["projected_box_score"].tolist() if "projected_box_score" in df.columns else [None] * len(df)
-    factors = (possessions / 100.0).tolist()
+    # projected_box_score stores per-40-minute rates (pts_per_40, reb_per_40, …).
+    # Convert to per-game using minutes, not possessions.
+    # possessions is used only for destination_total_value (a per-100-possession metric).
+    per_40_to_per_game = (minutes / 40.0).tolist()
 
     source_usage = _usage_fraction_series(
         df.get("source_usage_rate", pd.Series(0.20, index=df.index)),
@@ -1262,7 +1265,7 @@ def translate_rates_to_destination_stats(
     df["destination_box_score"] = [
         {
             k.replace("_per_40", "_per_game"): round(
-                float(v or 0) * _rate_multiplier(k, i) * factors[i], 2
+                float(v or 0) * _rate_multiplier(k, i) * per_40_to_per_game[i], 2
             )
             for k, v in box.items()
         }
