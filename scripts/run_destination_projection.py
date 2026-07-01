@@ -39,7 +39,7 @@ from portalpoint.modeling.destination_projection import (
     run_destination_projection,
 )
 from portalpoint.modeling.io import get_sync_engine
-from portalpoint.modeling.mlflow_helpers import setup_mlflow
+from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -122,7 +122,8 @@ def main() -> None:
     engine = get_sync_engine()
 
     import mlflow
-    setup_mlflow("destination-projection")
+    import mlflow.pyfunc
+    client = setup_mlflow("destination-projection")
 
     log.info(
         "Destination projection — target=%d source=%d train=%s portal_only=%s dry_run=%s",
@@ -130,7 +131,12 @@ def main() -> None:
         args.portal_only, args.dry_run,
     )
 
-    with mlflow.start_run(run_name=f"dest-proj-{args.target_season}-{datetime.now().strftime('%Y%m%d-%H%M')}"):
+    class DestProjectionPyfunc(mlflow.pyfunc.PythonModel):
+        """Marker artifact — destination projection is rule-based with no sklearn model to serialize."""
+        def predict(self, context, model_input):
+            return model_input
+
+    with mlflow.start_run(run_name=f"dest-proj-{args.target_season}-{datetime.now().strftime('%Y%m%d-%H%M')}") as run:
         mlflow.log_params({
             "target_season": args.target_season,
             "source_season": args.source_season,
@@ -153,8 +159,16 @@ def main() -> None:
         )
 
         mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
+        mlflow.pyfunc.log_model(artifact_path="dest_proj_model", python_model=DestProjectionPyfunc())
 
         log.info("Destination projection complete. Metrics: %s", metrics)
+
+        total_resid_std = float(metrics.get("total_resid_std", 999.0))
+        result = maybe_promote(
+            client, "destination-projection", run.info.run_id, "dest_proj_model",
+            metric_name="total_resid_std", new_value=total_resid_std, higher_is_better=False,
+        )
+        log.info("MLflow run %s — %s", run.info.run_id, result)
 
         if metrics.get("skipped"):
             log.warning("Run skipped: %s", metrics["skipped"])

@@ -36,8 +36,10 @@ from portalpoint.modeling.destination_projection import (
     compute_role_usage_delta,
     compute_roster_context_delta,
     compute_style_skill_fit_delta,
+    estimate_usage_value_coef,
     fit_role_usage_model,
     propagate_destination_uncertainty,
+    run_rolling_origin_cv,
     translate_neutral_to_destination_value,
     translate_rates_to_destination_stats,
 )
@@ -689,3 +691,108 @@ class TestEndToDeltaPath:
     def test_neutral_model_priority_nonempty(self):
         assert len(NEUTRAL_MODEL_PRIORITY) >= 2
         assert NEUTRAL_MODEL_PRIORITY[0] == "player-proj-phase2a-fcast-v1"
+
+
+# ---------------------------------------------------------------------------
+# estimate_usage_value_coef
+# ---------------------------------------------------------------------------
+
+class TestEstimateUsageValueCoef:
+    def _make_frames(self, n: int = 100, coef: float = 10.0):
+        np.random.seed(42)
+        usage = np.random.uniform(0.10, 0.35, n)
+        value = coef * usage + np.random.normal(0, 0.5, n)
+        neutral_df = pd.DataFrame({"player_id": range(n), "value_per_100": value})
+        source_df = pd.DataFrame({"player_id": range(n), "source_usage_rate": usage})
+        return neutral_df, source_df
+
+    def test_returns_fallback_when_neutral_empty(self):
+        empty = pd.DataFrame(columns=["player_id", "value_per_100"])
+        source = pd.DataFrame({"player_id": [1], "source_usage_rate": [0.20]})
+        assert estimate_usage_value_coef(empty, source, fallback=1.5) == 1.5
+
+    def test_returns_fallback_when_source_empty(self):
+        neutral = pd.DataFrame({"player_id": [1], "value_per_100": [2.0]})
+        empty = pd.DataFrame(columns=["player_id", "source_usage_rate"])
+        assert estimate_usage_value_coef(neutral, empty, fallback=1.5) == 1.5
+
+    def test_returns_fallback_when_too_few_rows(self):
+        neutral = pd.DataFrame({"player_id": range(5), "value_per_100": [1.0] * 5})
+        source = pd.DataFrame({"player_id": range(5), "source_usage_rate": [0.20] * 5})
+        assert estimate_usage_value_coef(neutral, source, fallback=2.5) == 2.5
+
+    def test_recovers_approximate_slope(self):
+        neutral, source = self._make_frames(n=200, coef=8.0)
+        coef = estimate_usage_value_coef(neutral, source, fallback=1.5)
+        assert abs(coef - 8.0) < 3.0  # OLS within 3 units of true coef
+
+    def test_coef_used_in_heuristic(self):
+        df = pd.DataFrame({
+            "source_usage_rate": [0.20],
+            "expected_usage": [0.25],
+            "value_per_100": [2.0],
+        })
+        delta_default = compute_role_usage_delta(df, None, None, [], linear_coef=1.5)
+        delta_custom = compute_role_usage_delta(df, None, None, [], linear_coef=10.0)
+        # delta = (0.25 - 0.20) * coef
+        assert abs(float(delta_default.iloc[0]) - 0.075) < 1e-9
+        assert abs(float(delta_custom.iloc[0]) - 0.50) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# run_rolling_origin_cv
+# ---------------------------------------------------------------------------
+
+class TestRunRollingOriginCV:
+    def _make_training_df(self, n_per_season: int = 10):
+        rows = []
+        for season in [2022, 2023, 2024, 2025]:
+            for i in range(n_per_season):
+                rows.append({
+                    "dest_season": season,
+                    "source_usage_rate": 0.20 + i * 0.01,
+                    "dest_usage_rate": 0.22 + i * 0.01,
+                    "neutral_value": float(i),
+                    "value_delta": float(i) * 0.1,
+                    "dest_off_rapm": float(i) * 0.5,
+                    "dest_def_rapm": 0.0,
+                    "dest_total_rapm": float(i) * 0.5,
+                    "source_adj_em": 10.0,
+                    "dest_adj_em": 12.0,
+                    "position": "PG",
+                })
+        return pd.DataFrame(rows)
+
+    def test_returns_cv_skipped_on_empty(self):
+        result = run_rolling_origin_cv(pd.DataFrame())
+        assert result.get("cv_skipped") == 1.0
+        assert result["total_resid_std"] == 999.0
+
+    def test_returns_cv_skipped_single_season(self):
+        df = pd.DataFrame({
+            "dest_season": [2025, 2025],
+            "source_usage_rate": [0.20, 0.22],
+            "dest_usage_rate": [0.22, 0.24],
+            "neutral_value": [1.0, 2.0],
+            "value_delta": [0.5, 1.0],
+        })
+        result = run_rolling_origin_cv(df)
+        assert result.get("cv_skipped") == 1.0
+
+    def test_returns_total_resid_std_with_enough_data(self):
+        df = self._make_training_df(n_per_season=15)
+        result = run_rolling_origin_cv(df)
+        assert "total_resid_std" in result
+        assert result["total_resid_std"] >= 0.0
+
+    def test_fold_keys_present_when_cv_runs(self):
+        df = self._make_training_df(n_per_season=15)
+        result = run_rolling_origin_cv(df, min_eval_rows=2)
+        # At least some folds should have run
+        fold_keys = [k for k in result if k.startswith("fold") and "rmse" in k]
+        assert len(fold_keys) >= 1
+
+    def test_cv_skipped_flag_absent_when_cv_ran(self):
+        df = self._make_training_df(n_per_season=15)
+        result = run_rolling_origin_cv(df, min_eval_rows=2)
+        assert "cv_skipped" not in result or result.get("cv_skipped") != 1.0

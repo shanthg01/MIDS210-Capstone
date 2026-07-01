@@ -687,7 +687,7 @@ def fit_role_usage_model(training_df: pd.DataFrame) -> tuple[Ridge | None, Stand
 
     if len(df) < MIN_ROLE_USAGE_TRAIN_ROWS:
         log.warning(
-            "Role/usage model: only %d clean training rows (need %d) — returning zero delta",
+            "Role/usage model: only %d clean training rows (need %d) — falling back to linear heuristic",
             len(df), MIN_ROLE_USAGE_TRAIN_ROWS,
         )
         return None, None, [], 0.0
@@ -718,10 +718,12 @@ def compute_role_usage_delta(
     feature_names: list[str],
     source_usage_col: str = "source_usage_rate",
     dest_usage_col: str = "expected_usage",
+    linear_coef: float = 1.5,
 ) -> pd.Series:
     """Apply role/usage model to inference frame.
 
-    Falls back to a simple linear heuristic when model is None.
+    Falls back to usage_delta * linear_coef when model is None.
+    linear_coef should be estimated from data via estimate_usage_value_coef().
     """
     if df.empty:
         return pd.Series(dtype=float)
@@ -745,10 +747,8 @@ def compute_role_usage_delta(
         X = scaler.transform(X_aligned.values)
         delta = pd.Series(model.predict(X), index=df.index)
     else:
-        # Heuristic: usage_delta × 1.5 (empirically calibrated coefficient)
-        # Caps apply below, so extreme usage swings are still bounded.
         usage_delta = df_work["dest_usage_rate"] - df_work["source_usage_rate"]
-        delta = usage_delta * 1.5
+        delta = usage_delta * linear_coef
 
     return delta.clip(
         -DELTA_CAPS["role_usage_delta"], DELTA_CAPS["role_usage_delta"]
@@ -1392,6 +1392,117 @@ def upsert_destination_projections(engine: Engine, records: list[tuple]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Data-driven coefficient estimation
+# ---------------------------------------------------------------------------
+
+def estimate_usage_value_coef(
+    neutral_df: pd.DataFrame,
+    source_stats_df: pd.DataFrame,
+    fallback: float = 1.5,
+) -> float:
+    """OLS slope of value_per_100 ~ source_usage_rate across current portal candidates.
+
+    Selection-biased (better players get more usage), but gives a data-grounded
+    calibration vs a hardcoded constant. Falls back to `fallback` if n < 50.
+    """
+    if neutral_df.empty or source_stats_df.empty:
+        return fallback
+    merged = (
+        neutral_df[["player_id", "value_per_100"]]
+        .merge(source_stats_df[["player_id", "source_usage_rate"]], on="player_id")
+        .dropna(subset=["value_per_100", "source_usage_rate"])
+    )
+    merged = merged[merged["source_usage_rate"].between(0.05, 0.50)]
+    if len(merged) < 50:
+        log.info(
+            "Usage coefficient: only %d overlap rows, using fallback=%.2f",
+            len(merged), fallback,
+        )
+        return fallback
+    X = merged["source_usage_rate"].values
+    y = merged["value_per_100"].values
+    X_c = X - X.mean()
+    denom = float(np.dot(X_c, X_c))
+    coef = float(np.dot(X_c, y) / denom) if denom > 1e-10 else fallback
+    log.info("Usage→value coefficient estimated from data: %.3f (n=%d)", coef, len(merged))
+    return coef
+
+
+# ---------------------------------------------------------------------------
+# Rolling-origin cross-validation
+# ---------------------------------------------------------------------------
+
+def run_rolling_origin_cv(
+    training_df: pd.DataFrame,
+    min_eval_rows: int = 3,
+) -> dict[str, float]:
+    """3-fold rolling-origin CV for the role/usage delta model.
+
+    Fold structure: eval = one dest_season, train = all prior dest_seasons.
+    Returns per-fold RMSE/R² and total_resid_std (mean fold RMSE used as
+    the maybe_promote gate metric). Returns cv_skipped=1.0 if insufficient data.
+    """
+    if training_df.empty or "dest_season" not in training_df.columns:
+        return {"cv_skipped": 1.0, "total_resid_std": 999.0}
+
+    clean = training_df.dropna(
+        subset=["value_delta", "source_usage_rate", "dest_usage_rate", "dest_season"]
+    )
+    seasons = sorted(clean["dest_season"].unique())
+
+    if len(seasons) < 2:
+        log.info("CV skipped: only %d distinct dest_seasons in training data", len(seasons))
+        return {"cv_skipped": 1.0, "total_resid_std": 999.0}
+
+    fold_results: dict[str, float] = {}
+    fold_rmses: list[float] = []
+
+    for fold_idx, eval_season in enumerate(seasons[1:], 1):
+        train_seasons_cv = [s for s in seasons if s < eval_season]
+        train = clean[clean["dest_season"].isin(train_seasons_cv)]
+        eval_df = clean[clean["dest_season"] == eval_season].copy()
+
+        if len(eval_df) < min_eval_rows:
+            log.info(
+                "CV fold %d (eval=%d): only %d eval rows, skipping",
+                fold_idx, eval_season, len(eval_df),
+            )
+            continue
+
+        model, scaler, feature_names, _ = fit_role_usage_model(train)
+
+        # Map dest_usage_rate → expected_usage for compute_role_usage_delta
+        eval_df["expected_usage"] = eval_df["dest_usage_rate"]
+        eval_df["value_per_100"] = eval_df.get("neutral_value", pd.Series(0.0, index=eval_df.index))
+        preds = compute_role_usage_delta(eval_df, model, scaler, feature_names)
+
+        actuals = eval_df["value_delta"].values
+        residuals = actuals - preds.values
+        rmse = float(np.sqrt(np.mean(residuals ** 2)))
+        ss_res = float(np.sum(residuals ** 2))
+        ss_tot = float(np.sum((actuals - actuals.mean()) ** 2))
+        r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-10 else 0.0
+
+        fold_results[f"fold{fold_idx}_rmse"] = rmse
+        fold_results[f"fold{fold_idx}_r2"] = r2
+        fold_results[f"fold{fold_idx}_n_eval"] = float(len(eval_df))
+        fold_rmses.append(rmse)
+
+        log.info(
+            "CV fold %d (train=%s eval=%d): n_train=%d n_eval=%d rmse=%.3f r2=%.3f",
+            fold_idx, train_seasons_cv, eval_season, len(train), len(eval_df), rmse, r2,
+        )
+
+    if fold_rmses:
+        fold_results["total_resid_std"] = float(np.mean(fold_rmses))
+    else:
+        fold_results["cv_skipped"] = 1.0
+        fold_results["total_resid_std"] = 999.0
+
+    return fold_results
+
+
+# ---------------------------------------------------------------------------
 # High-level pipeline entry point (called by run_destination_projection.py)
 # ---------------------------------------------------------------------------
 
@@ -1458,6 +1569,11 @@ def run_destination_projection(
     role_model, role_scaler, role_feature_names, role_residual_std = fit_role_usage_model(training_df)
     tier_mean_mat, tier_std_mat = build_competition_tier_matrix(training_df)
 
+    # --- 4a. Data-driven usage coefficient + rolling-origin CV ---
+    usage_coef = estimate_usage_value_coef(neutral_df, source_stats_df)
+    cv_metrics = run_rolling_origin_cv(training_df)
+    log.info("CV metrics: %s", cv_metrics)
+
     # --- 5. Build inference frame ---
     frame = build_destination_inference_frame(
         neutral_df=neutral_df,
@@ -1476,7 +1592,7 @@ def run_destination_projection(
 
     # --- 6. Compute deltas ---
     frame["role_usage_delta"] = compute_role_usage_delta(
-        frame, role_model, role_scaler, role_feature_names
+        frame, role_model, role_scaler, role_feature_names, linear_coef=usage_coef
     )
     frame["style_skill_fit_delta"] = compute_style_skill_fit_delta(frame)
     frame["roster_context_delta"] = compute_roster_context_delta(frame)
@@ -1527,6 +1643,7 @@ def run_destination_projection(
         "n_records_written": n_written,
         "n_train_rows": len(training_df),
         "role_residual_std": role_residual_std,
+        "usage_value_coef": usage_coef,
         "ci_calibration_scale": ci_scale,
         "delta_role_mean": float(frame["role_usage_delta"].mean()),
         "delta_style_mean": float(frame["style_skill_fit_delta"].mean()),
@@ -1536,6 +1653,7 @@ def run_destination_projection(
         "delta_total_std": float(frame["total_context_delta"].std()),
         "destination_value_mean": float(frame["destination_value_per_100"].mean()),
         "destination_value_std": float(frame["destination_value_per_100"].std()),
+        **cv_metrics,
     }
     log.info("Destination projection complete: %s", metrics)
     return metrics
