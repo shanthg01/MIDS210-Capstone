@@ -1,6 +1,10 @@
 services:
+  # Local Postgres — offline dev only. RDS is the shared team DB.
+  # Start with: docker compose --profile local-db up -d
+  # Don't run alongside the bastion SSH tunnel (both bind port 5433).
   db:
     image: postgres:15
+    profiles: [local-db]
     environment:
       POSTGRES_DB: portalpoint
       POSTGRES_USER: postgres
