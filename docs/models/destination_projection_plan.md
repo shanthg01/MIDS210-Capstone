@@ -1,6 +1,6 @@
 # Destination-Adjusted Player Projection Plan
 
-**Status:** Complete baseline — first real end-to-end run 2026-07-01; 454,790 rows written, 2,125 training rows, CV total_resid_std=2.967, @champion promoted. Known blocker before coach-facing box-score display: Jalik Dunkley sanity check surfaced per-game stat translation and usage-compression issues; value deltas remain reviewable, but projected PPG/RPG/APG should not be treated as production-ready until fixed.
+**Status:** Complete baseline — re-run 2026-07-01 with P0-P3 fixes applied; 454,790 rows written, 2,420 training rows, CV total_resid_std=2.892 (improved from 2.967), MLflow v3 Staging (Δ=+2.5% vs @champion v2 — below 5% auto-promote threshold). Per-game box-score translation fixed (P0: minutes/40 not possessions/100). Value deltas and box-score stats now use consistent rate basis. Cohort validation (P3) logged to MLflow. Known blocker before coach-facing box-score display: Jalik Dunkley sanity check surfaced usage-compression issues; value deltas are suitable for model review, but projected PPG/RPG/APG should be validated against a named-player checklist before coach-facing exposure.
 **Target module:** `src/portalpoint/modeling/destination_projection.py`  
 **Target script:** `scripts/run_destination_projection.py`  
 **Target notebook:** `notebooks/models/destination_projection.ipynb`  
@@ -570,6 +570,87 @@ R² is low but expected — high inherent noise in transfer outcomes, rule-based
    - The neutral model itself reasonably regresses his source scoring from about 19 points/40 to 13.91 points/40, so not every drop is a bug. The suspicious part is the additional destination translation from a double-digit scorer into a 4-5 PPG player despite 21-28 projected minutes.
 
 **Current trust boundary after the Dunkley check:** destination-adjusted `value_per_100`, delta direction, and explanatory context are suitable for model review. Coach-facing per-game `projected_box_score` should be hidden or labeled experimental until the rate basis and usage-compression fixes land, then validated against a small named-player scorer/rebounder/playmaker checklist.
+
+## 20. P0-P3 Bug Fixes + Re-Run (2026-07-01)
+
+Teammate PR review surfaced four issues (P0-P3); implemented and re-run same session.
+
+### P0 — Per-game box-score basis fix (critical)
+
+`translate_rates_to_destination_stats()` was scaling `projected_box_score` fields (`*_per_40` basis) by `possessions / 100.0` — mixing a per-40-minute numerator with a per-100-possession denominator, suppressing stats ~45-50%. Dunkley 12.4 PPG source → 5.26 PPG shown.
+
+Fix: `per_40_to_per_game = minutes / 40.0` (correct identity for per-40 rates). Tests updated in `TestRateTranslation` — `test_per_game_uses_minutes_not_possessions` now expects `9.0` (18.0 × 20/40 × 1.0); `test_pace_affects_possessions_not_per_game_stats` inverted since pace only affects possessions/total_value, not per-game stats when minutes are fixed.
+
+### P1 — `--train-seasons` SQL filter semantic mismatch
+
+`run_destination_projection.py` documents `--train-seasons` as destination seasons (year player appeared at destination). But `_TRANSFER_TRAINING_SQL` filtered `WHERE t.season = ANY(:train_seasons)` where `t.season` is the **portal entry year** (source year). This excluded the 2022 destination cohort entirely and included 2027 (which has no HE RAPM labels).
+
+Fix: `WHERE t.season + 1 = ANY(:train_seasons)` — training rows now filtered by destination season consistently with the argument semantics and the CV fold logic.
+
+### P1b — Destination query ordering
+
+`GET /api/players/{id}/projection?school_id=X` sorted only by `computed_at DESC` — a row from a stale season could appear over a newer target-season row if the stale row was recomputed more recently.
+
+Fix: `ORDER BY season DESC, computed_at DESC` — target season is always the primary sort key.
+
+### P2 — Uncertainty components verification
+
+Teammate had already assembled `uncertainty_components` dict in `propagate_destination_uncertainty` (lines 1129-1138 at time of review). No code change needed — verified present.
+
+### P3 — Cohort validation slices
+
+`compute_cohort_validation()` added to `destination_projection.py`. Loops same rolling-origin fold structure as `run_rolling_origin_cv`, collects held-out (actual, predicted) pairs, reports Spearman correlation and RMSE per:
+- Tier direction: up / same / down
+- Position group: guard (PG/SG) / wing (SF) / big (PF/C)
+- Usage context: high-usage scaling down / usage increase
+
+Wired into `run_destination_projection` pipeline; all cohort metrics merged into returned dict and logged to MLflow. 11 tests in `TestCohortValidation`.
+
+### Re-run results (2026-07-01)
+
+| Metric | First run (v2) | P0-P3 re-run (v3) |
+|---|---|---|
+| n_train | 2,125 | 2,420 |
+| total_resid_std | 2.967 | 2.892 |
+| MLflow | @champion | Staging (Δ=+2.5%) |
+| n_records_written | 454,790 | 454,790 |
+
+CV folds (v3):
+
+| Fold | eval_season | RMSE | R² | n_eval |
+|---|---|---|---|---|
+| 1 | 2022 | 2.701 | 0.061 | 383 |
+| 2 | 2023 | 2.905 | 0.078 | 455 |
+| 3 | 2024 | 2.843 | 0.035 | 632 |
+| 4 | 2025 | 3.120 | 0.071 | 655 |
+
+Delta means (2027 inference, v3):
+
+| Delta | Mean |
+|---|---|
+| role_usage_delta | +0.248 |
+| style_skill_fit_delta | +0.003 |
+| roster_context_delta | -0.329 |
+| competition_level_delta | -0.008 |
+| total_context_delta | -0.086 |
+| destination_value_mean | +1.041 |
+
+Cohort validation results (real data, 8 cohorts):
+
+| Cohort | n | Spearman | RMSE |
+|---|---|---|---|
+| tier_up | 716 | 0.276 | 2.834 |
+| tier_same | 787 | 0.153 | 3.053 |
+| tier_down | 622 | 0.402 | 2.846 |
+| guard | 1,238 | 0.304 | 2.974 |
+| wing | 261 | 0.374 | 2.740 |
+| big | 626 | 0.361 | 2.885 |
+| high_usage_scaling_down | 204 | 0.197 | 2.690 |
+| usage_increase | 342 | 0.336 | 2.945 |
+
+Notable: tier_down (moving to easier competition) shows strongest signal (0.402); tier_same weakest (0.153 — hard to distinguish within-tier outcomes). Wings/bigs slightly stronger than guards. High-usage players scaling down (0.197) consistent with the unresolved Gap B regression finding — this cohort may benefit most from context-feature improvements.
+
+---
 
 ### Improvement roadmap
 
