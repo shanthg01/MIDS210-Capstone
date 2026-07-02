@@ -569,7 +569,7 @@ R² is low but expected — high inherent noise in transfer outcomes, rule-based
    - Playing Time's constrained `expected_usage` may be too aggressive for one-player counterfactual destination projections. Dunkley's `opportunity_drivers.expected_usage_raw` is about `21`, but constrained destination `expected_usage` is `12.5` at Georgia State and about `10.8` at Texas A&M/Alabama. That may be appropriate for total roster accounting, but the destination adapter should either use the raw and constrained usage separately or apply a less global compression when evaluating one hypothetical transfer at a time.
    - The neutral model itself reasonably regresses his source scoring from about 19 points/40 to 13.91 points/40, so not every drop is a bug. The suspicious part is the additional destination translation from a double-digit scorer into a 4-5 PPG player despite 21-28 projected minutes.
 
-**Current trust boundary after the Dunkley check:** destination-adjusted `value_per_100`, delta direction, and explanatory context are suitable for model review. Coach-facing per-game `projected_box_score` should be hidden or labeled experimental until the rate basis and usage-compression fixes land, then validated against a small named-player scorer/rebounder/playmaker checklist.
+**Current trust boundary after the Dunkley check:** destination-adjusted `value_per_100`, delta direction, and explanatory context are suitable for model review. The per-game `projected_box_score` rate basis is now fixed; coach-facing exposure should still wait until usage-compression behavior is reviewed and the output passes a small named-player scorer/rebounder/playmaker checklist.
 
 ## 20. P0-P3 Bug Fixes + Re-Run (2026-07-01)
 
@@ -656,7 +656,7 @@ Notable: tier_down (moving to easier competition) shows strongest signal (0.402)
 
 In priority order (see CLAUDE.md Process Improvement TODO #10 for full detail):
 
-(a) Fix per-game box-score translation basis — use `projected_rates` per-100 fields with possessions, or use `projected_box_score` per-40 fields with `expected_minutes / 40`; do not mix the two. Add regression tests covering both payload shapes.
+(a) Completed P0: per-game box-score translation now uses `projected_box_score` per-40 fields with `expected_minutes / 40`; remaining follow-up is only to add coverage if a future `projected_rates` per-100 translation path is introduced.
 (b) Inspect Playing Time usage-budget compression for destination one-player counterfactuals — keep raw vs. constrained usage in the adapter, and avoid treating every portal candidate as if they all join the roster simultaneously.
 (c) Add named-player projection sanity checks — start with Dunkley-like double-digit low/mid-major scorers, high-rebound bigs, and high-assist guards; compare source per-40, neutral per-40, destination minutes, usage, and displayed per-game box output.
 (d) Fit style/skill delta empirically — biggest R² gain potential; currently 6 hardcoded rules.
