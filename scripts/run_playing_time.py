@@ -96,7 +96,18 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Optional extra model families to validate side-by-side before production scoring",
     )
-    parser.add_argument("--school-chunk-size", type=int, default=25)
+    parser.add_argument(
+        "--school-chunk-size",
+        type=int,
+        default=75,
+        help=(
+            "Schools per INFERENCE_SQL query. Default 75 balances CTE re-evaluation overhead "
+            "(6 player-side CTEs re-run each chunk) vs. per-chunk data volume (1.66M rows at "
+            "365 causes ~88 min transfer; 75 schools = ~225K rows per chunk, ~5 chunks). "
+            "Original default of 25 caused 15x redundant CTE evaluation (~2.75h total). "
+            "Use 365 only if you want a single query and have patience."
+        ),
+    )
     parser.add_argument("--include-player-ids", type=int, nargs="+", default=[])
     parser.add_argument("--include-school-ids", type=int, nargs="+", default=[])
     parser.add_argument(

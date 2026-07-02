@@ -43,6 +43,7 @@ import logging
 import re
 import sys
 import time
+import unicodedata
 from datetime import date, datetime
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -191,6 +192,18 @@ def fetch_season(season: int) -> list[dict]:
 # School + player resolution
 # ---------------------------------------------------------------------------
 
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip accents and generational suffixes for fuzzy matching."""
+    name = unicodedata.normalize("NFD", name)
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    name = name.lower().strip()
+    for suffix in (" jr.", " jr", " sr.", " sr", " ii", " iii", " iv"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)].strip()
+            break
+    return " ".join(name.split())
+
+
 def _resolve_school(raw_name: str | None, school_map: dict[str, int]) -> int | None:
     if not raw_name:
         return None
@@ -219,34 +232,81 @@ async def _build_school_map(session) -> dict[str, int]:
     return {row.name: row.id for row in result}
 
 
-async def _build_roster(session, school_id: int, season: int) -> list[tuple[int, str]]:
-    """(player_id, full_name) for school_id's roster in `season` — barttorvik
-    and 247sports both use the end-year-of-academic-year convention, so a
-    player transferring for season=2026 (the 2026-27 cycle) has their most
+async def _build_roster(session, school_id: int, season: int) -> list[tuple[int, str, str]]:
+    """(player_id, full_name, position) for school_id's roster in `season`.
+
+    barttorvik and 247sports both use the end-year-of-academic-year convention,
+    so a player transferring for season=2026 (the 2026-27 cycle) has their most
     recent stats at the from_school filed under season=2026 too (2025-26),
-    not season=2025. Verified empirically against a known transfer."""
+    not season=2025. Verified empirically against a known transfer.
+    """
     stmt = (
-        select(PlayerSeasonStats.player_id, Player.full_name)
+        select(PlayerSeasonStats.player_id, Player.full_name, Player.position)
         .join(Player, Player.id == PlayerSeasonStats.player_id)
         .where(PlayerSeasonStats.school_id == school_id, PlayerSeasonStats.season == season)
     )
     result = await session.execute(stmt)
-    return list(result.all())
+    return [(row[0], row[1], row[2] or "") for row in result.all()]
 
 
-def _match_player(raw_name: str, roster: list[tuple[int, str]], threshold: float = 0.82) -> tuple[int | None, float | None, str]:
+def _match_player(
+    raw_name: str,
+    roster: list[tuple[int, str, str]],
+    threshold: float = 0.82,
+    position_247: str | None = None,
+) -> tuple[int | None, float | None, str]:
+    """Match a 247Sports player name to a barttorvik roster entry.
+
+    Improvements over naive difflib:
+    - Name normalization (accents, generational suffixes, case)
+    - Exact position pre-filter when position is available (reduces false ambiguity)
+    - Two-pass threshold: strict (threshold) then relaxed (0.75)
+    - Position-based disambiguation when multiple candidates match
+    """
     if not roster:
         return None, None, "no_school"
-    names = [name for _, name in roster]
-    matches = difflib.get_close_matches(raw_name, names, n=2, cutoff=threshold)
+
+    norm_query = _normalize_name(raw_name)
+    # (pid, raw_name, position, normalized_name)
+    norm_roster = [(pid, name, pos, _normalize_name(name)) for pid, name, pos in roster]
+
+    # Position pre-filter: exact match on DB position (PG/SG/SF/PF/C)
+    if position_247:
+        pos_filtered = [r for r in norm_roster if r[2] == position_247]
+        candidates = pos_filtered if pos_filtered else norm_roster
+    else:
+        candidates = norm_roster
+
+    norm_names = [r[3] for r in candidates]
+
+    # Pass 1: strict threshold
+    matches = difflib.get_close_matches(norm_query, norm_names, n=3, cutoff=threshold)
+    # Pass 2: relaxed threshold
     if not matches:
-        return None, None, "unmatched"
-    if len(matches) > 1:
-        return None, None, "ambiguous"
-    name = matches[0]
-    confidence = difflib.SequenceMatcher(None, raw_name, name).ratio()
-    player_id = next(pid for pid, n in roster if n == name)
-    return player_id, round(confidence, 3), "matched"
+        matches = difflib.get_close_matches(norm_query, norm_names, n=3, cutoff=0.75)
+        if not matches:
+            # If position-filtered candidates failed, retry on full roster at relaxed threshold
+            if candidates is not norm_roster:
+                fallback_names = [r[3] for r in norm_roster]
+                matches = difflib.get_close_matches(norm_query, fallback_names, n=3, cutoff=0.75)
+                candidates = norm_roster  # switch to full roster for lookup below
+            if not matches:
+                return None, None, "unmatched"
+
+    if len(matches) == 1:
+        pid, name, pos, _ = next(r for r in candidates if r[3] == matches[0])
+        confidence = difflib.SequenceMatcher(None, norm_query, matches[0]).ratio()
+        return pid, round(confidence, 3), "matched"
+
+    # Multiple candidates — try position to pick one
+    if position_247:
+        pos_matches = [m for m in matches if next(r for r in norm_roster if r[3] == m)[2] == position_247]
+        if len(pos_matches) == 1:
+            pid, name, pos, _ = next(r for r in norm_roster if r[3] == pos_matches[0])
+            confidence = difflib.SequenceMatcher(None, norm_query, pos_matches[0]).ratio()
+            return pid, round(confidence, 3), "matched"
+
+    return None, None, "ambiguous"
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +379,16 @@ async def ingest_season(session, season: int, school_map: dict[str, int], dry_ru
     players = fetch_season(season)
     log.info("season %d: fetched %d player records", season, len(players))
 
-    roster_cache: dict[int, list[tuple[int, str]]] = {}
+    # Key: (school_id, season) to support multi-season fallback lookups
+    roster_cache: dict[tuple[int, int], list[tuple[int, str, str]]] = {}
     records: list[dict] = []
     counts = {"matched": 0, "unmatched": 0, "ambiguous": 0, "no_school": 0}
+
+    async def _get_roster(school_id: int, szn: int) -> list[tuple[int, str, str]]:
+        key = (school_id, szn)
+        if key not in roster_cache:
+            roster_cache[key] = await _build_roster(session, school_id, szn)
+        return roster_cache[key]
 
     for p in players:
         transfer = p.get("transfer") or {}
@@ -331,12 +398,22 @@ async def ingest_season(session, season: int, school_map: dict[str, int], dry_ru
         to_school_id = _resolve_school(to_name, school_map)
 
         raw_name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
+        position_247 = p.get("position") or None  # PG/SG/SF/PF/C from 247Sports
+
         player_id = confidence = None
         status_tag = "no_school"
         if from_school_id is not None:
-            if from_school_id not in roster_cache:
-                roster_cache[from_school_id] = await _build_roster(session, from_school_id, season)
-            player_id, confidence, status_tag = _match_player(raw_name, roster_cache[from_school_id])
+            roster = await _get_roster(from_school_id, season)
+            player_id, confidence, status_tag = _match_player(raw_name, roster, position_247=position_247)
+
+            # Fallback: try previous season's roster (season-labeling edge cases,
+            # grad transfers whose last barttorvik row is season-1)
+            if status_tag in ("unmatched", "ambiguous") and season > 2021:
+                prev_roster = await _get_roster(from_school_id, season - 1)
+                pid2, conf2, tag2 = _match_player(raw_name, prev_roster, position_247=position_247)
+                if tag2 == "matched":
+                    player_id, confidence, status_tag = pid2, conf2, "matched"
+
         counts[status_tag] += 1
 
         status = p.get("status") or "Unknown"

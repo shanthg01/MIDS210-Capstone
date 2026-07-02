@@ -319,15 +319,16 @@ def _load_source_team_pace(engine) -> pd.DataFrame:
         ).drop_duplicates(subset=["player_id", "source_observed_season"], keep="first")
 
 
-def run_cross_season(engine) -> None:
+def run_cross_season(engine, max_workers: int | None = None) -> None:
     log.info("the Cross-Season model: building season-grain skill states (no-context config) — this is the ~10min step")
     fitted_q_by_season, season_states = pp.load_or_build_season_skill_states(
         engine, CROSS_SEASON_SEASONS, use_baseline_prior=True, use_context_adjustment=False,
+        max_workers=max_workers,
     )
     covariates = pp.load_or_build_season_covariates(engine, season_states)
     log.info("Season-states: %s rows, %s covariate rows", f"{len(season_states):,}", f"{len(covariates):,}")
 
-    fitted_params, residual_df = pp.fit_all_skills(season_states, covariates)
+    fitted_params, residual_df = pp.fit_all_skills(season_states, covariates, max_workers=max_workers)
     residual_df, block_corrs = _apply_gap_a_blending(residual_df)
     for block_name in pp.VALIDATED_BLOCKS:
         if block_name in block_corrs:
@@ -588,6 +589,16 @@ def run_cross_season(engine) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=["baseline", "cross-season", "both"], default="both")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help=(
+            "Cap ProcessPoolExecutor worker count for build_season_skill_states and "
+            "fit_all_skills. Defaults to all available cores. Reduce to 2-4 on "
+            "Windows machines with limited paging file space to avoid DLL OOM errors."
+        ),
+    )
     args = parser.parse_args()
 
     engine = get_sync_engine()
@@ -596,7 +607,7 @@ def main() -> None:
         run_baseline(engine)
     if args.phase in ("cross-season", "both"):
         log.info("=== Cross-Season State-Space Model ===")
-        run_cross_season(engine)
+        run_cross_season(engine, max_workers=args.max_workers)
 
 
 if __name__ == "__main__":

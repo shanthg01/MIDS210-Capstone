@@ -1288,6 +1288,7 @@ def build_season_skill_states(
 def load_or_build_season_skill_states(
     engine: Engine, seasons: list[int], cache_dir: Path | None = None, force_rebuild: bool = False,
     use_baseline_prior: bool = True, use_context_adjustment: bool = False,
+    max_workers: int | None = None,
 ) -> tuple[dict[int, dict[str, float]], pd.DataFrame]:
     """Cached wrapper around build_season_skill_states. The ~2h intra-season
     filtering pass is identical every time it's run against the same seasons
@@ -1320,6 +1321,7 @@ def load_or_build_season_skill_states(
 
     fitted_q_by_season, season_states = build_season_skill_states(
         engine, seasons, use_baseline_prior=use_baseline_prior, use_context_adjustment=use_context_adjustment,
+        max_workers=max_workers,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
     season_states.to_parquet(states_path)

@@ -275,40 +275,74 @@ async def get_player_projection(
         default=None,
         description="Season to fetch. Defaults to the player's latest available projection.",
     ),
-):
-    """Neutral talent projection. Real model output, not a stub — 404 if the
-    player has no projection row rather than synthesizing one, since
-    fabricating a fake skill/value breakdown would be actively misleading for
-    a product surface like this.
-
-    Accepts either real, populated model_version (Phase 0 shrinkage or Phase 2a
-    neutral), most recent first — not narrowed to PLAYER_PROJECTION_MODEL_VERSION
-    (the cross-season *forecast* variant) alone, since that version has only 2
-    rows in the whole table (real bug found 2026-06-26: every other player's
-    real projection was 404ing because of this filter)."""
-    stmt = select(PlayerProjectionORM).where(
-        PlayerProjectionORM.player_id == player_id,
-        PlayerProjectionORM.projection_mode == "neutral",
-        PlayerProjectionORM.model_version.in_(
-            [
-                PLAYER_PROJECTION_MODEL_VERSION,
-                "player-projection-shrinkage-v1",
-                "player-projection-phase2a-v1",
-            ]
+    school_id: int | None = Query(
+        default=None,
+        description=(
+            "When provided, returns the destination-adjusted projection for this player "
+            "evaluated against the given school (projection_mode='destination'). "
+            "Omit for the neutral (context-independent) talent projection."
         ),
-        PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
-    )
-    if season is not None:
-        stmt = stmt.where(PlayerProjectionORM.season == season)
-    stmt = stmt.order_by(
-        PlayerProjectionORM.season.desc(),
-        PlayerProjectionORM.computed_at.desc(),
-    ).limit(1)
+    ),
+):
+    """Player talent/value projection — neutral or destination-adjusted.
+
+    Without school_id: neutral projection (context-independent talent estimate).
+    With school_id: destination-adjusted projection incorporating role/usage,
+    style/skill fit, roster context, and competition tier deltas for that school.
+
+    Returns 404 rather than synthesizing a fake row — fabricated skill/value
+    breakdowns would be actively misleading on this product surface.
+
+    Neutral model priority: forecast (player-proj-phase2a-fcast-v1) →
+    same-season Phase 2a → Phase 0 shrinkage. Not narrowed to one version because
+    the forecast model has only ~33K rows (2027 season) while other seasons are
+    covered by Phase 2a/Phase 0.
+    """
+    if school_id is not None:
+        # Destination-adjusted row for this (player, school) pair
+        stmt = select(PlayerProjectionORM).where(
+            PlayerProjectionORM.player_id == player_id,
+            PlayerProjectionORM.school_id == school_id,
+            PlayerProjectionORM.projection_mode == "destination",
+            PlayerProjectionORM.model_version == "player-destination-proj-v1",
+            PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
+        )
+        if season is not None:
+            stmt = stmt.where(PlayerProjectionORM.season == season)
+        stmt = stmt.order_by(
+            PlayerProjectionORM.season.desc(),
+            PlayerProjectionORM.computed_at.desc(),
+        ).limit(1)
+    else:
+        # Neutral projection — accepts any populated model version
+        stmt = select(PlayerProjectionORM).where(
+            PlayerProjectionORM.player_id == player_id,
+            PlayerProjectionORM.projection_mode == "neutral",
+            PlayerProjectionORM.model_version.in_(
+                [
+                    PLAYER_PROJECTION_MODEL_VERSION,
+                    "player-projection-shrinkage-v1",
+                    "player-projection-phase2a-v1",
+                ]
+            ),
+            PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
+        )
+        if season is not None:
+            stmt = stmt.where(PlayerProjectionORM.season == season)
+        stmt = stmt.order_by(
+            PlayerProjectionORM.season.desc(),
+            PlayerProjectionORM.computed_at.desc(),
+        ).limit(1)
 
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:
         detail = f"No projection found for player {player_id}"
-        if season is not None:
+        if school_id is not None:
+            detail += f" at school {school_id}"
+            if season is not None:
+                detail += f" in season {season}"
+            detail += " — run run_destination_projection.py to populate destination rows"
+        elif season is not None:
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
@@ -316,9 +350,12 @@ async def get_player_projection(
         player_id=str(row.player_id),
         season=row.season,
         projection_mode=row.projection_mode,
+        school_id=row.school_id,
         value_per_100=row.value_per_100,
         value_ci_lower=row.value_ci_lower,
         value_ci_upper=row.value_ci_upper,
+        projected_minutes=row.projected_minutes,
+        projected_usage=row.projected_usage,
         projected_box_score=row.projected_box_score,
         projected_rates=row.projected_rates,
         skill_states=row.skill_states,
