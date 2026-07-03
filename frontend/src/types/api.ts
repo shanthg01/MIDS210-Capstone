@@ -4,12 +4,30 @@ export interface TokenResponse {
   access_token: string;
   expires_in: number;
   user_id: number;
+  school_id: number | null;
 }
 
 export interface SignupRequest {
   email: string;
   password: string;
   full_name: string;
+  school_id: number;
+}
+
+// ── Schools ───────────────────────────────────────────────────────────────────
+
+export interface SchoolListItem {
+  school_id: number;
+  name: string;
+  conference: string;
+}
+
+export interface SchoolListResponse {
+  schools: SchoolListItem[];
+}
+
+export interface UpdateSchoolResponse {
+  school_id: number;
 }
 
 export interface LoginRequest {
@@ -33,6 +51,25 @@ export interface ImportanceWeights {
   program_fit: number;
 }
 
+// Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
+export type StatKey =
+  | 'usage_rate'
+  | 'fg3_pct'
+  | 'ft_pct'
+  | 'rim_pct'
+  | 'assist_rate'
+  | 'tov_pct'
+  | 'off_reb_pct'
+  | 'def_reb_pct'
+  | 'steal_pct'
+  | 'block_pct'
+  | 'min_pct';
+
+export interface StatThreshold {
+  stat: StatKey;
+  min_value: number;
+}
+
 export interface UserFilters {
   recruiting_regions: string[];
   conferences: string[];
@@ -40,7 +77,7 @@ export interface UserFilters {
   target_archetypes: string[];
   nil_budget_min: number | null;
   nil_budget_max: number | null;
-  min_stats: Record<string, number> | null;
+  min_stats: StatThreshold[] | null;
 }
 
 export interface UserPreferences {
@@ -53,6 +90,26 @@ export interface UserPreferencesUpdate {
   importance_weights?: ImportanceWeights;
   filters?: UserFilters;
   fit_weights?: FitWeights;
+}
+
+export interface PreferenceProfile {
+  id: number;
+  name: string;
+  created_at: string;
+  fit_weights: FitWeights;
+  importance_weights: ImportanceWeights;
+  filters: UserFilters;
+}
+
+export interface PreferenceProfileCreate {
+  name: string;
+  fit_weights: FitWeights;
+  importance_weights: ImportanceWeights;
+  filters: UserFilters;
+}
+
+export interface PreferenceProfileListResponse {
+  profiles: PreferenceProfile[];
 }
 
 // ── Players ───────────────────────────────────────────────────────────────────
@@ -86,7 +143,7 @@ export interface PlayerArchetype {
 }
 
 export interface PlayerProfile {
-  player_id: number;
+  player_id: string; // string, not number — backend serializes as string to avoid JS double precision loss (63-bit ids)
   full_name: string;
   position: string;
   height_inches: number | null;
@@ -103,7 +160,7 @@ export interface PlayerProfile {
 }
 
 export interface PlayerBase {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   full_name: string;
   position: string;
   class_year: string;
@@ -116,6 +173,44 @@ export interface PlayerSearchResponse {
   results: PlayerBase[];
   total: number;
   query: string;
+}
+
+// ── Player Projection ─────────────────────────────────────────────────────────
+
+export interface PlayerProjectionResponse {
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
+  season: number;
+  projection_mode: string;
+  value_per_100: number;
+  value_ci_lower: number | null;
+  value_ci_upper: number | null;
+  projected_box_score: Record<string, number> | null;
+  projected_rates: Record<string, number> | null;
+  skill_states: Record<string, number> | null;
+  skill_percentiles: Record<string, number> | null;
+  uncertainty: Record<string, unknown> | null;
+  explanation: Record<string, unknown> | null;
+  model_version: string;
+  computed_at: string;
+}
+
+// ── Schools ───────────────────────────────────────────────────────────────────
+
+export interface TeamSystemProfileResponse {
+  school_id: number;
+  season: number;
+  system_label: string;
+  offense_label: string | null;
+  defense_label: string | null;
+}
+
+export interface RosterGapResponse {
+  school_id: number;
+  season: number;
+  open_minutes_by_position: Record<string, number>;
+  open_usage_by_position: Record<string, number> | null;
+  suggested_position: string | null;
+  suggested_open_minutes: number | null;
 }
 
 // ── Fit Scores ────────────────────────────────────────────────────────────────
@@ -135,11 +230,16 @@ export interface RoleFitBreakdown {
   depth_chart_position: number;
 }
 
+export interface GapFeatureGap {
+  feature: string;
+  gap: number;
+}
+
 export interface GapMatchBreakdown {
   archetype_needed: boolean;
   position_depth_score: number;
-  uniqueness_bonus: number;
-  redundancy_penalty: number;
+  gap_reliability: number;
+  top_gap_features: GapFeatureGap[];
 }
 
 export interface ProgramFitBreakdown {
@@ -158,7 +258,7 @@ export interface FitBreakdown {
 }
 
 export interface FitScoreResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   overall_fit: number;
   gap_match: number;
@@ -175,7 +275,7 @@ export interface FitScoreResponse {
 // ── Team Rating Projection ────────────────────────────────────────────────────
 
 export interface TeamRatingProjectionResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   current_adjEM: number;
   projected_adjEM: number;
@@ -212,7 +312,7 @@ export interface SHAPExplanation {
 }
 
 export interface PredictionResponse {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   predicted_per_change: number;
   predicted_minutes: number;
@@ -243,12 +343,12 @@ export interface TradeOff {
   factor: string;
   description: string;
   best_player_name: string;
-  best_player_id: number;
+  best_player_id: string; // string, not number — see PlayerProfile.player_id comment
 }
 
 export interface CompareRequest {
   program_id: number;
-  player_ids: number[];
+  player_ids: string[]; // backend's Pydantic list[int] coerces incoming JSON strings to full-precision ints
 }
 
 export interface CompareResponse {
@@ -270,7 +370,7 @@ export interface FitComponents {
 
 export interface RecommendationItem {
   rank: number;
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   player_name: string;
   position: string;
   overall_fit: number;
@@ -289,7 +389,7 @@ export interface RecommendationsResponse {
 // ── Shortlist / Pipeline ──────────────────────────────────────────────────────
 
 export interface ShortlistItem {
-  player_id: number;
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
   player_name: string;
   position: string;
   overall_fit: number | null;

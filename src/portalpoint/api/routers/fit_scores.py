@@ -39,9 +39,15 @@ async def get_fit_score(
         cached = None  # Redis unavailable — fall through to DB, skip caching this request
 
     if cached is not None:
-        response = FitScoreResponse.model_validate_json(cached)
-        response.cache_hit = True
-        return response
+        try:
+            response = FitScoreResponse.model_validate_json(cached)
+        except Exception:
+            # Stale entry from before a schema change (e.g. player_id's int->str
+            # migration) — treat as a cache miss rather than crashing the request.
+            response = None
+        if response is not None:
+            response.cache_hit = True
+            return response
 
     response = await fit_score_service.get_fit_score(db, player_id, school_id, season)
 

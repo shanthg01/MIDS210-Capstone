@@ -34,7 +34,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from portalpoint.db.models import Player, PlayerSeasonStats, School, TeamSeasonStats
+from portalpoint.db.player_ids import derive_player_id
 from portalpoint.db.session import AsyncSessionLocal
+from portalpoint.modeling.minutes import resolved_minutes_per_game
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -498,6 +500,7 @@ async def ingest_players(
             continue
         height_inches = _parse_height(r.get("ht"))
         rows.append({
+            "id": derive_player_id(bart_pid),
             "full_name": name,
             "position": _infer_position(r.get("role"), height_inches),
             "height_inches": height_inches,
@@ -546,8 +549,9 @@ async def ingest_player_season_stats(
             continue
 
         gp = _safe_int(r.get("gp")) or 0
-        mpg = _safe_float(r.get("min_per_game"))
-        # % of team minutes (0-100); min_per_game is sparsely populated.
+        raw_mpg = _safe_float(r.get("min_per_game"))
+        # % of team minutes (0-100). This is the reliable playing-time field;
+        # the raw min_per_game source column is legacy/mis-mapped in local data.
         min_pct = _safe_float(r.get("min_per"))
         three_rate, rim_rate, mid_rate = _shot_distribution(r)
 
@@ -579,7 +583,7 @@ async def ingest_player_season_stats(
             "school_id": school_id,
             "season": season,
             "games_played": gp,
-            "minutes_per_game": mpg or 0.0,
+            "minutes_per_game": resolved_minutes_per_game(min_pct, raw_mpg) or 0.0,
             "min_pct": min_pct,
             # Traditional — barttorvik per-game cols (provisional; confirmed for ppg)
             "points_per_game": raw_ppg or 0.0,

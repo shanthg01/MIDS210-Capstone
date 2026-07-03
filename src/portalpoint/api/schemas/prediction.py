@@ -32,7 +32,7 @@ class SHAPExplanation(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int
     predicted_per_change: float
     predicted_minutes: float

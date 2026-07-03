@@ -1,4 +1,8 @@
 CLAUDE.md
+.env
+
+# Data files (large, downloaded locally)
+data/
 .torvik_cache/
 
 # Jupyter
@@ -7,6 +11,7 @@ CLAUDE.md
 # Python
 __pycache__/
 *.py[cod]
+.ipynb_checkpoints/
 *.pyo
 .venv/
 *.egg-info/
@@ -56,3 +61,11 @@ data/hoopr/
 notebooks/data/
 data/features/
 data/models/*.pkl
+data/model_validation/
+
+# DB dumps (contain full DB contents — never commit)
+*.dump
+*.sql.gz
+
+# SSH keys (never commit private keys)
+*.pem

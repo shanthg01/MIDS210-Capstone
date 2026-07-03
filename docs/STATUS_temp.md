@@ -213,7 +213,7 @@ folder, but worth a `.as_posix()` fix.
 | 6 | Team Rating Projection (XGBoost) | ❌ Not started | Depends on Model 4 | `team_rating_projections` |
 | 7 | Recommendation Engine (SVD + content + fit) | ❌ Not started | Depends on all 4 fit components | `recommendations` |
 
-**Current fit score state:** `fit_scores.py` serves real `scheme_fit` + `gap_match` from `player_team_fit_scores`; `role_fit` and `program_fit` remain stubbed.
+**Current fit score state:** `fit_scores.py` serves real `scheme_fit` + `gap_match` from `player_team_fit_scores`; `role_fit` is implemented in branch through `playing_time_projections` / `playing-time-rotation-v2` but needs the full 2027 all-school write before production use; `program_fit` remains stubbed.
 
 **M2 feature vector (two-layer system profile):**
 - Offense layer: shot shape, pace, offensive HE play-type mix, and assist/passing texture.
