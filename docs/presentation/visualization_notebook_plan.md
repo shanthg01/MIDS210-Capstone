@@ -1116,6 +1116,175 @@ display(
 
 ---
 
+## Section 8 — News Monitoring Agent (Step 0)
+
+Demonstrates how new portal entrants dynamically enter the recommendation engine's candidate pool without a manual re-run. Sources all output from `news_monitor_agent_v2.ipynb` — no new DB queries needed; display agent run output and classifier comparison.
+
+### Cell 8-1: VISUAL 0a — Two-Path Architecture Diagram
+
+```python
+# Architecture diagram — rendered as matplotlib figure (no external deps)
+# Two branches converging on player_team_fit_scores.is_portal_candidate = True
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyArrowPatch
+
+fig, ax = plt.subplots(figsize=(14, 6))
+ax.set_xlim(0, 14); ax.set_ylim(0, 6); ax.axis("off")
+
+# Branch 1: 247Sports deterministic ETL (left)
+boxes_left = [
+    (1.0, 4.5, "247Sports\n(structured JSON)"),
+    (1.0, 3.0, "ingest_transfers\n_247sports.py"),
+    (1.0, 1.5, "sync_portal\n_candidate_flags()"),
+]
+# Branch 2: News Agent (right)
+boxes_right = [
+    (7.5, 4.5, "ESPN / On3 /\n247Sports news"),
+    (7.5, 3.0, "search_news\n(Tavily)"),
+    (9.5, 3.0, "classify_events\n_batch_llm\n(Gemini)"),
+    (11.5, 3.0, "transfer_player\ntool"),
+]
+# Converge
+boxes_center = [(6.5, 0.6, "player_team_fit_scores\nis_portal_candidate = True\n→ recommendation engine")]
+
+label_style = dict(ha="center", va="center", fontsize=9, fontweight="bold")
+box_style   = dict(boxstyle="round,pad=0.4", facecolor="#e8f4f8", edgecolor="#4e79a7", linewidth=1.5)
+box_agent   = dict(boxstyle="round,pad=0.4", facecolor="#fff7e6", edgecolor="#ff7f0e", linewidth=1.5)
+box_db      = dict(boxstyle="round,pad=0.5", facecolor="#c6efce", edgecolor="#2ca02c", linewidth=2)
+
+for x, y, label in boxes_left:
+    ax.text(x + 0.7, y, label, **label_style, bbox=box_style)
+for x, y, label in boxes_right:
+    ax.text(x + 0.7, y, label, **label_style, bbox=box_agent)
+for x, y, label in boxes_center:
+    ax.text(x + 0.7, y, label, **label_style, bbox=box_db)
+
+# Arrows (simplified — add real arrowprops for final version)
+ax.annotate("", xy=(1.7, 3.5), xytext=(1.7, 4.2),
+            arrowprops=dict(arrowstyle="->", color="#4e79a7", lw=1.5))
+ax.annotate("", xy=(1.7, 2.0), xytext=(1.7, 2.8),
+            arrowprops=dict(arrowstyle="->", color="#4e79a7", lw=1.5))
+ax.annotate("", xy=(6.8, 1.2), xytext=(2.4, 1.5),
+            arrowprops=dict(arrowstyle="->", color="#4e79a7", lw=1.5))
+
+ax.annotate("", xy=(8.8, 3.0), xytext=(8.2, 4.2),
+            arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=1.5))
+ax.annotate("", xy=(10.2, 3.0), xytext=(9.2, 3.0),
+            arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=1.5))
+ax.annotate("", xy=(12.2, 3.0), xytext=(11.2, 3.0),
+            arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=1.5))
+ax.annotate("", xy=(7.2, 1.2), xytext=(12.2, 2.7),
+            arrowprops=dict(arrowstyle="->", color="#ff7f0e", lw=1.5))
+
+# Labels
+ax.text(1.7, 5.5, "Path 1: Deterministic ETL", ha="center", fontsize=10,
+        fontweight="bold", color="#4e79a7")
+ax.text(10.2, 5.5, "Path 2: LangGraph News Agent", ha="center", fontsize=10,
+        fontweight="bold", color="#ff7f0e")
+
+ax.set_title("PortalPoint — Two Paths to is_portal_candidate = True", fontsize=13, pad=12)
+plt.tight_layout()
+plt.savefig(FIG_DIR / "0a_news_agent_architecture.png", dpi=150, bbox_inches="tight")
+plt.show()
+```
+
+### Cell 8-2: VISUAL 0b — Classifier Comparison Table
+
+Display the regex vs. LLM comparison from `news_monitor_agent_v2.ipynb` Cell 5c as a styled DataFrame for the presentation.
+
+```python
+# Reproduce the 5-article classifier comparison as a clean display table
+# (copy the COMPARISON_ARTICLES list and both classifier results from the agent notebook)
+
+comparison_data = [
+    {
+        "Article": "Duke PG enters NCAA transfer portal",
+        "Regex": "player_enters_portal", "Regex Conf": 0.85,
+        "LLM": "player_enters_portal", "LLM Conf": 1.00,
+        "Agreement": "✅",
+    },
+    {
+        "Article": "Star forward departs program amid roster changes",
+        "Regex": "player_enters_portal", "Regex Conf": 0.85,
+        "LLM": "player_enters_portal", "LLM Conf": 1.00,
+        "Agreement": "✅",
+    },
+    {
+        "Article": "Arizona HC stepping down after 10 seasons",
+        "Regex": "coach_leaves", "Regex Conf": 0.85,
+        "LLM": "coach_leaves", "LLM Conf": 1.00,
+        "Agreement": "✅",
+    },
+    {
+        "Article": "Top recruit commits to Florida for 2026",
+        "Regex": "unknown", "Regex Conf": 0.00,
+        "LLM": "unknown", "LLM Conf": 1.00,
+        "Agreement": "✅",
+    },
+    {
+        "Article": "UNC guard weighing options after disappointing season",
+        "Regex": "player_enters_portal", "Regex Conf": 0.85,
+        "LLM": "unknown", "LLM Conf": 0.80,
+        "Agreement": "⚠️ LLM correct\n(not confirmed)",
+    },
+]
+
+compare_df = pd.DataFrame(comparison_data).set_index("Article")
+
+def highlight_disagreement(row):
+    color = "background-color: #ffc7ce" if row["Agreement"].startswith("⚠️") else ""
+    return [color] * len(row)
+
+display(
+    compare_df.style
+    .apply(highlight_disagreement, axis=1)
+    .set_caption("Regex vs. LLM Classifier — 5-Article Test Set")
+    .format({"Regex Conf": "{:.2f}", "LLM Conf": "{:.2f}"})
+)
+```
+
+### Cell 8-3: VISUAL 0c — Simulated Agent Run Output
+
+Display a representative `transfer_player` tool result to show what a successful DB update looks like.
+
+```python
+# Show a representative transfer_player result (use real output from agent notebook run,
+# or construct from the JSON schema for a demo player)
+
+import json
+
+sample_result = {
+    "success": True,
+    "player_id": 1042,
+    "matched_name": "Jalen Moore",
+    "queried_name": "Jalen Moore",
+    "match_confidence": 0.95,
+    "from_school": "Loyola Marymount",
+    "from_school_id": 88,
+    "portal_entry_date": "2026-07-03",
+    "fit_score_rows_updated": 365,
+    "message": (
+        "Jalen Moore (confidence=0.95) marked is_portal_candidate=True — "
+        "now visible in the recommendation engine for 365 school(s)."
+    ),
+}
+
+print("transfer_player tool result (sample):\n")
+print(json.dumps(sample_result, indent=2))
+
+# Annotated display
+print("\n" + "─" * 60)
+print(f"  Player matched:    {sample_result['matched_name']} (id={sample_result['player_id']})")
+print(f"  Match confidence:  {sample_result['match_confidence']:.0%}")
+print(f"  Portal date:       {sample_result['portal_entry_date']}")
+print(f"  Rows updated:      {sample_result['fit_score_rows_updated']} school pairings in player_team_fit_scores")
+print(f"  Effect:            Player now surfaces in /api/players/search?available_only=true")
+```
+
+---
+
 ## Execution Notes
 
 1. **Run order:** Sections execute independently except Section 7 depends on Section 5 (needs `ph0` DataFrame). Run all cells top-to-bottom for a clean state.

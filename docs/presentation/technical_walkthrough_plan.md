@@ -10,6 +10,7 @@ Each model narrows a different dimension of uncertainty. This is the through-lin
 
 | Question | Model(s) | Status |
 |---|---|---|
+| How does a new portal entrant become visible? | News Monitoring Agent | ✅ (prototype) |
 | Who are we as a program? | Team Clustering (M2) | ✅ |
 | Who is this player, type-wise? | Player Clustering (M1) | ✅ |
 | Does this player fit our system? | Scheme Fit (M3) | ✅ |
@@ -43,6 +44,75 @@ GET /api/players/search?available_only=true&position=SG,SF
 ```
 
 `available_only=true` filters to `player_team_fit_scores.is_portal_candidate = true`. This flag is set by `portalpoint.modeling.availability.sync_portal_candidate_flags()`, called on every `ingest_transfers_247sports.py` run and every `run_gap_matching.py` run. It identifies players with a matched `Entered` or `Committed` row in `transfer_portal_events` for the current season. The flag scopes the recommendation surface without restricting what the underlying models score — all ~9.7M player×school rows in `player_team_fit_scores` remain intact; portal candidacy is a filter layer, not a modeling constraint.
+
+---
+
+## Step 0 — How Do New Portal Entrants Become Visible? News Monitoring Agent
+
+**Question:** The portal moves fast — a player enters this afternoon, a coach steps down tonight. How does PortalPoint's recommendation engine know about it without a manual re-run?
+
+### Two Mechanisms for Setting `is_portal_candidate`
+
+The `available_only=true` filter shown in the Entry Point query routes to `player_team_fit_scores.is_portal_candidate = true`. This flag is set by two complementary pipelines:
+
+1. **Deterministic structured ingest** — `scripts/ingest_transfers_247sports.py` scrapes 247Sports' `window.__INITIAL_DATA__` JSON (already structured) and promotes matched rows to `transfers`. On every run, `portalpoint.modeling.availability.sync_portal_candidate_flags()` sets `is_portal_candidate` for those matched players. Reliable, cheap, no LLM needed — this stays deterministic ETL.
+
+2. **News Monitoring Agent** — `notebooks/agents/news_monitor_agent_v2.ipynb` (prototype, to become `scripts/run_news_monitoring.py`) covers signals that 247Sports structured data misses: breaking portal entries reported first by beat writers on ESPN/On3, coaching departures that cascade transfer waves, and any source where the signal is buried in prose rather than clean JSON.
+
+### Technical Approach (LangGraph ReAct)
+
+**Stack:** LangGraph `StateGraph` (ReAct loop) + Gemini `gemini-3.1-flash-lite` (LLM) + Tavily Python client (web search).
+
+**Graph:** `START → agent_node → ToolNode ⟲ → END`
+
+Each agent turn: the LLM reasons over message history and emits tool calls; `ToolNode` executes; results are appended to state and fed back to the LLM until it produces a final answer with no tool calls.
+
+**Per-run tool sequence (agent-directed):**
+
+```
+search_news("transfer portal player enters portal")
+  → classify_events_batch_llm(results)           # batch classify all articles, one LLM call
+      → transfer_player(player_name, school_from) # for each confirmed portal entry (confidence ≥ 0.6)
+
+search_news("head coach leaves resigns fired")
+  → classify_events_batch_llm(results)
+      → coach_departure(coach_name, school_from)  # logged for human review, no auto DB action
+```
+
+**Dual classifier design:**
+
+| Classifier | Mechanism | Speed | Cost | Use case |
+|---|---|---|---|---|
+| Regex (`classify_events_batch`) | Deterministic keyword patterns | Instant | Free | Evals, cost-sensitive runs, known phrasing |
+| LLM (`classify_events_batch_llm`) | Gemini structured output (`ArticleClassification` Pydantic schema, temp=0) | ~1s/article | API calls | Ambiguous headlines, implicit phrasing — "star forward departs program" correctly classified as portal entry |
+
+**Real classifier comparison result** (live test in notebook): regex produced 4 target events from 5 test articles; LLM produced 3 — the one disagreement was "UNC guard weighing options after disappointing season" where the LLM correctly returned `unknown` (not a confirmed portal entry) while regex fired on the word "portal" in the body. LLM precision higher at slight recall cost; production default is LLM.
+
+**`transfer_player` DB update — what it actually writes:**
+
+1. Fuzzy-match `player_name` against `players` table using `_normalize_name()` (accent stripping, suffix removal) + two-pass `difflib` (0.82 strict → 0.75 relaxed). Reuses the same battle-tested matcher from `ingest_transfers_247sports.py`.
+2. Resolve `school_from` via `SCHOOL_ALIASES` + fuzzy match against `schools.name`.
+3. `UPDATE player_team_fit_scores SET is_portal_candidate = true WHERE player_id = :id` — immediately surfaces the player across all ~26,000+ school pairings in the recommendation engine.
+4. `INSERT INTO transfers ... ON CONFLICT (player_id, season) DO UPDATE` — records `portal_entry_date`; preserves any `from_school_id` already set by an earlier 247Sports scrape.
+
+**`coach_departure` — why no auto DB write:**
+Coaching changes affect `team_system_profiles` (Model 2 scheme clustering) — a new HC likely changes the team's offensive/defensive system label. But updating cluster assignments requires a full M2 re-run against new game-log data for next season, which can only happen after the new coach has coached games. The tool logs the event and surfaces it for human review; the human decides when to trigger a re-run. This is the correct scope boundary: the agent handles detection, humans handle the downstream model action.
+
+### Scope Boundary vs. Existing Scripts
+
+The news agent does **not** replace `ingest_transfers_247sports.py`, `ingest_barttorvik.py`, etc. Those stay deterministic, non-LLM ETL. The agent adds coverage for sources where signal is buried in prose and needs LLM extraction to become structured — complementary layers, not competing ones.
+
+### Current State and Next Steps
+
+- **Prototype:** `notebooks/agents/news_monitor_agent_v2.ipynb` — fully functional, tested with live Tavily + Gemini API keys, DB writes validated.
+- **Next:** `scripts/run_news_monitoring.py` CLI entrypoint for scheduling (GitHub Actions cron or Airflow DAG, hourly during portal window March–August, daily otherwise — same cadence as `hourly_portal_monitoring_dag` in CLAUDE.md).
+- **Roadmap:** Phase A (VerbalCommits as second structured source + cross-source dedup) → Phase B (coaching news via LLM extraction) → Phase C (beat-writer RSS + full event taxonomy). See `docs/agents/agentic_news_monitoring_plan.md`.
+
+### Visual Callouts
+
+- **VISUAL 0a:** Architecture diagram — two paths that set `is_portal_candidate`: deterministic 247Sports ingest (left branch) vs. News Agent (right branch, LangGraph ReAct loop). Both converge on `player_team_fit_scores.is_portal_candidate = True`.
+- **VISUAL 0b:** Live agent trace — show one complete run output: Tavily search → batch classification results (articles × event_type × confidence) → `transfer_player` call result (player matched, rows updated, school count). Use the notebook's streaming output as the source.
+- **VISUAL 0c:** Regex vs. LLM classifier comparison table — the 5-article test set with both classifiers' event_type and confidence side-by-side, highlighting the one disagreement and explaining why the LLM is correct.
 
 ---
 

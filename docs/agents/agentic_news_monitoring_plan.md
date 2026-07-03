@@ -1,6 +1,46 @@
 # Agentic Plan — CBB News & Portal Monitoring
 
-Status: proposal. Applies layered multi-agent pattern from `AGENT_ARCHITECTURE.md` to a broader monitoring problem than the current `transfer_portal_events`/`roster_snapshots` tables (just added on this branch) cover.
+**Status: Prototype complete — see `notebooks/agents/news_monitor_agent_v2.ipynb`.**
+Next step: promote to scheduled script (`scripts/run_news_monitoring.py`) for cron/Airflow integration. Original proposal text below preserved for full rollout planning reference.
+
+## Implementation Status (as of 2026-07-03)
+
+| Layer | Implemented | Where | Notes |
+|---|---|---|---|
+| Search (ingest) | ✅ | `search_news` tool | Tavily Python client; 247sports, ESPN, On3; `advanced` depth, weekly window, score ≥ 0.5 post-filter |
+| Classify/Extract | ✅ (dual) | `classify_event` / `classify_events_batch` (regex) + `classify_event_llm` / `classify_events_batch_llm` (Gemini structured output) | Toggle via `USE_LLM_CLASSIFIER`; LLM classifier uses `gemini-3.1-flash-lite` at temp=0 with Pydantic `ArticleClassification` schema |
+| Entity Resolve | ✅ | `transfer_player` tool | Reuses `_normalize_name()`, `_resolve_school()`, `SCHOOL_ALIASES` from `ingest_transfers_247sports.py`; two-pass difflib (0.82 strict → 0.75 relaxed) |
+| DB Update — player portal entry | ✅ | `transfer_player` tool | Sets `player_team_fit_scores.is_portal_candidate = True` (all school pairings) + upserts `transfers` row with `portal_entry_date` |
+| DB Update — coach departure | ✅ (log only) | `coach_departure` tool | Logs event for manual review; no auto-model action (human must confirm before re-running M2 scheme profiles) |
+| Orchestration graph | ✅ | LangGraph `StateGraph` | ReAct loop: `agent_node` → `ToolNode` → conditional edge; MemorySaver checkpointer for resume/debug |
+| Rate limiting | ✅ | `RateLimiter` (12 RPM) | Stays below Gemini free-tier 15 RPM ceiling |
+| Cross-source dedup | ❌ not yet | — | Planned: `cross_source_dedup` node keyed on `(event_type, resolved_entity_id, date ± 2 days)` |
+| Review queue table | ❌ not yet | — | Planned: low-confidence events → `program_events_review_queue` table |
+| Scheduled script | ❌ not yet | — | Next: `scripts/run_news_monitoring.py` CLI entrypoint for cron/Airflow |
+| VerbalCommits source | ❌ not yet | — | Phase A rollout item |
+| Coaching / beat-writer sources | ❌ not yet | — | Phase B/C rollout items |
+
+### LangGraph Graph Structure (v2 notebook)
+
+```
+START → agent_node → should_continue
+                         │ tool_calls     │ no tool_calls
+                       tools              END
+                    (ToolNode)
+                         └──────────────→ agent_node  (ReAct loop)
+```
+
+**State schema** (`AgentState`):
+- `messages` — full conversation history (`add_messages` accumulator)
+- `detected_events` — classified events list
+- `portal_updates` — DB write log (one entry per player successfully updated)
+- `news_sources` — Tavily `include_domains` list
+
+**Tool call sequence (agent-directed):**
+1. `search_news("college basketball transfer portal player enters portal")` → 2. `classify_events_batch_llm(results)` → 3. `transfer_player(name, school)` per confirmed portal entry (confidence ≥ 0.6)
+4. `search_news("college basketball head coach leaves resigns fired")` → 5. `classify_events_batch_llm(results)` → 6. `coach_departure(name, school)` per confirmed coaching change
+
+---
 
 ## Why this, why now
 
