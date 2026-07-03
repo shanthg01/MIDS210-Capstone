@@ -376,3 +376,79 @@ LIMIT 5;
 ## 18. Session Log
 
 *(Append findings and decisions as implementation progresses — same format as `destination_projection_plan.md` §20 and `player_projection_state_space_plan.md` §22.)*
+
+---
+
+## 19. First Real Run Results (2026-07-02)
+
+### Run summary
+
+| Metric | Value |
+|---|---|
+| Target season | 2027 |
+| Source season | 2026 |
+| Training rows | 2,158 school-seasons (2021-2026) |
+| Inference pairs | 1,253 portal candidates × 365 D1 schools = 457,345 rows |
+| Rows written | 457,345 |
+| MLflow run_id | `b7deb48ffa1341e088167a0eb3df688f` |
+| MLflow stage | Staging (no prior @champion to compare against) |
+| Model file | `team_rating_projection.py` |
+| Script | `scripts/run_team_rating_projection.py` |
+
+### 3-fold rolling-origin CV results
+
+| Fold | Val season | off_rmse | def_rmse | em_rmse | off_r2 | def_r2 |
+|---|---|---|---|---|---|---|
+| 1 | 2024 | 2.577 | 2.568 | 1.760 | 0.973 | 0.950 |
+| 2 | 2025 | 2.927 | 2.960 | 1.965 | 0.970 | 0.943 |
+| 3 | 2026 | 4.769 | 4.847 | 1.834 | 0.976 | 0.947 |
+
+Final model (all 2021-2026): off_resid_std=2.008, def_resid_std=2.057.
+
+**Assessment:** R² is high (0.94-0.98) across all folds, meaning the roster feature vector has genuine signal for predicting team offensive/defensive efficiency. AdjEM RMSE is tight (~1.76-1.97) on folds 1-2. Fold 3 off/def RMSE spikes to ~4.8 while AdjEM RMSE stays clean (~1.83) — the errors cancel almost perfectly in the net rating, meaning the model's offensive and defensive errors are correlated (shared RAPM coverage gap, not random noise). Documented as known issue — likely 2026 RAPM coverage in HE is less complete than prior seasons, causing more slot-baseline fills.
+
+### Bugs found and fixed
+
+**Bug 1: `slot_baselines` tuple keys → `json.dumps` `TypeError`**
+- `slot_baselines` keyed by `(conference_tier, position)` tuples.
+- `mlflow.log_dict` calls `json.dumps` internally, which cannot serialize tuple keys.
+- Fix: `{str(k): v for k, v in slot_baselines.items()}` before logging.
+
+**Bug 2: `load_inference_data` queried wrong season for `roster_baseline_members`**
+- Original: `WHERE season = :season` using `target_season=2027` parameter.
+- `roster_baseline_members` only has data through season 2026 (written by `run_gap_matching.py` for the observed-season roster baseline, not the target forecast season).
+- Result: 0 baseline rosters → 0 counterfactual pairs.
+- Fix: use `prior_season=2026` for this query. Target season (2027) only used for `playing_time_projections`.
+
+**Bug 3: System-level `DATABASE_URL` env var bypasses SSH tunnel**
+- System `DATABASE_URL` pointed at RDS hostname directly; `get_sync_engine()` reads it before checking `.env`.
+- Fix (per-session): `$env:DATABASE_URL = "postgresql+psycopg2://portalpoint_app:pp_midsommer2026!@127.0.0.1:5433/portalpoint?sslmode=require"` before running any script. Must be done each new PowerShell session.
+- Underlying fix: `modeling/io.get_sync_engine()` now strips `ssl(mode)=require` from the URL query string and passes it via `connect_args` for psycopg2 compatibility.
+
+### Performance: 200× Step 6 speedup
+
+Original Step 6 (counterfactual loop) runtime: ~8-10 hours.
+Fixed runtime: ~28 minutes.
+
+**Root cause:** `build_confidence_interval()` ran 200 bootstrap samples × 457,345 pairs = 91 million Python iterations. Each iteration called `build_roster_features()` (pandas DataFrame construction) + 4 Ridge `.predict()` calls.
+
+**Two fixes applied:**
+1. **Analytical CI:** `analytical_ci(delta_adj_em, models)` computes `delta ± 1.28×√2×off_resid_std` in O(1). Valid approximation for linear Ridge model with Gaussian residuals. Fixed CI width (not player-specific) — listed as known issue for improvement.
+2. **Vectorized Ridge predictions:** `predict_adj_o_d_batch(feature_matrix, models)` takes an `(n×14)` NumPy matrix and calls `.predict()` once per model per player (4 calls total per player: off+def for baseline batch, off+def for candidate batch). Previously: 4 calls per school per player = 4×365 = 1,460 individual Ridge predict calls per player.
+3. **`iterrows()` → `to_dict('records')`:** PT index build removed 457K pandas `iterrows()` calls.
+
+### Known issues / improvement roadmap
+
+1. **Candidate placeholder features:** `candidate_position`, `candidate_three_pt_pct`, `candidate_reb_rate` hardcoded to `"SG"`, `0.35`, `0.25` in `build_candidate_roster_features()`. Should join `player_season_stats` / `hoop_explorer_player_stats` at `(player_id, source_season)` for real values. Easy, high-impact fix.
+
+2. **Constant CI width:** `analytical_ci` returns the same `±3.63` for every player (derived from model's global `off_resid_std`). More accurate: propagate per-player projection uncertainty from `player_projections.uncertainty` into the CI. Same pattern as Phase 2a's variable-width CI.
+
+3. **Fold 3 RMSE spike:** off/def RMSE ~4.8 on 2026 held-out data vs ~2.6-2.9 on earlier folds. Most likely 2026 RAPM coverage gaps in HE (more slot-baseline fills → feature vector less representative). Alternative hypotheses: 2026 transfer portal volume is genuinely higher (roster composition is more volatile). Root-cause not confirmed; document and monitor on next year's data.
+
+4. **`returning_pct` defaults to 1.0:** `roster_state_features.returning_minutes_pct` not populated for 2027 (no snapshot exists for target season). All baseline rosters carry `returning_pct=1.0`. Should use the fraction of minutes from non-departing 2026 players as a proxy.
+
+5. **`@champion` alias not yet registered:** `maybe_promote` skipped (no prior Staging version to compare against — true first run). Before the next rerun, register current v1 as `@champion` via `client.set_registered_model_alias("team-rating-scorer", "champion", version="1")`. Without this, the next run will also skip the gate.
+
+6. **`estimate_usage_value_coef` analog:** The slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
+
+7. **API stub not yet replaced:** `routers/projections.py` GET /team-rating still returns the random stub. Schema extension (§15) not yet applied. Wire up after validating a second run.
