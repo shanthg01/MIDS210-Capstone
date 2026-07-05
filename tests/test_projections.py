@@ -2,6 +2,7 @@ import pytest
 
 _P1_URL = "/api/projections/team-rating?player_id=101&school_id=9900301"
 _P2_URL = "/api/projections/team-rating?player_id=101&school_id=9900302"
+_P1_2026_URL = "/api/projections/team-rating?player_id=101&school_id=9900301&season=2026"
 
 
 def test_requires_auth(client):
@@ -19,6 +20,19 @@ def test_requires_both_params(client, H):
 def test_unknown_pair_returns_404(client, H):
     assert client.get(
         "/api/projections/team-rating?player_id=99999&school_id=99999", headers=H
+    ).status_code == 404
+
+
+def test_honors_requested_season(client, H):
+    data = client.get(_P1_2026_URL, headers=H).json()
+    assert data["season"] == 2026
+    assert data["delta_adjEM"] == pytest.approx(0.4)
+
+
+def test_expired_projection_returns_404(client, H):
+    assert client.get(
+        "/api/projections/team-rating?player_id=42&school_id=9900301&season=2027",
+        headers=H,
     ).status_code == 404
 
 

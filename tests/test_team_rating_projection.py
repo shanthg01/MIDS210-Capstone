@@ -12,8 +12,11 @@ import pytest
 from portalpoint.modeling.team_rating_projection import (
     ROSTER_FEATURES,
     _conference_tier,
+    _returning_minutes_pct,
     _usage_hhi,
     _slot_fill,
+    analytical_ci,
+    build_candidate_roster,
     build_roster_features,
     build_slot_baselines,
     compute_counterfactual,
@@ -199,6 +202,22 @@ def test_build_roster_features_fills_missing_rapm_from_baselines():
     assert feats["weighted_off_impact"] == pytest.approx(1.5)
 
 
+def test_returning_minutes_pct_uses_returning_and_departing_minutes():
+    row = pd.Series({
+        "returning_minutes_by_position": {"PG": 1200.0, "C": 800.0},
+        "departing_minutes_by_position": {"SG": 1000.0},
+    })
+    assert _returning_minutes_pct(row) == pytest.approx(2 / 3)
+
+
+def test_returning_minutes_pct_handles_json_strings():
+    row = pd.Series({
+        "returning_minutes_by_position": '{"PG": 600.0}',
+        "open_minutes_by_position": '{"SG": 400.0}',
+    })
+    assert _returning_minutes_pct(row) == pytest.approx(0.6)
+
+
 # ---------------------------------------------------------------------------
 # fit_team_translation
 # ---------------------------------------------------------------------------
@@ -294,6 +313,21 @@ def test_build_explanation_payload_candidate_minutes_matches_pt_row():
     assert payload["candidate_minutes"] == pytest.approx(26.5)
 
 
+def test_build_explanation_payload_uses_scaled_deltas():
+    models = _make_models()
+    base_feats = {f: 0.0 for f in ROSTER_FEATURES}
+    cand_feats = {f: 0.0 for f in ROSTER_FEATURES}
+    cand_feats["weighted_off_impact"] = 2.0
+    delta = compute_counterfactual(base_feats, cand_feats, models)
+    pt_row = pd.Series({"expected_minutes": 20.0, "usage_role": "rotation", "displaced_minutes": {}})
+
+    payload = build_explanation_payload(base_feats, cand_feats, models, pt_row, delta)
+
+    idx = ROSTER_FEATURES.index("weighted_off_impact")
+    expected = models.off_model.coef_[idx] * (2.0 / models.off_scaler.scale_[idx])
+    assert payload["candidate_off_contribution"] == pytest.approx(round(expected, 3), abs=0.001)
+
+
 # ---------------------------------------------------------------------------
 # build_confidence_interval
 # ---------------------------------------------------------------------------
@@ -318,6 +352,41 @@ def test_build_confidence_interval_80_percent_width():
     lo, hi = build_confidence_interval(rows, rows, pt_row, models, {}, 2, 68.0, 0.8, n_boot=100)
     # Width should be non-negative; no exact assertion since bootstrapped
     assert hi - lo >= 0.0
+
+
+def test_analytical_ci_combines_offense_and_defense_residuals():
+    models = TeamRatingModels(off_resid_std=2.0, def_resid_std=3.0)
+    lo, hi = analytical_ci(1.0, models)
+    sigma = np.sqrt(2.0 * (2.0 ** 2 + 3.0 ** 2))
+    assert lo == pytest.approx(1.0 - 1.2816 * sigma)
+    assert hi == pytest.approx(1.0 + 1.2816 * sigma)
+
+
+def test_build_candidate_roster_uses_real_candidate_profile_fields():
+    baseline_info = {
+        "roster_rows": _make_roster(4),
+        "tier": 2,
+        "returning_pct": 0.7,
+    }
+    pt_row = pd.Series({
+        "player_id": 101,
+        "expected_minutes": 20.0,
+        "expected_usage": 24.0,
+        "displaced_minutes": {},
+    })
+    proj_row = pd.Series({
+        "value_per_100": 3.0,
+        "position": "C",
+        "three_point_rate": 0.12,
+        "off_reb_pct": 0.38,
+    })
+
+    rows, returning_pct = build_candidate_roster(baseline_info, pt_row, proj_row, {})
+    candidate = rows[-1]
+    assert returning_pct == pytest.approx(0.7)
+    assert candidate["position"] == "C"
+    assert candidate["three_point_rate"] == pytest.approx(0.12)
+    assert candidate["off_reb_pct"] == pytest.approx(0.38)
 
 
 # ---------------------------------------------------------------------------

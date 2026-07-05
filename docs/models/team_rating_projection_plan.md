@@ -130,9 +130,8 @@ For each `(school_id, season)` in 2021–2026 where labels exist:
 3. Use actual `player_season_stats.min_pct` as minute share (not Playing Time model — that's 2027-only)
 4. Compute roster feature vector
 5. Labels:
-   - Primary: `hoop_explorer_team_stats.off_adj_ppp`, `def_adj_ppp` (HE-covered schools)
-   - Fallback: `team_season_stats.adj_o`, `adj_d` (BartTorvik, all D1 schools)
-   - A single model is trained against whichever label is available per row, using the numeric label directly. HE and BartTorvik scales differ slightly; document this as a known approximation for MVP.
+   - Primary: `team_season_stats.adj_o`, `adj_d` (BartTorvik, all D1 schools)
+   - HE team efficiency labels are not mixed into the training target because their scale differs from BartTorvik's adjusted efficiency scale. HE remains a player-quality/style enrichment source.
 
 **Leakage guard:** for training season S, only use `player_season_stats` from `season <= S`. No forward data.
 
@@ -164,17 +163,18 @@ Rationale: counterfactual must be "candidate vs. typical replacement," not "cand
 
 ### Baseline roster (per school, season 2027)
 
-1. Players from `roster_baseline_members` with `season=2027` (written by `run_gap_matching.py`)
-2. Minutes from `playing_time_projections` (player × school, `season=2027`, baseline slot)
-3. Impact from `player_projections` neutral Phase 2a forecast (`player-proj-phase2a-fcast-v1`)
-4. Empty slots filled with slot baselines
+1. Players from `roster_baseline_members` with source/prior season 2026 (written by `run_gap_matching.py`; observed roster context is not target-season 2027)
+2. Prior-season player stats + HE RAPM for returning baseline players
+3. Observed source-season `team_season_stats` / `roster_state_features` for school context, tempo, conference tiers, and returning-minutes continuity
+4. Empty or missing player-quality slots filled with position/tier slot baselines
 
 ### Candidate roster
 
 1. Same baseline
 2. Insert candidate at `playing_time_projections.expected_minutes` for that candidate × school pair
-3. Redistribute displaced minutes using `playing_time_projections.displaced_minutes` JSONB — **consume directly, no re-derive**
-4. Subtract displaced minutes from affected baseline players; recompute all `min_share` values
+3. Use neutral Phase 2a forecast value for candidate impact and prior-season `player_season_stats` for candidate position/3PT/rebounding when available
+4. Redistribute displaced minutes using `playing_time_projections.displaced_minutes` JSONB — **consume directly, no re-derive**
+5. Subtract displaced minutes from affected baseline players; recompute all `min_share` values
 
 ### Inference scope
 
@@ -215,11 +215,10 @@ Gate metric: `fold3_adj_em_rmse` (net rating RMSE on held-out 2026 season). Auto
 
 80% CI around `delta_adjEM`:
 
-1. Sample player projection uncertainty from `player_projections.uncertainty` JSONB (`ci_lower`/`ci_upper` per skill)
-2. Bootstrap 200 perturbed roster feature vectors (add Gaussian noise scaled to player uncertainty)
-3. Run both baseline and candidate rosters through Ridge for each bootstrap draw
-4. Take 10th–90th percentile of the resulting delta distribution
-5. Report as `ci_lower`, `ci_upper` in the output row
+1. Production run uses an analytical Gaussian approximation for speed:
+   `delta ± 1.2816 × sqrt(2 × (off_resid_std² + def_resid_std²))`
+2. This replaces the original 200-sample bootstrap, which was too slow for 457k player-school pairs.
+3. Remaining improvement: propagate per-player projection uncertainty and playing-time uncertainty so width varies by player/school pair.
 
 ---
 
@@ -248,7 +247,7 @@ Stored in `explanation` JSONB column. Built from Ridge coefficient × feature de
 }
 ```
 
-Decomposition: for each feature group (talent, spacing, rim protection, rebounding, continuity), compute `coef × (candidate_feature - baseline_feature)` — sums to `delta_adj_em`.
+Decomposition: for each feature group (talent, spacing, rim protection, rebounding, continuity), compute `coef × scaled(candidate_feature - baseline_feature)`. The Ridge models are trained on standardized features, so explanation attribution must use each model's scaler before multiplying by coefficients.
 
 ---
 
@@ -314,6 +313,7 @@ SELECT * FROM team_rating_projections
 WHERE player_id = :player_id
   AND school_id = :school_id
   AND season = :season
+  AND expires_at > now()
 ORDER BY computed_at DESC
 LIMIT 1
 ```
@@ -324,12 +324,9 @@ Returns 404 when no real row exists (same pattern as player projections for unkn
 
 ## 16. Open Questions
 
-1. **HE team label scale vs BartTorvik:** `off_adj_ppp` and `adj_o` are on different scales (~1.05 vs ~105 respectively). Training a single Ridge on a mix of the two will produce wrong predictions for schools where the label source differs across seasons. Options:
-   - Standardize both labels (z-score) and predict standardized output, then back-transform
-   - Train separate models per label source and pick at inference time
-   - Use only BartTorvik (wider coverage, consistent scale) and treat HE as a soft enrichment feature rather than a label
+1. **HE team label scale vs BartTorvik:** Resolved for v1 by using only BartTorvik `adj_o`/`adj_d` as labels and treating HE as player/style enrichment.
 
-2. **`roster_baseline_members` 2027 population:** These rows are written by `run_gap_matching.py` for the active inference season. Need to verify: `SELECT COUNT(*), season FROM roster_baseline_members GROUP BY season`. If 2027 rows are sparse, the baseline roster construction falls back entirely to slot baselines for many schools, reducing accuracy.
+2. **Observed-vs-target season context:** Resolved for v1 by using source/prior-season `roster_baseline_members`, `team_season_stats`, and `roster_state_features` for baseline context while using target-season `playing_time_projections` / neutral player projections for the counterfactual season.
 
 3. **Conference rank computation:** Requires projecting all schools in a conference simultaneously, not just the one the candidate targets. Two options:
    - Compute for all D1 schools in the inference pass (expensive but clean)
@@ -349,7 +346,7 @@ SELECT COUNT(*), COUNT(DISTINCT school_id)
 FROM playing_time_projections 
 WHERE season = 2027;
 
--- Roster baseline has 2027 rows
+-- Roster baseline has source-season rows
 SELECT COUNT(*), COUNT(DISTINCT school_id), season 
 FROM roster_baseline_members 
 GROUP BY season ORDER BY season;
@@ -433,22 +430,22 @@ Fixed runtime: ~28 minutes.
 **Root cause:** `build_confidence_interval()` ran 200 bootstrap samples × 457,345 pairs = 91 million Python iterations. Each iteration called `build_roster_features()` (pandas DataFrame construction) + 4 Ridge `.predict()` calls.
 
 **Two fixes applied:**
-1. **Analytical CI:** `analytical_ci(delta_adj_em, models)` computes `delta ± 1.28×√2×off_resid_std` in O(1). Valid approximation for linear Ridge model with Gaussian residuals. Fixed CI width (not player-specific) — listed as known issue for improvement.
+1. **Analytical CI:** `analytical_ci(delta_adj_em, models)` computes `delta ± 1.28×sqrt(2×(off_resid_std² + def_resid_std²))` in O(1). Valid approximation for linear Ridge model with Gaussian residuals. Fixed CI width (not player-specific) — listed as known issue for improvement.
 2. **Vectorized Ridge predictions:** `predict_adj_o_d_batch(feature_matrix, models)` takes an `(n×14)` NumPy matrix and calls `.predict()` once per model per player (4 calls total per player: off+def for baseline batch, off+def for candidate batch). Previously: 4 calls per school per player = 4×365 = 1,460 individual Ridge predict calls per player.
 3. **`iterrows()` → `to_dict('records')`:** PT index build removed 457K pandas `iterrows()` calls.
 
 ### Known issues / improvement roadmap
 
-1. **Candidate placeholder features:** `candidate_position`, `candidate_three_pt_pct`, `candidate_reb_rate` hardcoded to `"SG"`, `0.35`, `0.25` in `build_candidate_roster_features()`. Should join `player_season_stats` / `hoop_explorer_player_stats` at `(player_id, source_season)` for real values. Easy, high-impact fix.
+1. **Candidate profile fields:** Improved in PR follow-up — `run_team_rating_projection.py` now joins prior-season `player_season_stats` for candidate position, 3PT rate, and offensive rebounding when available. Fallbacks remain `"SG"`, `0.35`, and `0.25` only for candidates without prior stats.
 
-2. **Constant CI width:** `analytical_ci` returns the same `±3.63` for every player (derived from model's global `off_resid_std`). More accurate: propagate per-player projection uncertainty from `player_projections.uncertainty` into the CI. Same pattern as Phase 2a's variable-width CI.
+2. **Constant CI width:** `analytical_ci` still returns the same width for every player-school pair, now based on both global offense and defense residual variance. More accurate: propagate per-player projection uncertainty from `player_projections.uncertainty` into the CI. Same pattern as Phase 2a's variable-width CI.
 
 3. **Fold 3 RMSE spike:** off/def RMSE ~4.8 on 2026 held-out data vs ~2.6-2.9 on earlier folds. Most likely 2026 RAPM coverage gaps in HE (more slot-baseline fills → feature vector less representative). Alternative hypotheses: 2026 transfer portal volume is genuinely higher (roster composition is more volatile). Root-cause not confirmed; document and monitor on next year's data.
 
-4. **`returning_pct` defaults to 1.0:** `roster_state_features.returning_minutes_pct` not populated for 2027 (no snapshot exists for target season). All baseline rosters carry `returning_pct=1.0`. Should use the fraction of minutes from non-departing 2026 players as a proxy.
+4. **`returning_pct` continuity proxy:** Improved in PR follow-up — source-season `roster_state_features` now provides the fraction of returning minutes from `returning_minutes_by_position` over returning plus departing/open minutes. It still falls back to 1.0 if roster-state JSON is missing.
 
 5. **`@champion` alias not yet registered:** `maybe_promote` skipped (no prior Staging version to compare against — true first run). Before the next rerun, register current v1 as `@champion` via `client.set_registered_model_alias("team-rating-scorer", "champion", version="1")`. Without this, the next run will also skip the gate.
 
 6. **`estimate_usage_value_coef` analog:** The slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
 
-7. **API stub not yet replaced:** `routers/projections.py` GET /team-rating still returns the random stub. Schema extension (§15) not yet applied. Wire up after validating a second run.
+7. **API semantics:** Stub replaced. Follow-up fixed the endpoint to honor the requested `season` and ignore expired rows.

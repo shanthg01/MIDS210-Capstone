@@ -138,6 +138,8 @@ WHERE season = ANY(:seasons)
 _ROSTER_STATE_SQL = """
 SELECT school_id, season,
        returning_minutes_by_position,
+       departing_minutes_by_position,
+       open_minutes_by_position,
        returning_player_impact
 FROM roster_state_features
 WHERE season = ANY(:seasons)
@@ -272,6 +274,54 @@ def _usage_hhi(usage_vals: np.ndarray) -> float:
         return 0.0
     shares = usage_vals / total
     return float((shares ** 2).sum())
+
+
+def _json_numeric_sum(value: Any) -> float:
+    """Sum numeric values from a JSON/JSONB dict-ish value."""
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return 0.0
+    if isinstance(value, dict):
+        vals = value.values()
+    elif isinstance(value, list):
+        vals = value
+    else:
+        return 0.0
+
+    total = 0.0
+    for item in vals:
+        try:
+            if item is not None and not pd.isna(item):
+                total += float(item)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _returning_minutes_pct(roster_state_row: pd.Series | dict | None) -> float:
+    """Fraction of known prior roster minutes retained into the roster snapshot."""
+    if roster_state_row is None:
+        return 1.0
+    returning = _json_numeric_sum(roster_state_row.get("returning_minutes_by_position"))
+    departing = _json_numeric_sum(roster_state_row.get("departing_minutes_by_position"))
+    open_minutes = _json_numeric_sum(roster_state_row.get("open_minutes_by_position"))
+    denominator = returning + max(departing, open_minutes)
+    if denominator <= 0:
+        return 1.0
+    return float(np.clip(returning / denominator, 0.0, 1.0))
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def build_slot_baselines(player_df: pd.DataFrame) -> dict:
@@ -481,9 +531,9 @@ def build_historical_roster_states(
         returning_pct = 1.0  # default: assume fully returning if no roster state data
         if rs_key in rs_index.index:
             rs_row = rs_index.loc[rs_key]
-            rmp = rs_row.get("returning_player_impact")
-            if rmp is not None and not np.isnan(float(rmp)):
-                returning_pct = min(float(rmp), 1.0)
+            if isinstance(rs_row, pd.DataFrame):
+                rs_row = rs_row.iloc[0]
+            returning_pct = _returning_minutes_pct(rs_row)
 
         tempo_row = school_meta[
             (school_meta["school_id"] == school_id) & (school_meta["season"] == season)
@@ -635,12 +685,12 @@ def load_inference_data(
     target_season: int,
     prior_season: int,
 ) -> dict[str, pd.DataFrame]:
-    """Load all tables needed for 2027 inference in one pass."""
+    """Load target-season projections plus observed source-season team context."""
     with engine.connect() as conn:
         school_meta = pd.read_sql_query(
             text(_SCHOOL_SEASON_SQL),
             conn,
-            params={"target_season": target_season},
+            params={"target_season": prior_season},
         )
         baseline_members = pd.read_sql_query(
             text(_BASELINE_MEMBERS_SQL),
@@ -655,7 +705,7 @@ def load_inference_data(
         roster_state = pd.read_sql_query(
             text(_ROSTER_STATE_SQL.replace("= ANY(:seasons)", "= ANY(:seasons_list)")),
             conn,
-            params={"seasons_list": [target_season]},
+            params={"seasons_list": [prior_season]},
         )
         portal_ids_raw = conn.execute(
             text(_PORTAL_CANDIDATES_SQL),
@@ -708,7 +758,7 @@ def build_school_baselines(
     slot_baselines: dict,
     school_adj_ems: dict[int, float],
     season_adj_ems: np.ndarray,
-    target_season: int,
+    context_season: int,
 ) -> dict[int, dict]:
     """Build one baseline roster feature vector per school.
 
@@ -737,11 +787,12 @@ def build_school_baselines(
             adj_tempo = 68.0
 
         returning_pct = 1.0
-        rs_key = (school_id, target_season)
+        rs_key = (school_id, context_season)
         if rs_key in rs.index:
-            rp = rs.loc[rs_key, "returning_player_impact"]
-            if rp is not None and pd.notna(rp):
-                returning_pct = min(float(rp), 1.0)
+            rs_row = rs.loc[rs_key]
+            if isinstance(rs_row, pd.DataFrame):
+                rs_row = rs_row.iloc[0]
+            returning_pct = _returning_minutes_pct(rs_row)
 
         roster_rows = []
         for _, member in grp.iterrows():
@@ -804,7 +855,6 @@ def build_candidate_roster(
     cand_minutes = float(candidate_pt_row.get("expected_minutes", 12.0))
     cand_min_pct = (cand_minutes / STANDARD_TEAM_MINUTES) * 100.0
     cand_usage = float(candidate_pt_row.get("expected_usage", 20.0))
-    cand_role = str(candidate_pt_row.get("usage_role", "rotation"))
 
     # Derive candidate RAPM from neutral projection (value_per_100 splits roughly 55/45 off/def)
     cand_value = float(candidate_proj_row.get("value_per_100", 0.0))
@@ -815,9 +865,9 @@ def build_candidate_roster(
         "player_id":        int(candidate_pt_row.get("player_id", -1)),
         "min_pct":          cand_min_pct,
         "usage_rate":       cand_usage,
-        "three_point_rate": 0.35,   # neutral placeholder; real value in skill_states if needed
-        "off_reb_pct":      0.25,
-        "position":         "SG",   # position from player table not joined here; neutral default
+        "three_point_rate": _safe_float(candidate_proj_row.get("three_point_rate"), 0.35),
+        "off_reb_pct":      _safe_float(candidate_proj_row.get("off_reb_pct"), 0.25),
+        "position":         str(candidate_proj_row.get("position", "SG") or "SG"),
         "off_adj_rapm":     cand_off_rapm,
         "def_adj_rapm":     cand_def_rapm,
     }
@@ -883,10 +933,10 @@ def analytical_ci(
 ) -> tuple[float, float]:
     """80% CI via Gaussian approximation (replaces 200-sample bootstrap).
 
-    Ridge delta is linear in RAPM; combined noise ≈ sqrt(2)*off_resid_std
-    from independent baseline+candidate RAPM estimation error.
+    AdjEM is offense minus defense, so combine both residual variances plus the
+    baseline/candidate comparison variance.
     """
-    sigma = np.sqrt(2.0) * models.off_resid_std
+    sigma = np.sqrt(2.0 * (models.off_resid_std ** 2 + models.def_resid_std ** 2))
     z80 = 1.2816  # 80% two-sided = 10th/90th percentile
     return float(delta_adj_em - z80 * sigma), float(delta_adj_em + z80 * sigma)
 
@@ -961,19 +1011,25 @@ def build_explanation_payload(
     candidate_pt_row: pd.Series,
     delta_result: dict,
 ) -> dict:
-    """Ridge coefficient × feature delta decomposition."""
-    feature_deltas = {f: candidate_features.get(f, 0.0) - baseline_features.get(f, 0.0)
-                      for f in ROSTER_FEATURES}
+    """Ridge coefficient × scaled feature delta decomposition."""
+    raw_deltas = np.array([
+        candidate_features.get(f, 0.0) - baseline_features.get(f, 0.0)
+        for f in ROSTER_FEATURES
+    ], dtype=float)
+    off_scale = np.where(models.off_scaler.scale_ == 0, 1.0, models.off_scaler.scale_)
+    def_scale = np.where(models.def_scaler.scale_ == 0, 1.0, models.def_scaler.scale_)
+    off_feature_deltas = dict(zip(ROSTER_FEATURES, raw_deltas / off_scale))
+    def_feature_deltas = dict(zip(ROSTER_FEATURES, raw_deltas / def_scale))
 
     off_coefs = dict(zip(ROSTER_FEATURES, models.off_model.coef_))
     def_coefs = dict(zip(ROSTER_FEATURES, models.def_model.coef_))
 
     def off_attr(features: list[str]) -> float:
-        return sum(off_coefs.get(f, 0) * feature_deltas.get(f, 0) for f in features)
+        return sum(off_coefs.get(f, 0) * off_feature_deltas.get(f, 0) for f in features)
 
     def def_attr(features: list[str]) -> float:
         # negate: lower AdjD = better defense
-        return -sum(def_coefs.get(f, 0) * feature_deltas.get(f, 0) for f in features)
+        return -sum(def_coefs.get(f, 0) * def_feature_deltas.get(f, 0) for f in features)
 
     talent_features  = ["weighted_off_impact", "weighted_def_impact", "top1_off_impact", "top2_impact"]
     spacing_features = ["three_pt_coverage", "pg_creation"]

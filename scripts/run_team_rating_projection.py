@@ -202,7 +202,7 @@ def run_team_rating_projection(
         # ------------------------------------------------------------------
         log.info("Step 5: Building 2027 baseline rosters...")
         school_baselines = build_school_baselines(
-            data, slot_baselines, school_adj_ems, season_adj_ems, target_season
+            data, slot_baselines, school_adj_ems, season_adj_ems, source_season
         )
         log.info("  -> %d schools with baseline rosters", len(school_baselines))
         mlflow.log_param("n_schools_baseline", len(school_baselines))
@@ -219,6 +219,13 @@ def run_team_rating_projection(
             neutral_index: dict = {}
         else:
             neutral_index = neutral_df.set_index("player_id").to_dict("index")
+        candidate_stats_index = (
+            data["prior_stats"]
+            .drop_duplicates(subset=["player_id"], keep="first")
+            .set_index("player_id")[["position", "three_point_rate", "off_reb_pct"]]
+            .to_dict("index")
+            if not data["prior_stats"].empty else {}
+        )
 
         # Build pt_index without iterrows (10-50x faster on 457K rows)
         pt_records = pt_df.to_dict("records")
@@ -246,7 +253,10 @@ def run_team_rating_projection(
 
             proj_row = neutral_index.get(int(player_id), {})
             cand_value = float(proj_row.get("value_per_100", 0.0))
-            cand_proj = pd.Series({"value_per_100": cand_value})
+            cand_proj = pd.Series({
+                "value_per_100": cand_value,
+                **candidate_stats_index.get(int(player_id), {}),
+            })
 
             # Build candidate features for all valid schools
             valid_schools: list[int] = []

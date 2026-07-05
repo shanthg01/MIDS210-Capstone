@@ -19,7 +19,9 @@ SELECT
 FROM team_rating_projections
 WHERE player_id = :player_id
   AND school_id = :school_id
-ORDER BY season DESC, computed_at DESC
+  AND season = :season
+  AND expires_at > now()
+ORDER BY computed_at DESC
 LIMIT 1
 """
 
@@ -34,14 +36,17 @@ async def get_team_rating_projection(
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text(_FETCH_SQL),
-            {"player_id": player_id, "school_id": school_id},
+            {"player_id": player_id, "school_id": school_id, "season": season},
         )
         row = result.mappings().first()
 
     if row is None:
         raise HTTPException(
             status_code=404,
-            detail=f"No team rating projection found for player {player_id} at school {school_id}.",
+            detail=(
+                f"No active team rating projection found for player {player_id} "
+                f"at school {school_id} in season {season}."
+            ),
         )
 
     delta = float(row["delta_adj_em"])
