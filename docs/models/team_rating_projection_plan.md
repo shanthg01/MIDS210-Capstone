@@ -166,7 +166,20 @@ Rationale: counterfactual must be "candidate vs. typical replacement," not "cand
 1. Players from `roster_baseline_members` with source/prior season 2026 (written by `run_gap_matching.py`; observed roster context is not target-season 2027)
 2. Prior-season player stats + HE RAPM for returning baseline players
 3. Observed source-season `team_season_stats` / `roster_state_features` for school context, tempo, conference tiers, and returning-minutes continuity
-4. Empty or missing player-quality slots filled with position/tier slot baselines
+4. True incoming freshmen from `roster_state_features.class_balance` get conservative depth priors when they are present in roster snapshots but do not yet have player IDs or player-season stats
+5. Empty or missing player-quality slots filled with position/tier slot baselines
+
+### Incoming freshman prior
+
+Roster snapshots can include true freshmen as `returning_status="new"` with `class_year="fr"` before those players have `player_id`s, HE RAPM, or `player_season_stats`. Without a prior, Team Rating Projection treats those roster spots as empty, which understates baseline depth and can over-credit portal additions.
+
+The v1 follow-up adds a conservative freshman prior:
+
+- Count `class_balance.incoming_fr` / equivalent freshman labels from source-season `roster_state_features`.
+- Allocate `8.0` min_pct per freshman, capped at `30.0` total team min_pct.
+- Assign freshman priors to the most open positions from `open_minutes_by_position`; fall back to balanced PG/SG/SF/PF/C slots when no position gap is available.
+- Fill quality from position/tier slot baselines with a `0.65` RAPM discount.
+- Mark those rows as priors so `n_known_players` does not count them as fully known roster projections.
 
 ### Candidate roster
 
@@ -442,10 +455,12 @@ Fixed runtime: ~28 minutes.
 
 3. **Fold 3 RMSE spike:** off/def RMSE ~4.8 on 2026 held-out data vs ~2.6-2.9 on earlier folds. Most likely 2026 RAPM coverage gaps in HE (more slot-baseline fills → feature vector less representative). Alternative hypotheses: 2026 transfer portal volume is genuinely higher (roster composition is more volatile). Root-cause not confirmed; document and monitor on next year's data.
 
-4. **`returning_pct` continuity proxy:** Improved in PR follow-up — source-season `roster_state_features` now provides the fraction of returning minutes from `returning_minutes_by_position` over returning plus departing/open minutes. It still falls back to 1.0 if roster-state JSON is missing.
+4. **Freshman priors:** Improved in PR follow-up — source-season roster snapshots now contribute conservative incoming-freshman depth priors. This is still a placeholder, not a recruiting-rank model; next improvement would join public recruit ratings or high-school/team pipeline priors.
 
-5. **`@champion` alias not yet registered:** `maybe_promote` skipped (no prior Staging version to compare against — true first run). Before the next rerun, register current v1 as `@champion` via `client.set_registered_model_alias("team-rating-scorer", "champion", version="1")`. Without this, the next run will also skip the gate.
+5. **`returning_pct` continuity proxy:** Improved in PR follow-up — source-season `roster_state_features` now provides the fraction of returning minutes from `returning_minutes_by_position` over returning plus departing/open minutes. It still falls back to 1.0 if roster-state JSON is missing.
 
-6. **`estimate_usage_value_coef` analog:** The slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
+6. **`@champion` alias not yet registered:** `maybe_promote` skipped (no prior Staging version to compare against — true first run). Before the next rerun, register current v1 as `@champion` via `client.set_registered_model_alias("team-rating-scorer", "champion", version="1")`. Without this, the next run will also skip the gate.
 
-7. **API semantics:** Stub replaced. Follow-up fixed the endpoint to honor the requested `season` and ignore expired rows.
+7. **`estimate_usage_value_coef` analog:** The slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
+
+8. **API semantics:** Stub replaced. Follow-up fixed the endpoint to honor the requested `season` and ignore expired rows.

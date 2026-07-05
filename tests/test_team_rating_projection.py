@@ -12,11 +12,14 @@ import pytest
 from portalpoint.modeling.team_rating_projection import (
     ROSTER_FEATURES,
     _conference_tier,
+    _freshman_prior_positions,
+    _incoming_freshman_count,
     _returning_minutes_pct,
     _usage_hhi,
     _slot_fill,
     analytical_ci,
     build_candidate_roster,
+    build_freshman_prior_rows,
     build_roster_features,
     build_slot_baselines,
     compute_counterfactual,
@@ -202,6 +205,22 @@ def test_build_roster_features_fills_missing_rapm_from_baselines():
     assert feats["weighted_off_impact"] == pytest.approx(1.5)
 
 
+def test_build_roster_features_counts_known_quality_not_priors():
+    roster = [
+        {"min_pct": 20.0, "position": "PG", "off_adj_rapm": 1.0, "def_adj_rapm": 0.5,
+         "three_point_rate": 0.35, "off_reb_pct": 0.20, "usage_rate": 20.0},
+        {"min_pct": 10.0, "position": "C", "off_adj_rapm": None, "def_adj_rapm": None,
+         "three_point_rate": 0.20, "off_reb_pct": 0.35, "usage_rate": 18.0},
+        {"min_pct": 8.0, "position": "SF", "off_adj_rapm": 0.3, "def_adj_rapm": 0.2,
+         "three_point_rate": 0.30, "off_reb_pct": 0.20, "usage_rate": 18.0,
+         "is_freshman_prior": True},
+    ]
+    baselines = {(2, "C"): {"off_adj_rapm": -0.5, "def_adj_rapm": 1.2,
+                             "three_point_rate": 0.20, "off_reb_pct": 0.35, "usage_rate": 18.0}}
+    feats = build_roster_features(roster, 2, 68.0, 0.8, baselines)
+    assert feats["n_known_players"] == 1.0
+
+
 def test_returning_minutes_pct_uses_returning_and_departing_minutes():
     row = pd.Series({
         "returning_minutes_by_position": {"PG": 1200.0, "C": 800.0},
@@ -216,6 +235,35 @@ def test_returning_minutes_pct_handles_json_strings():
         "open_minutes_by_position": '{"SG": 400.0}',
     })
     assert _returning_minutes_pct(row) == pytest.approx(0.6)
+
+
+def test_incoming_freshman_count_from_class_balance():
+    row = pd.Series({"class_balance": {"incoming_fr": 2, "incoming_so": 1, "transfer_in_fr": 3}})
+    assert _incoming_freshman_count(row) == 2
+
+
+def test_freshman_prior_positions_use_open_minutes():
+    positions = _freshman_prior_positions({"C": 30.0, "PG": 10.0, "SG": 0.0}, 3)
+    assert positions == ["C", "PG", "C"]
+
+
+def test_build_freshman_prior_rows_discount_slot_baselines():
+    row = pd.Series({
+        "class_balance": {"incoming_fr": 2},
+        "open_minutes_by_position": {"C": 30.0, "PG": 10.0},
+    })
+    baselines = {
+        (2, "C"): {"off_adj_rapm": 2.0, "def_adj_rapm": 1.0,
+                   "three_point_rate": 0.20, "off_reb_pct": 0.35, "usage_rate": 18.0},
+        (2, "PG"): {"off_adj_rapm": 1.0, "def_adj_rapm": 0.5,
+                    "three_point_rate": 0.38, "off_reb_pct": 0.10, "usage_rate": 22.0},
+    }
+    rows = build_freshman_prior_rows(row, 2, baselines)
+    assert len(rows) == 2
+    assert rows[0]["position"] == "C"
+    assert rows[0]["min_pct"] == pytest.approx(8.0)
+    assert rows[0]["off_adj_rapm"] == pytest.approx(1.3)
+    assert rows[0]["is_freshman_prior"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,9 @@ N_BOOTSTRAP = 200
 MIN_ROSTER_PLAYERS = 3        # below this, skip school (too many slot-baseline fills)
 MIN_TRAIN_GAMES = 5           # player must have played >= 5 games to count in features
 RIDGE_ALPHA = 1.0
+FRESHMAN_MIN_PCT_PRIOR = 8.0  # conservative share of team minutes per unmatched freshman
+FRESHMAN_TOTAL_MIN_PCT_CAP = 30.0
+FRESHMAN_RAPM_DISCOUNT = 0.65
 
 # Conference tier bucket boundaries: percentile of adj_em within season.
 # Tier 1 = high-major, Tier 4 = low-major (same convention as destination_projection.py).
@@ -80,6 +83,7 @@ ROSTER_FEATURES = [
 # Position bands for rim protection + PG creation features.
 _FRONTCOURT = {"PF", "C"}
 _GUARDS = {"PG"}
+_FRESHMAN_CLASS_MARKERS = {"fr", "freshman", "first-year", "first year", "frosh"}
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ SELECT school_id, season,
        returning_minutes_by_position,
        departing_minutes_by_position,
        open_minutes_by_position,
+       class_balance,
        returning_player_impact
 FROM roster_state_features
 WHERE season = ANY(:seasons)
@@ -324,6 +329,90 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _incoming_freshman_count(roster_state_row: pd.Series | dict | None) -> int:
+    """Count true incoming freshmen from roster_state_features.class_balance."""
+    if roster_state_row is None:
+        return 0
+    class_balance = _json_dict(roster_state_row.get("class_balance"))
+    total = 0
+    for key, value in class_balance.items():
+        key_norm = str(key).lower().replace("_", " ").replace("-", " ").strip()
+        if not key_norm.startswith("incoming "):
+            continue
+        class_label = key_norm.removeprefix("incoming ").strip()
+        if class_label in _FRESHMAN_CLASS_MARKERS:
+            total += int(_safe_float(value, 0.0))
+    return total
+
+
+def _freshman_prior_positions(open_minutes_by_position: Any, count: int) -> list[str]:
+    """Assign freshman priors to the most open positions; fall back to balanced slots."""
+    if count <= 0:
+        return []
+    open_minutes = {
+        str(pos): max(_safe_float(val, 0.0), 0.0)
+        for pos, val in _json_dict(open_minutes_by_position).items()
+    }
+    ranked = [
+        pos for pos, val in sorted(open_minutes.items(), key=lambda item: item[1], reverse=True)
+        if pos in {"PG", "SG", "SF", "PF", "C"} and val > 0
+    ]
+    if not ranked:
+        ranked = ["PG", "SG", "SF", "PF", "C"]
+    return [ranked[i % len(ranked)] for i in range(count)]
+
+
+def build_freshman_prior_rows(
+    roster_state_row: pd.Series | dict | None,
+    conference_tier: int,
+    slot_baselines: dict,
+) -> list[dict]:
+    """Conservative quality priors for incoming freshmen without player IDs/stats.
+
+    True freshmen often appear in roster snapshots as `returning_status='new'`
+    before they have player-season history or a matched player_id. Without a
+    prior, team baselines treat those roster spots as empty. We add small,
+    discounted slot-baseline rows so the team projection acknowledges likely
+    depth while preserving uncertainty through `n_known_players`.
+    """
+    count = _incoming_freshman_count(roster_state_row)
+    if count <= 0:
+        return []
+    total_min_pct = min(count * FRESHMAN_MIN_PCT_PRIOR, FRESHMAN_TOTAL_MIN_PCT_CAP)
+    min_pct = total_min_pct / count
+    positions = _freshman_prior_positions(
+        roster_state_row.get("open_minutes_by_position") if roster_state_row is not None else None,
+        count,
+    )
+
+    rows = []
+    for idx, position in enumerate(positions):
+        fill = _slot_fill(slot_baselines, conference_tier, position)
+        rows.append({
+            "player_id": f"freshman_prior_{idx + 1}",
+            "min_pct": min_pct,
+            "usage_rate": fill["usage_rate"],
+            "three_point_rate": fill["three_point_rate"],
+            "off_reb_pct": fill["off_reb_pct"],
+            "position": position,
+            "off_adj_rapm": fill["off_adj_rapm"] * FRESHMAN_RAPM_DISCOUNT,
+            "def_adj_rapm": fill["def_adj_rapm"] * FRESHMAN_RAPM_DISCOUNT,
+            "is_freshman_prior": True,
+        })
+    return rows
+
+
 def build_slot_baselines(player_df: pd.DataFrame) -> dict:
     """Compute average RAPM / shooting / reb by (conference_tier, position).
 
@@ -394,6 +483,12 @@ def build_roster_features(
         return {f: 0.0 for f in ROSTER_FEATURES}
 
     df = pd.DataFrame(roster_rows)
+    freshman_prior = (
+        df["is_freshman_prior"].eq(True)
+        if "is_freshman_prior" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    known_quality = df["off_adj_rapm"].notna() & df["def_adj_rapm"].notna() & ~freshman_prior
 
     # Fill missing RAPM from slot baselines
     for i, row in df.iterrows():
@@ -445,7 +540,7 @@ def build_roster_features(
 
     rebounding_coverage = float(np.dot(off_reb, min_share))
     usage_hhi = _usage_hhi(usage * min_share)
-    n_known = int(len(df))
+    n_known = int(known_quality.sum())
 
     return {
         "weighted_off_impact":   weighted_off,
@@ -787,12 +882,13 @@ def build_school_baselines(
             adj_tempo = 68.0
 
         returning_pct = 1.0
+        rs_row_for_school: pd.Series | dict | None = None
         rs_key = (school_id, context_season)
         if rs_key in rs.index:
-            rs_row = rs.loc[rs_key]
-            if isinstance(rs_row, pd.DataFrame):
-                rs_row = rs_row.iloc[0]
-            returning_pct = _returning_minutes_pct(rs_row)
+            rs_row_for_school = rs.loc[rs_key]
+            if isinstance(rs_row_for_school, pd.DataFrame):
+                rs_row_for_school = rs_row_for_school.iloc[0]
+            returning_pct = _returning_minutes_pct(rs_row_for_school)
 
         roster_rows = []
         for _, member in grp.iterrows():
@@ -822,6 +918,10 @@ def build_school_baselines(
                 row["def_adj_rapm"] = np.nan
 
             roster_rows.append(row)
+
+        roster_rows.extend(
+            build_freshman_prior_rows(rs_row_for_school, tier, slot_baselines)
+        )
 
         feats = build_roster_features(roster_rows, tier, adj_tempo, returning_pct, slot_baselines)
         result[school_id] = {
