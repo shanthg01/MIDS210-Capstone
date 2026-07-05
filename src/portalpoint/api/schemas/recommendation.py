@@ -14,7 +14,7 @@ class FitComponents(BaseModel):
 
 class RecommendationItem(BaseModel):
     rank: int
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     player_name: str
     position: str
     overall_fit: float = Field(..., ge=0, le=100)

@@ -566,8 +566,8 @@ class HoopRTeamSeasonStats(Base):
     pbp_turnover_rate: Mapped[Optional[float]] = mapped_column(Float)            # TOs per tracked possession
     pbp_transition_rate: Mapped[Optional[float]] = mapped_column(Float)          # shots within 7s / total shots
     # Coverage metadata
-    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
-    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0, server_default=text("0"))
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -616,9 +616,9 @@ class HoopRPlayerSeasonStats(Base):
     pbp_clutch_ts_pct: Mapped[Optional[float]] = mapped_column(Float)  # TS% last 2min, <=5pt margin
     pbp_assist_rate: Mapped[Optional[float]] = mapped_column(Float)    # athlete_id_2 assists / possessions
     # Coverage metadata
-    shot_attempts_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
-    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shot_attempts_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    games_tracked: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0, server_default=text("0"))
+    possessions_tracked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -1008,6 +1008,7 @@ class RosterBaselineMember(Base):
     __tablename__ = "roster_baseline_members"
     __table_args__ = (
         UniqueConstraint("player_id", "school_id", "season", name="uq_roster_baseline_member"),
+        Index("ix_roster_baseline_school_season", "school_id", "season"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1058,20 +1059,20 @@ class PlayerTeamFitScore(Base):
     overall_fit: Mapped[float] = mapped_column(Float, nullable=False)
     gap_match: Mapped[float] = mapped_column(Float, nullable=False)
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)
-    role_fit: Mapped[float] = mapped_column(Float, nullable=False)
-    program_fit: Mapped[float] = mapped_column(Float, nullable=False)
+    role_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
+    program_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
     # Weights used for this computation (may differ from defaults if user customized)
     weight_gap: Mapped[float] = mapped_column(Float, nullable=False, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
-    weight_role: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
-    weight_program: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
+    weight_role: Mapped[float] = mapped_column(Float, nullable=False, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, nullable=False, default=0.25, server_default=text("0.25"))
     # Full component breakdown stored as JSONB for API response
     breakdown: Mapped[Optional[dict]] = mapped_column(JSONB)
     # True if player_id had a matched transfer_portal_events row (Entered/Committed)
     # for this season — see portalpoint.modeling.availability. Scoring stays
     # all-pairs; this flag scopes the recommendation-facing query surface.
-    is_portal_candidate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    model_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_portal_candidate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -1144,6 +1145,51 @@ class PlayerProjection(Base):
     school: Mapped[Optional[School]] = relationship()
 
 
+class PlayingTimeProjection(Base):
+    """Roster-aware opportunity projection used as the source of Role Fit."""
+
+    __tablename__ = "playing_time_projections"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id",
+            "school_id",
+            "season",
+            "model_version",
+            name="uq_playing_time_projection",
+        ),
+        Index("ix_playing_time_player_season", "player_id", "season"),
+        Index("ix_playing_time_school_season", "school_id", "season"),
+        Index("ix_playing_time_season_role_fit", "season", "role_fit"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
+    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    roster_snapshot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("roster_snapshots.id"))
+    expected_minutes: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_minutes_share: Mapped[float] = mapped_column(Float, nullable=False)
+    minutes_ci_lower: Mapped[float] = mapped_column(Float, nullable=False)
+    minutes_ci_upper: Mapped[float] = mapped_column(Float, nullable=False)
+    expected_usage: Mapped[float] = mapped_column(Float, nullable=False)
+    usage_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    usage_role_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    starter_probability: Mapped[Optional[float]] = mapped_column(Float)
+    rotation_probability: Mapped[Optional[float]] = mapped_column(Float)
+    displaced_minutes: Mapped[Optional[dict]] = mapped_column(JSONB)
+    opportunity_drivers: Mapped[Optional[dict]] = mapped_column(JSONB)
+    data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
+    scenario_overrides: Mapped[Optional[dict]] = mapped_column(JSONB)
+    role_fit: Mapped[float] = mapped_column(Float, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    player: Mapped[Player] = relationship()
+    school: Mapped[School] = relationship()
+    roster_snapshot: Mapped[Optional[RosterSnapshot]] = relationship()
+
+
 class Recommendation(Base):
     __tablename__ = "recommendations"
     __table_args__ = (
@@ -1213,21 +1259,52 @@ class UserPreference(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
     # Importance weights (1-10 scale) for Program Fit sub-components
-    importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7)
-    importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
-    importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5)
-    importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5)
+    importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7, server_default=text("7"))
+    importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
+    importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
+    importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     # Fit component weights (must sum to 1.0)
     weight_gap: Mapped[float] = mapped_column(Float, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, default=0.30)
-    weight_role: Mapped[float] = mapped_column(Float, default=0.25)
-    weight_program: Mapped[float] = mapped_column(Float, default=0.25)
+    weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
     # Flexible filters stored as JSONB (desired_major, regions, conferences, enrollment range)
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user: Mapped[User] = relationship(back_populates="preferences")
+
+
+class UserPreferenceProfile(Base):
+    """Named, saved snapshots of weights+filters a user can switch between
+    (e.g. "Wing search" vs "Backup PG search") — additive on top of
+    UserPreference, which stays the single "active" row fit_scores.py reads.
+    Activating a profile copies its fields into that row; this table is never
+    read by the fit-score computation path itself."""
+
+    __tablename__ = "user_preference_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_user_preference_profiles_user_name"),
+        Index("ix_user_preference_profiles_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7, server_default=text("7"))
+    importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
+    importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
+    importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped[User] = relationship()
 
 
 class UserFeedback(Base):

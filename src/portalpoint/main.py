@@ -9,6 +9,7 @@ from portalpoint.api.routers import (
     predictions,
     projections,
     recommendations,
+    schools,
     users,
 )
 from portalpoint.core.config import settings
@@ -37,6 +38,7 @@ app.include_router(predictions.router)
 app.include_router(projections.router)
 app.include_router(users.router)
 app.include_router(comparison.router)
+app.include_router(schools.router)
 
 
 @app.get("/health", tags=["health"])

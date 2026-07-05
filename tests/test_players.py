@@ -96,6 +96,34 @@ def test_search_available_only_filters_to_subset(client):
     assert available_count <= all_count
 
 
+def test_search_min_stat_accepted(client):
+    assert client.get("/api/players/search?name=an&min_stat=usage_rate:0").status_code == 200
+
+
+def test_search_min_stat_rejects_unknown_key(client):
+    r = client.get("/api/players/search?name=an&min_stat=not_a_real_stat:20")
+    assert r.status_code == 400
+
+
+def test_search_min_stat_rejects_malformed_value(client):
+    r = client.get("/api/players/search?name=an&min_stat=usage_rate:not_a_number")
+    assert r.status_code == 400
+
+
+def test_search_min_stat_filters_to_subset(client):
+    all_count = client.get("/api/players/search?name=an").json()["total"]
+    filtered_count = client.get("/api/players/search?name=an&min_stat=usage_rate:99").json()["total"]
+    assert filtered_count <= all_count
+
+
+def test_search_min_stat_multiple_ands_together(client):
+    one_filter = client.get("/api/players/search?name=an&min_stat=usage_rate:20").json()["total"]
+    two_filters = client.get(
+        "/api/players/search?name=an&min_stat=usage_rate:20&min_stat=fg3_pct:40"
+    ).json()["total"]
+    assert two_filters <= one_filter
+
+
 def test_claim_requires_auth(client):
     assert client.post("/api/players/101/claim", json={"player_id": 101}).status_code == 401
 
@@ -105,7 +133,7 @@ def test_claim_with_auth(client, H):
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
-    assert data["player_id"] == 101
+    assert data["player_id"] == "101"
     assert "message" in data
 
 
@@ -115,7 +143,7 @@ def test_get_player_projection_is_public(client):
 
 def test_get_player_projection_response_shape(client):
     data = client.get("/api/players/101/projection").json()
-    assert data["player_id"] == 101
+    assert data["player_id"] == "101"
     assert data["projection_mode"] == "neutral"
     assert isinstance(data["value_per_100"], float)
     assert data["model_version"] == "player-proj-phase2a-fcast-v1"
@@ -143,3 +171,26 @@ def test_get_player_projection_not_found_for_unprojected_player(client):
 def test_get_player_projection_not_found_for_unprojected_season(client):
     r = client.get("/api/players/101/projection?season=1999")
     assert r.status_code == 404
+
+
+def test_get_player_projection_school_id_param_accepted(client):
+    # school_id for a school with no destination rows yet → 404, not 422/500.
+    # Confirms the query param is wired and the right mode is attempted.
+    r = client.get("/api/players/101/projection?school_id=9900301")
+    assert r.status_code == 404
+    assert "destination" in r.json()["detail"].lower() or "school" in r.json()["detail"].lower()
+
+
+def test_get_player_projection_neutral_ignores_school_id_absence(client):
+    # Without school_id, projection_mode must be 'neutral' and school_id None.
+    data = client.get("/api/players/101/projection").json()
+    assert data["projection_mode"] == "neutral"
+    assert data.get("school_id") is None
+
+
+def test_get_player_projection_response_schema_includes_destination_fields(client):
+    # New schema fields must be present in neutral response (even if None).
+    data = client.get("/api/players/101/projection").json()
+    assert "school_id" in data
+    assert "projected_minutes" in data
+    assert "projected_usage" in data

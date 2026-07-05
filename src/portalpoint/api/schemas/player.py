@@ -53,7 +53,10 @@ class PlayerArchetype(BaseModel):
 
 
 class PlayerBase(BaseModel):
-    player_id: int
+    # str, not int — player_id is a 63-bit hash (db/player_ids.py); JSON numbers
+    # lose precision past 2^53 in JS, corrupting every id silently. Serialize as
+    # string so the frontend never round-trips it through a JS double.
+    player_id: str
     full_name: str
     position: Position
     height_inches: int | None = None
@@ -85,5 +88,5 @@ class ClaimPlayerRequest(BaseModel):
 
 class ClaimPlayerResponse(BaseModel):
     success: bool
-    player_id: int
+    player_id: str
     message: str

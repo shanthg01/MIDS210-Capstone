@@ -56,7 +56,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
 | `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves Player Projection Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision; response includes Phase 2a's `projected_box_score`/`projected_rates` when present — see `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path); `role_fit`/`program_fit` stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates the all-pairs scoring (e.g. below the 5-game minimum). |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path). `role_fit` is implemented in branch through `playing_time_projections` / `playing-time-rotation-v2`, but requires the full 2027 all-school write before the API should present it as production. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates the all-pairs scoring (e.g. below the 5-game minimum). |
 | `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. Documented contract: default to `is_portal_candidate = true` once real. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub | Blocked on team rating projection model. |
@@ -179,7 +179,7 @@ The app becomes truly useful when the fit stack is no longer mostly stubbed.
 ✅ Build Gap Matching
 ✅ wire fit_scores.py to real scheme_fit + gap_match
 -> expose partial but meaningful fit breakdown in UI
--> build Role Fit / Playing Time
+-> run Role Fit / Playing Time full 2027 write
 -> build Program Fit
 -> wire complete fit_scores.py
 -> build Recommendation Engine

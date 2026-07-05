@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -16,6 +17,28 @@ class ImportanceWeights(BaseModel):
     program_fit: int = Field(default=5, ge=1, le=10)
 
 
+class StatKey(str, Enum):
+    """player_season_stats columns eligible for a hard min-value filter.
+    Same 10 columns as player_projection.py's SKILL_COLUMNS, plus min_pct —
+    kept manually in sync, same convention as that module's own skill list."""
+    USAGE_RATE = "usage_rate"
+    THREE_POINT_PCT = "fg3_pct"
+    FREE_THROW_PCT = "ft_pct"
+    RIM_PCT = "rim_pct"
+    ASSIST_RATE = "assist_rate"
+    TURNOVER_PCT = "tov_pct"
+    OFF_REB_PCT = "off_reb_pct"
+    DEF_REB_PCT = "def_reb_pct"
+    STEAL_PCT = "steal_pct"
+    BLOCK_PCT = "block_pct"
+    MIN_PCT = "min_pct"
+
+
+class StatThreshold(BaseModel):
+    stat: StatKey
+    min_value: float
+
+
 class UserFilters(BaseModel):
     recruiting_regions: list[Region] = []
     conferences: list[str] = []
@@ -23,7 +46,7 @@ class UserFilters(BaseModel):
     target_archetypes: list[str] = []
     nil_budget_min: float | None = None
     nil_budget_max: float | None = None
-    min_stats: dict | None = None
+    min_stats: list[StatThreshold] | None = None
 
 
 class UserPreferences(BaseModel):
@@ -48,7 +71,7 @@ class UserProfile(BaseModel):
 
 
 class ShortlistItem(BaseModel):
-    player_id: int
+    player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     player_name: str
     position: str
     overall_fit: float | None = None

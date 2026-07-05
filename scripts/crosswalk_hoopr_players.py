@@ -40,10 +40,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ingest_hoopr import D1_TEAM_IDS, _build_team_name_map, _fuzzy_match, _normalize_espn_name  # noqa: E402
+from portalpoint.modeling.io import get_sync_engine
 
 DATA_DIR = Path("data/hoopr")
 MATCH_THRESHOLD = 0.82
@@ -69,19 +70,6 @@ def _extract_name(type_text: str, raw_text: str) -> str | None:
             return raw_text[:idx].strip()
     return None
 
-
-def _load_env() -> dict[str, str]:
-    env = {}
-    root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "pyproject.toml").exists())
-    for candidate in [root / ".env"]:
-        if candidate.exists():
-            for line in candidate.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    return env
 
 
 def build_athlete_table(pbp: pd.DataFrame) -> pd.DataFrame:
@@ -167,9 +155,7 @@ def run(season: int, spot_check: int) -> None:
     agg = build_athlete_table(pbp)
     print(f"\nUnique ESPN athletes (D1, name-extractable): {len(agg):,}")
 
-    env = _load_env()
-    raw_url = env.get("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5433/portalpoint")
-    engine = create_engine(raw_url.replace("+asyncpg", "+psycopg2"), echo=False)
+    engine = get_sync_engine()
 
     with engine.connect() as conn:
         schools = pd.read_sql(text("SELECT id, name FROM schools"), conn)

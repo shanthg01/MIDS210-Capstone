@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 25, 2026 (Player Projection Phase 2a real-data validated, beats Phase 0 on offense; see Data Pipeline section)
+**Last updated:** June 30, 2026 (AWS RDS PostgreSQL 15 migration complete; access hardened to bastion SSH tunnel, no per-IP allowlist — see Database section)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -14,7 +14,7 @@ PortalPoint is local-first until beta.
 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
-| App database | Docker Postgres on port `5433` | Supabase Postgres optional for shared dev/staging |
+| App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
 | Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
 | API | Local FastAPI via `uvicorn` | EC2/ECS deferred |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
@@ -27,16 +27,17 @@ No EC2/ECS container deployment is planned before beta. GitHub Actions cron is p
 
 ## Local Runbook
 
-Start local infrastructure:
+Start local infrastructure (Redis only — Postgres is now shared RDS):
 
 ```bash
-docker compose up -d
+docker compose up -d redis
 ```
 
 Install and migrate:
 
 ```bash
 uv sync
+# Schema is managed on RDS — run alembic only when applying new migrations:
 uv run alembic upgrade head
 ```
 
@@ -74,7 +75,7 @@ Important values:
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Async SQLAlchemy URL for app/runtime. Local default uses Postgres `localhost:5433`. |
+| `DATABASE_URL` | Async SQLAlchemy URL for app/runtime. Now points to shared RDS — use `?ssl=require` suffix. See `docs/aws_rds_setup.md`. |
 | `REDIS_URL` | Redis URL for future caching. |
 | `JWT_SECRET` | Required for auth token signing. |
 | `JWT_EXPIRY_SECONDS` | Increase locally if frequent re-login is annoying. |
@@ -91,11 +92,13 @@ S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 
 | Component | State |
 |---|---|
-| Database | PostgreSQL 15 via Docker |
+| Database | **AWS RDS PostgreSQL 15** — migrated 2026-06-29; endpoint `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432` |
 | ORM | SQLAlchemy |
-| Migrations | Alembic |
-| Async app access | `postgresql+asyncpg://...` |
-| Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL for scripts/notebooks |
+| Migrations | Alembic — run `alembic upgrade head` against RDS when landing new migrations; `alembic stamp head` was run post-restore to sync the version table |
+| Async app access | `postgresql+asyncpg://...?ssl=require` — `ssl=require` required (RDS enforces TLS) |
+| Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL (`ssl=require` → `sslmode=require` translation added 2026-06-29) |
+| App user | `portalpoint_app` — scoped runtime user; master user (`portalpoint_master`) reserved for admin ops only |
+| Security group | RDS SG `sg-0ec78cb4f641ee901` — port 5432 only from bastion SG `sg-06d79bdd59fea641a` (source-group rule, not per-IP). No public access. Connect via SSH tunnel through the bastion (`portalpoint-bastion.pem` from Justin) — see `docs/aws_rds_setup.md`. Replaced an earlier per-teammate static-IP allowlist (broke on network changes) |
 
 Applied migration chain:
 
@@ -139,13 +142,14 @@ Important tables:
 | `hoopr_player_game_logs` | One row per player per game (player box score parquet); `player_id` resolved via `players.espn_id` first, fuzzy roster match second |
 | `player_archetypes` | M1 cluster assignments; `archetype_memberships` JSONB (top-3 soft memberships) |
 | `team_system_profiles` | M2 cluster assignments; two-layer (`offense_cluster_id`/`defense_cluster_id`) plus `offense_memberships`/`defense_memberships`/`system_memberships` JSONB |
-| `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores; multi-season (`season` col, 1.34M rows 2021-2026); `scheme_fit`+`gap_match` real, `role_fit`/`program_fit` stubbed |
+| `player_team_fit_scores` | Scheme/gap/role/program/overall fit scores; multi-season (`season` col, rows currently through 2026 before the Role Fit write); `scheme_fit`+`gap_match` real. `playing-time-rotation-v2` upserts target-season Role Fit rows by copying 2026 fit context into 2027 rows, then replacing `role_fit`/`breakdown.role_fit`; full 2027 write pending. `program_fit` remains stubbed |
 | `transfer_portal_events` | Raw 247Sports scrape staging — every scraped row, matched or not; `player_id` nullable; `portal_entry_date`/`commitment_date` fill in incrementally across repeated scrapes |
 | `transfers` | Promoted transfer records (matched rows only) — `(player_id, season)` unique, supports upsert; backfills `pre_per`/`pre_usage_rate` from `player_season_stats`; `pre_minutes_per_game` should be derived from `player_season_stats.min_pct * 0.4`, not copied from legacy `minutes_per_game` |
 | `roster_snapshots` / `roster_snapshot_players` | Point-in-time roster composition per school per scrape date (barttorvik `rostercast.php`); `returning_status` (`returning`/`transfer_in`/`new`) computed by diffing against `player_season_stats`, not given by the source |
 | `roster_state_features` | One row per `roster_snapshots` row — derived facts (counts/sums, not gap scores): returning/departing/incoming minutes+usage by position (as min_pct share — see note below), returning production/impact, class balance, archetype counts. Built by `scripts/build_roster_state_features.py` (plain script, not a model — no MLflow) |
 | `roster_baseline_members` | Shared roster-membership snapshot consumed by Gap Matching (`gap-cos-v4`) and intended for Role Fit/Team Rating Projection too — see `portalpoint.modeling.roster_baseline` |
 | `player_projections` | **Real neutral player projections.** The production API default is the Phase 2a next-season forecast model (`player-proj-phase2a-fcast-v1`): observed season `S` writes target projected season `S+1`. Phase 0 v2 and same-season Phase 2a v2 remain baseline/diagnostic comparators. Destination mode (`school_id` set) is gated on Role Fit. Written by `scripts/run_player_projection.py` / `notebooks/models/player_projection_state_space.ipynb`; served by `GET /api/players/{id}/projection` |
+| `playing_time_projections` | First-class Role Fit / opportunity output table. `playing-time-rotation-v2` writes target playing season rows; for the live 2026 portal cycle that means `season=2027`, with 2026 source/roster/fit context recorded in `opportunity_drivers`. Required by destination-adjusted player projections |
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Future team impact outputs |
 | `recommendations` | Future ranked player recommendations |
@@ -293,12 +297,13 @@ Do not set `MLFLOW_TRACKING_URI` to S3. S3 is for artifacts, not tracking metada
 | [`../diagram_4_database_architecture.md`](../diagram_4_database_architecture.md) | Database architecture reference. |
 | [`../dataflow_diagram.mmd`](../dataflow_diagram.mmd) | Mermaid dataflow diagram. |
 | [`../aws_s3_setup.md`](../aws_s3_setup.md) | S3 setup and teammate onboarding. |
+| [`../aws_rds_setup.md`](../aws_rds_setup.md) | RDS PostgreSQL setup and teammate onboarding. |
 
 ---
 
 ## Architecture Open Questions
 
-1. When should Supabase replace or supplement local Docker Postgres for shared development?
+1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`. Access pattern further hardened the same day: per-teammate static-IP security group rules (broke whenever someone changed networks) replaced with a bastion EC2 host + SSH tunnel — RDS SG now only allows port 5432 from the bastion's SG (source-group rule), no public/per-IP access at all. See `docs/aws_rds_setup.md`.
 2. ✅ Resolved — Redis caching is enabled in `fit_scores.py` (cache-aside, 30min TTL, fails open on Redis errors; see `src/portalpoint/db/redis_client.py`).
 3. Is GitHub Actions cron sufficient for scheduled ingest, or do we need Airflow near beta?
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?

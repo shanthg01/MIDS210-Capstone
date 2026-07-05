@@ -5,9 +5,9 @@ from sqlalchemy import func, select
 
 from portalpoint.api.deps import CurrentUser, DbSession
 from portalpoint.api.schemas.player import (
-    ClassYear,
     ClaimPlayerRequest,
     ClaimPlayerResponse,
+    ClassYear,
     PlayerArchetype,
     PlayerBase,
     PlayerProfile,
@@ -16,18 +16,29 @@ from portalpoint.api.schemas.player import (
     Position,
 )
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
+from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
+from portalpoint.api.schemas.user import StatKey
 from portalpoint.db.models import (
     Player,
-    PlayerArchetype as PlayerArchetypeORM,
-    PlayerProjection as PlayerProjectionORM,
     PlayerSeasonStats,
     School,
     Transfer,
     TransferPortalEvent,
 )
+from portalpoint.db.models import (
+    PlayerArchetype as PlayerArchetypeORM,
+)
+from portalpoint.db.models import (
+    PlayerProjection as PlayerProjectionORM,
+)
+from portalpoint.db.models import (
+    PlayingTimeProjection as PlayingTimeProjectionORM,
+)
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import resolved_minutes_per_game
-from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import (
+    MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
+)
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -58,6 +69,24 @@ _CLASS_MAP: dict[str, ClassYear] = {
 def _safe_class_year(raw: str) -> ClassYear:
     key = (raw or "").lower()[:2]
     return _CLASS_MAP.get(key, ClassYear.SENIOR)
+
+
+def _parse_min_stats(raw: list[str] | None) -> list[tuple[StatKey, float]]:
+    """Each entry formatted '<stat_key>:<min_value>' (e.g. 'usage_rate:20') —
+    a hard filter passed explicitly per-request, not pulled server-side from
+    saved preferences, since /search stays public (no CurrentUser)."""
+    if not raw:
+        return []
+    parsed: list[tuple[StatKey, float]] = []
+    for entry in raw:
+        key, _, value = entry.partition(":")
+        try:
+            stat = StatKey(key)
+            min_value = float(value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid min_stat entry: {entry!r}")
+        parsed.append((stat, min_value))
+    return parsed
 
 
 def _build_stats(s: PlayerSeasonStats) -> PlayerStats | None:
@@ -100,7 +129,15 @@ async def search_players(
         description="Restrict to players with a matched Entered/Committed transfer_portal_events "
         "row for their latest season — the 'browse the portal' view, not generic player search.",
     ),
+    min_stat: list[str] | None = Query(
+        default=None,
+        description="Repeatable '<stat_key>:<min_value>' pairs (e.g. usage_rate:20) — "
+        "AND'd together as a hard floor on the player's latest-season "
+        "player_season_stats row. Valid stat_key values: "
+        + ", ".join(k.value for k in StatKey),
+    ),
 ):
+    min_stats = _parse_min_stats(min_stat)
     # Latest season subquery — avoids N+1 and multi-row joins
     latest_season_sq = (
         select(
@@ -134,10 +171,13 @@ async def search_players(
             & (TransferPortalEvent.status.in_(AVAILABLE_STATUSES)),
         )
 
+    for stat, min_value in min_stats:
+        stmt = stmt.where(getattr(PlayerSeasonStats, stat.value) >= min_value)
+
     rows = (await db.execute(stmt)).all()
     results = [
         PlayerBase(
-            player_id=p.id,
+            player_id=str(p.id),
             full_name=p.full_name,
             position=_safe_position(p.position),
             class_year=_safe_class_year(p.class_year),
@@ -161,7 +201,11 @@ async def get_player(player_id: int, db: DbSession):
     # Latest season stats + school
     stats_row = (
         await db.execute(
-            select(PlayerSeasonStats, School.name.label("school_name"), School.id.label("school_id"))
+            select(
+                PlayerSeasonStats,
+                School.name.label("school_name"),
+                School.id.label("school_id"),
+            )
             .join(School, School.id == PlayerSeasonStats.school_id)
             .where(PlayerSeasonStats.player_id == player_id)
             .order_by(PlayerSeasonStats.season.desc())
@@ -206,7 +250,7 @@ async def get_player(player_id: int, db: DbSession):
     ).scalar_one_or_none()
 
     return PlayerProfile(
-        player_id=player.id,
+        player_id=str(player.id),
         full_name=player.full_name,
         position=_safe_position(player.position),
         height_inches=player.height_inches,
@@ -231,38 +275,87 @@ async def get_player_projection(
         default=None,
         description="Season to fetch. Defaults to the player's latest available projection.",
     ),
+    school_id: int | None = Query(
+        default=None,
+        description=(
+            "When provided, returns the destination-adjusted projection for this player "
+            "evaluated against the given school (projection_mode='destination'). "
+            "Omit for the neutral (context-independent) talent projection."
+        ),
+    ),
 ):
-    """Neutral talent projection (Cross-Season model's next-season forecast).
-    Real model output, not a stub — 404 if the player has no projection row
-    rather than synthesizing one, since fabricating a fake skill/value
-    breakdown would be actively misleading for a product surface like this."""
-    stmt = select(PlayerProjectionORM).where(
-        PlayerProjectionORM.player_id == player_id,
-        PlayerProjectionORM.projection_mode == "neutral",
-        PlayerProjectionORM.model_version == PLAYER_PROJECTION_MODEL_VERSION,
-        PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
-    )
-    if season is not None:
-        stmt = stmt.where(PlayerProjectionORM.season == season)
-    stmt = stmt.order_by(
-        PlayerProjectionORM.season.desc(),
-        PlayerProjectionORM.computed_at.desc(),
-    ).limit(1)
+    """Player talent/value projection — neutral or destination-adjusted.
+
+    Without school_id: neutral projection (context-independent talent estimate).
+    With school_id: destination-adjusted projection incorporating role/usage,
+    style/skill fit, roster context, and competition tier deltas for that school.
+
+    Returns 404 rather than synthesizing a fake row — fabricated skill/value
+    breakdowns would be actively misleading on this product surface.
+
+    Neutral model priority: forecast (player-proj-phase2a-fcast-v1) →
+    same-season Phase 2a → Phase 0 shrinkage. Not narrowed to one version because
+    the forecast model has only ~33K rows (2027 season) while other seasons are
+    covered by Phase 2a/Phase 0.
+    """
+    if school_id is not None:
+        # Destination-adjusted row for this (player, school) pair
+        stmt = select(PlayerProjectionORM).where(
+            PlayerProjectionORM.player_id == player_id,
+            PlayerProjectionORM.school_id == school_id,
+            PlayerProjectionORM.projection_mode == "destination",
+            PlayerProjectionORM.model_version == "player-destination-proj-v1",
+            PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
+        )
+        if season is not None:
+            stmt = stmt.where(PlayerProjectionORM.season == season)
+        stmt = stmt.order_by(
+            PlayerProjectionORM.season.desc(),
+            PlayerProjectionORM.computed_at.desc(),
+        ).limit(1)
+    else:
+        # Neutral projection — accepts any populated model version
+        stmt = select(PlayerProjectionORM).where(
+            PlayerProjectionORM.player_id == player_id,
+            PlayerProjectionORM.projection_mode == "neutral",
+            PlayerProjectionORM.model_version.in_(
+                [
+                    PLAYER_PROJECTION_MODEL_VERSION,
+                    "player-projection-shrinkage-v1",
+                    "player-projection-phase2a-v1",
+                ]
+            ),
+            PlayerProjectionORM.expires_at > datetime.now(timezone.utc),
+        )
+        if season is not None:
+            stmt = stmt.where(PlayerProjectionORM.season == season)
+        stmt = stmt.order_by(
+            PlayerProjectionORM.season.desc(),
+            PlayerProjectionORM.computed_at.desc(),
+        ).limit(1)
 
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:
         detail = f"No projection found for player {player_id}"
-        if season is not None:
+        if school_id is not None:
+            detail += f" at school {school_id}"
+            if season is not None:
+                detail += f" in season {season}"
+            detail += " — run run_destination_projection.py to populate destination rows"
+        elif season is not None:
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
     return PlayerProjectionResponse(
-        player_id=row.player_id,
+        player_id=str(row.player_id),
         season=row.season,
         projection_mode=row.projection_mode,
+        school_id=row.school_id,
         value_per_100=row.value_per_100,
         value_ci_lower=row.value_ci_lower,
         value_ci_upper=row.value_ci_upper,
+        projected_minutes=row.projected_minutes,
+        projected_usage=row.projected_usage,
         projected_box_score=row.projected_box_score,
         projected_rates=row.projected_rates,
         skill_states=row.skill_states,
@@ -274,11 +367,65 @@ async def get_player_projection(
     )
 
 
+@router.get("/{player_id}/playing-time", response_model=PlayingTimeProjectionResponse)
+async def get_player_playing_time(
+    player_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+    school_id: int = Query(...),
+    season: int | None = Query(
+        default=None,
+        description="Season to fetch. Defaults to the latest unexpired projection for the pair.",
+    ),
+):
+    stmt = select(PlayingTimeProjectionORM).where(
+        PlayingTimeProjectionORM.player_id == player_id,
+        PlayingTimeProjectionORM.school_id == school_id,
+        PlayingTimeProjectionORM.expires_at > datetime.now(timezone.utc),
+    )
+    if season is not None:
+        stmt = stmt.where(PlayingTimeProjectionORM.season == season)
+    stmt = stmt.order_by(
+        PlayingTimeProjectionORM.season.desc(),
+        PlayingTimeProjectionORM.computed_at.desc(),
+    ).limit(1)
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        detail = f"No playing-time projection found for player {player_id} and school {school_id}"
+        if season is not None:
+            detail += f" in season {season}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    return PlayingTimeProjectionResponse(
+        player_id=str(row.player_id),
+        school_id=row.school_id,
+        season=row.season,
+        roster_snapshot_id=row.roster_snapshot_id,
+        expected_minutes=row.expected_minutes,
+        expected_minutes_share=row.expected_minutes_share,
+        minutes_ci_lower=row.minutes_ci_lower,
+        minutes_ci_upper=row.minutes_ci_upper,
+        expected_usage=row.expected_usage,
+        usage_role=row.usage_role,
+        usage_role_confidence=row.usage_role_confidence,
+        starter_probability=row.starter_probability,
+        rotation_probability=row.rotation_probability,
+        displaced_minutes=row.displaced_minutes,
+        opportunity_drivers=row.opportunity_drivers,
+        data_quality_flags=row.data_quality_flags,
+        scenario_overrides=row.scenario_overrides,
+        role_fit=row.role_fit,
+        model_version=row.model_version,
+        computed_at=row.computed_at,
+    )
+
+
 @router.post("/{player_id}/claim", response_model=ClaimPlayerResponse)
 async def claim_player(player_id: int, body: ClaimPlayerRequest, current_user: CurrentUser):
     # STUB — replace with identity verification flow in Phase 2
     return ClaimPlayerResponse(
         success=True,
-        player_id=player_id,
+        player_id=str(player_id),
         message="Player profile linked to your account",
     )

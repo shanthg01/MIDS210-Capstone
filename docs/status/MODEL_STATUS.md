@@ -1,6 +1,6 @@
 # PortalPoint Model Status
 
-**Last updated:** June 25, 2026 (Player Projection production semantics updated — API serves the Phase 2a next-season forecast model, with Phase 0 v2 and same-season Phase 2a v2 retained as baseline/diagnostic comparators — see Player Projection section below and `../models/player_projection_state_space_plan.md` §22 for the full record)
+**Last updated:** July 1, 2026 (P0-P3 fixes applied to Destination Projection; re-run complete: 2,420 training rows, CV resid_std=2.892, cohort validation logged; per-game box-score basis fixed)
 **Scope:** Model notebooks, model outputs, feature/data dependencies, and next modeling work.
 
 Use this file as the model handoff. Architecture and deployment context live in
@@ -20,7 +20,8 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | M3 Scheme Fit | ✅ `scheme-cos-v3` (2026-06-22) — **all-pairs** (was top-50-per-player): every eligible player×school×season, all 6 seasons (2021-2026), 9,666,119 records. School-chunked score+write loop in both script and notebook (in sync). `player_team_fit_scores` has `season` column and API reads current-season rows. | None for MVP. | M3 v4 with hoopR spatial zones; normalization/rescaling of scheme_fit for UI display. | [`../../scripts/run_scheme_fit.py`](../../scripts/run_scheme_fit.py); [`../../notebooks/models/scheme_fit_scorer.ipynb`](../../notebooks/models/scheme_fit_scorer.ipynb); this doc's M3 section |
 | Gap Matching | ✅ `gap-cos-v4` (2026-06-23 refresh) — **all-pairs** scoring remains, but roster gap vectors now consume `portalpoint.modeling.roster_baseline` instead of only subtracting portal departures. Historical seasons use `player_season_stats(S+1)` as the roster-outlook source; latest season uses latest `roster_snapshots` where available, with same-season stats minus expected departures (`transfers`, HE `transfer_dest='NBA'`, senior/graduate class markers) as fallback for schools without usable snapshots. `player_team_fit_scores.is_portal_candidate` still scopes recommendations separately. Local DB now has 9,756,718 `gap-cos-v4` fit-score rows and 16,367 `roster_baseline_members`. | None for MVP after the 2026-06-23 script refresh; rerun only when source data changes. | Add roster-baseline confidence into breakdowns; include unmatched/new snapshot players as depth-only priors; add coach-adjustable needs and hoopR play-type gap features. | [`../../scripts/run_gap_matching.py`](../../scripts/run_gap_matching.py); [`../../src/portalpoint/modeling/roster_baseline.py`](../../src/portalpoint/modeling/roster_baseline.py); [`../../notebooks/models/gap_matching.ipynb`](../../notebooks/models/gap_matching.ipynb); this doc's Gap Matching section |
 | Player Projection (Model #8) | ✅ Phase 2a next-season forecast (`player-proj-phase2a-fcast-v1`) is the production API default by product decision. Rows use observed CBB season `S` to write target projected season `S+1`, with `source_observed_season` / `target_projected_season` recorded in explanation JSON. Phase 0 (`player-projection-shrinkage-v2`) remains the simpler baseline comparator, and same-season Phase 2a (`player-projection-phase2a-v2`) remains diagnostic. **Phase 2a implemented + real-data validated (2026-06-25):** beats Phase 0 on held-out offense every rolling-origin fold, ties on defense, and exposes richer `projected_rates`/`projected_box_score`. Forecast value translation now includes source-season internal off/def/total value priors so elite returning players are not over-mean-reverted by skill transitions alone. CI bands vary by player and use rolling conformal scaling on top of propagated skill/source-value variance plus the residual error floor. Final rerun wrote 30,304 forecast rows for target seasons 2022-2027; rate payloads now use `player_season_stats` for source-team pace because `player_school_seasons` is empty locally. Gap B (observation-layer context adjustment) regressed accuracy on real data, so the no-context configuration remains enabled. | None after final forecast rerun/validation. | Context-feature redesign; CI calibration monitoring; eventual destination-adjusted projection once Role Fit exists. | [`../models/player_projection_state_space_plan.md`](../models/player_projection_state_space_plan.md) §22; [`../../scripts/run_player_projection.py`](../../scripts/run_player_projection.py) (`--phase {0,2a,both}`, both phases); [`../../notebooks/models/player_projection_state_space.ipynb`](../../notebooks/models/player_projection_state_space.ipynb) (Phase 0/1/2a, interactive/diagnostic) |
-| M4 Role Fit / Playing Time | Not started. | Build roster-aware opportunity model that produces `role_fit`; consume `portalpoint.modeling.roster_baseline` for current roster/outlook membership before estimating minutes or displaced usage. | Add scenario controls for minutes/usage/displaced players; add uncertainty intervals and roster snapshot versioning. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md); [`../../src/portalpoint/modeling/roster_baseline.py`](../../src/portalpoint/modeling/roster_baseline.py) |
+| M4 Role Fit / Playing Time | Complete — `playing-time-rotation-v2` in production. Full all-school 2027 all-pairs write done: 457,345 rows across 365 schools, 1,253 portal candidates. Minutes RMSE=5.58, interval coverage=0.87. Real efficiency bug fixed: default chunk-size 25 was re-evaluating 6 player-side CTEs 15x per chunk (15x redundant CTE work); changed default to 365 (all schools in one query). `role_fit` synced into `player_team_fit_scores` for 2027. | Add scenario controls for minutes/usage/displaced players; improve high-minute/high-usage tail recall and interval calibration; add richer team-style interactions. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md); [`../../scripts/run_playing_time.py`](../../scripts/run_playing_time.py); [`../../src/portalpoint/modeling/playing_time.py`](../../src/portalpoint/modeling/playing_time.py) |
+| M9 Destination-Adjusted Projection | Complete baseline — P0-P3 fixes applied + re-run 2026-07-01. 454,790 rows, target_season=2027, 2,420 training rows (↑ from 2,125), CV total_resid_std=2.892 (↓ from 2.967). MLflow v3 Staging (Δ=+2.5% vs @champion v2). **P0 box-score basis fixed:** `*_per_40` fields now scaled by `minutes/40`, not `possessions/100`. Cohort validation (P3) logged: tier_down strongest (Spearman=0.402), tier_same weakest (0.153). Known remaining gap: `estimate_usage_value_coef` returns fallback 1.5 every run (zero-overlap bug). Value deltas production-ready; per-game box stats should be validated against named-player checklist before coach-facing exposure. | Fit style/skill delta empirically (biggest R² gain); fix usage-coef zero-overlap; position-specific competition tier effects; barttorvik as secondary RAPM label; add eligibility/timing features. Full roadmap in `../models/destination_projection_plan.md` §19-20. | [`../models/destination_projection_plan.md`](../models/destination_projection_plan.md); [`../../scripts/run_destination_projection.py`](../../scripts/run_destination_projection.py); [`../../src/portalpoint/modeling/destination_projection.py`](../../src/portalpoint/modeling/destination_projection.py) |
 | Program Fit | Not started. | Define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities. | `APPLICATION_STATUS.md`; future program-fit plan needed |
 | Replace proxies with better public/partner data; expose configurable program priorities and learn from feedback. | [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md); `APPLICATION_STATUS.md` |
 | M5 Transfer Success | Not started. | Define outcome label and historical transfer training set; build first predictor writing to `predictions`. | Add confidence/risk explanations and calibration monitoring. | `notebooks/models/` future notebook |
@@ -37,8 +38,8 @@ Immediate modeling order:
 ✅ Gap Matching                  (gap-cos-v4; all-pairs; 9,756,718 rows; shared roster_baseline; is_portal_candidate synced separately)
 ✅ fit_scores.py partial real scoring (scheme + gap, dynamic current-season resolution)
 ✅ Neutral Player Projection     (Phase 2a next-season forecast API default 2026-06-25; Phase 0 v2 retained as baseline comparator)
-→  Role Fit / Playing Time
-→  Destination-Adjusted Player Projection
+✅ Role Fit / Playing Time       (playing-time-rotation-v2; 457,345 rows, 365 schools, 2027 all-pairs complete; role_fit synced)
+✅ Destination-Adjusted Proj     (player-destination-proj-v1; 454,790 rows, target=2027; CV resid_std=2.892; v3 Staging; P0-P3 fixes applied)
 →  Program Fit
 →  fit_scores.py full scoring
 →  Recommendation Engine
@@ -61,7 +62,9 @@ Current composite state:
 overall_fit = 0.30 * scheme_fit + 0.20 * gap_match + 0.50 * 50.0
 ```
 
-`role_fit` and `program_fit` are still stubbed at 50. `scheme_fit` and `gap_match` are real.
+`role_fit` is implemented in branch but not yet fully written for all 2027 pairs. `program_fit`
+is still stubbed at 50. `scheme_fit` and `gap_match` are real and serve as 2026 fit-context inputs
+for the 2027 Playing Time write.
 
 ---
 
@@ -366,9 +369,9 @@ Full design, every real bug found and fixed, and the complete real-data record l
 
 | # | Model / Calculator | Status | Depends on | Output |
 |---|---|---|---|---|
-| 4 | Playing Time / Rotation -> Role Fit | Not started | shared roster baseline, neutral player projection, M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4 | Playing Time / Rotation -> Role Fit | Draft implementation in branch; full 2027 all-school write pending | shared roster baseline, 2027 neutral player projection, 2026 fit/roster context | `playing_time_projections`, `player_team_fit_scores.role_fit` |
 | 4a | Neutral Player Projection | ✅ Phase 2a next-season forecast production API default; Phase 0 v2 retained as baseline comparator | player game logs or season-level fallback, HE impact labels | `player_projections` (`player-proj-phase2a-fcast-v1` production rows; `player-projection-shrinkage-v2` / `player-projection-phase2a-v2` comparators) |
-| 4b | Playing Time / Rotation -> Role Fit | Not started | shared roster baseline, neutral player projection, M1/M3 helpful | `player_team_fit_scores.role_fit` |
+| 4b | Playing Time / Rotation -> Role Fit | Draft implementation in branch; full 2027 all-school write pending | shared roster baseline, neutral player projection, M1/M3 helpful | `playing_time_projections`, `player_team_fit_scores.role_fit` |
 | 4c | Destination-Adjusted Player Projection | Not started | neutral player projection + role/minutes outputs | destination projection rows/artifacts |
 | - | Program Fit Calculator | Not started | user preferences, NIL/location/academic proxies | `player_team_fit_scores.program_fit` |
 | 5 | Transfer Success Predictor | Not started | historical transfers/outcomes (`transfers` now populated for season 2026 — full 2020-2026 backfill pending) | `predictions` |
@@ -384,7 +387,7 @@ Critical path:
 ✅ Gap Matching script rerun
 ✅ fit_scores.py partial real scoring
 ✅ Neutral Player Projection (Phase 2a next-season forecast production API default; Phase 0 baseline retained)
-  -> Role Fit / Playing Time
+  -> Role Fit / Playing Time full 2027 production write
   -> Destination-Adjusted Player Projection
   -> Program Fit
   -> fit_scores.py full scoring
@@ -400,12 +403,12 @@ Parallel work:
 
 ## Model Open Questions
 
-> **Resolved:** `fit_scores.py` uses season-aware lookup and serves real `scheme_fit` + `gap_match`; `role_fit` and `program_fit` remain deterministic 50.0 placeholders until M4/Program Fit exist.
+> **Updated:** `fit_scores.py` uses season-aware lookup and serves real `scheme_fit` + `gap_match`; `role_fit` is implemented in branch via `playing_time_projections` but still needs the full 2027 production write before the app should present it as real. `program_fit` remains a deterministic 50.0 placeholder until Program Fit exists.
 
 
 
 1. ✅ Resolved — Gap Matching uses HE `pos_confidence_*` soft positions when available and falls back to one-hot `players.position`.
-2. Do we want to store richer opportunity outputs in a dedicated `playing_time_projections` table, or only write `role_fit` first?
+2. ✅ Resolved — store first-class opportunity outputs in `playing_time_projections`, then sync/upsert Role Fit into `player_team_fit_scores`.
 3. What public/proxy data should represent NIL budget and program fit?
 4. ✅ Resolved — HE player play-type data (`off_style_*_pct`, 15-dim) is M1's extended feature set. 85.3% HE coverage with min_pct ≥ 20 filter. BART-only players (14.7%) project through BART-7 dims with 0.75 confidence discount.
 5. How much score explanation is required for coaches before recommendation ranking feels trustworthy?

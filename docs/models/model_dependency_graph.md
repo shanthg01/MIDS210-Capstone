@@ -180,11 +180,11 @@ same local-first pattern.
 | `transfers` / `transfer_portal_events` | Real for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped, 0 matched — matcher bug, not a backfill gap | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, 357 distinct schools (target ~365) | Issue #17 item 4 |
 | `roster_state_features` | Depends on roster_snapshots above — re-run against the full 357-school set if last built against a narrower subset | Issue #17 item 6 |
-| `player_team_fit_scores.role_fit` | Placeholder `50.0` | Role Fit |
+| `player_team_fit_scores.role_fit` | Implemented in branch by `playing-time-rotation-v2`; full 2027 all-school write pending | Role Fit |
 | `player_team_fit_scores.program_fit` | Placeholder `50.0` | Program Fit |
 | `player_team_fit_scores.overall_fit` | Partial; compressed until all components are real | Fit Score Calibration |
 | `player_projections` | **Real — multiple neutral `model_version`s coexist.** `player-projection-shrinkage-v2` (Phase 0 baseline), `player-projection-phase2a-v2` (same-season Phase 2a diagnostic), and `player-proj-phase2a-fcast-v1` (production next-season forecast, observed `S` -> target `S+1`) — separate partial-unique-index keys, can't collide. Phase 1 (Kalman) is validation-only, doesn't write here. | Player Projection |
-| `playing_time_projections` | Planned / table decision pending | Role Fit |
+| `playing_time_projections` | Implemented Role Fit source-of-truth table; live 2026 portal cycle writes target `season=2027` rows with 2026 context in `opportunity_drivers` | Role Fit |
 | `team_rating_projections` | Table exists; no real rows yet | Team Rating Projection |
 | `predictions` | Table/API exists; no real rows yet | Transfer Success |
 | `recommendations` | Table/API exists; no real rows yet | Recommendation Engine |

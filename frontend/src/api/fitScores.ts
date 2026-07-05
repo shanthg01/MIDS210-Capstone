@@ -2,7 +2,7 @@ import client from './client';
 import type { FitScoreResponse, TeamRatingProjectionResponse } from '../types/api';
 
 export async function getFitScore(
-  playerId: number,
+  playerId: string,
   schoolId: number,
 ): Promise<FitScoreResponse> {
   const { data } = await client.get<FitScoreResponse>('/fit-scores', {
@@ -12,7 +12,7 @@ export async function getFitScore(
 }
 
 export async function getTeamRatingProjection(
-  playerId: number,
+  playerId: string,
   schoolId: number,
 ): Promise<TeamRatingProjectionResponse> {
   const { data } = await client.get<TeamRatingProjectionResponse>('/projections/team-rating', {
