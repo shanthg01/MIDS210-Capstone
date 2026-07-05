@@ -39,15 +39,15 @@ setup_mlflow()
 FIG_DIR = Path("../../docs/presentation/figures")
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Target players and school (mock IDs — replace with real DB lookups)
-SCHOOL_ID = 47          # Gonzaga
+# Target players and school
+SCHOOL_ID = 8           # Gonzaga
 TARGET_PLAYERS = {
-    "Moore":  1042,     # Jalen Moore
-    "Carter": 2087,     # DeShawn Carter
-    "Ellis":  3314,     # Cam Ellis
+    "Ruffin":   7578028029286400392,   # Daeshun Ruffin, PG, Jackson St.
+    "Crawford": 6910442837336165955,   # Elijah Crawford, PG, Illinois Chicago
+    "Evans":    9023425631028193516,   # Kyle Evans, C, UC Irvine
 }
 SEASON = 2026
-PLAYER_COLORS = {"Moore": "#1f77b4", "Carter": "#d62728", "Ellis": "#2ca02c"}
+PLAYER_COLORS = {"Ruffin": "#1f77b4", "Crawford": "#d62728", "Evans": "#2ca02c"}
 ```
 
 ---
@@ -55,19 +55,22 @@ PLAYER_COLORS = {"Moore": "#1f77b4", "Carter": "#d62728", "Ellis": "#2ca02c"}
 ## Section 0 — Setup: Resolve Real Player IDs
 
 ```python
-# Cell 0-1: Look up real player_ids by name + season for all three targets
-# Replace mock IDs above with real results from this query
+# Cell 0-1: Verify real player_ids by name + season for all three targets
 
 PLAYER_LOOKUP_SQL = """
-SELECT p.id, p.name, p.position, pss.season, s.name as school
+SELECT p.id, p.full_name, p.position, pss.season, s.name as school
 FROM players p
 JOIN player_season_stats pss ON pss.player_id = p.id
 JOIN schools s ON s.id = pss.school_id
-WHERE p.name ILIKE ANY(ARRAY['%Moore%','%Carter%','%Ellis%'])
+WHERE p.id = ANY(:player_ids)
   AND pss.season = :season
-ORDER BY p.name, pss.season
+ORDER BY p.full_name, pss.season
 """
-players_df = pd.read_sql(text(PLAYER_LOOKUP_SQL), engine, params={"season": SEASON})
+players_df = pd.read_sql(
+    text(PLAYER_LOOKUP_SQL),
+    engine,
+    params={"player_ids": list(TARGET_PLAYERS.values()), "season": SEASON},
+)
 display(players_df)
 ```
 
@@ -474,7 +477,7 @@ def make_radar(ax, values, label, color, alpha=0.25):
 fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={"polar": True})
 
 # Normalize each dimension 0–1 across all players + Gonzaga
-# Plot Gonzaga, Moore, Carter, Ellis
+# Plot Gonzaga, Ruffin, Crawford, Evans
 
 ax.set_title("Style Vector Radar — Targets vs. Gonzaga System", pad=20, fontsize=13)
 ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
@@ -614,7 +617,7 @@ player_skills = pd.read_sql(
 )
 
 # Gap "need" vector: normalize gap_by_pos to a skill-need profile
-# (simple proxy: SG/SF gap → weight 3PT/assist/def skills higher)
+# (simple proxy: lead-guard/frontcourt gaps → weight assist/usage/rebounding skills higher)
 gap_need = np.array([0.6, 0.3, 0.5, 0.7, 0.6, 0.4])  # manual for demo; replace with real roster gap vector
 
 fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
@@ -1039,11 +1042,11 @@ fig, axes = plt.subplots(1, len(TARGET_PLAYERS), figsize=(16, 6), sharey=True)
 
 DELTA_LABELS = ["Δ1 Role/Usage", "Δ2 Style Fit", "Δ3 Roster Ctx", "Δ4 Tier"]
 
-# Hardcoded deltas for demo — replace with real uncertainty_components JSON values
+# Fallback demo deltas only — prefer real explanation JSON values from destination rows
 DELTAS = {
-    "Moore":  [0.3, 0.4, 0.2, 0.0],
-    "Carter": [-0.8, -0.6, -0.1, 0.2],
-    "Ellis":  [0.2, 0.1, 0.2, 0.0],
+    "Ruffin":   [-0.75, -0.06, 0.15, -0.60],
+    "Crawford": [-0.17,  0.04, 0.07, -0.20],
+    "Evans":    [-0.74,  0.07, 0.14, -0.20],
 }
 
 for i, (name, pid) in enumerate(TARGET_PLAYERS.items()):
