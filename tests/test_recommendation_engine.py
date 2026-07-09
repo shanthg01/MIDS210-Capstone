@@ -1,7 +1,7 @@
 """Unit tests for the 2-stage recommendation engine.
 
 All fixtures use small, deterministic DataFrames — no 120-player mock.
-Only scheme_fit and gap_match are present as fit columns (current scope).
+scheme_fit, gap_match, and role_fit are present as fit columns (current scope).
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ def base_df() -> pd.DataFrame:
             "position":    ["PG",    "SG",  "SF"],
             "scheme_fit":  [80.0,    60.0,  40.0],
             "gap_match":   [70.0,    50.0,  30.0],
+            "role_fit":    [50.0,    95.0,  20.0],
             # future — needed by generate_top_50_candidates when Models 5–6 ready:
             "player_projection": [8.0,  5.0,  2.0],
             "data_confidence":   [0.9,  0.7,  0.5],
@@ -47,6 +48,7 @@ def large_df() -> pd.DataFrame:
             "position":    ["PG"] * n,
             "scheme_fit":  rng.uniform(20, 90, n),
             "gap_match":   rng.uniform(20, 90, n),
+            "role_fit":    rng.uniform(20, 90, n),
             # future — needed by generate_top_50_candidates when Models 5–6 ready:
             "player_projection": rng.uniform(0, 10, n),
             "data_confidence":   rng.uniform(0.5, 1.0, n),
@@ -91,6 +93,13 @@ class TestCalculateOverallFit:
         total = sum(DEFAULT_FIT_WEIGHTS.values())
         assert abs(total - 1.0) < 1e-6
 
+    def test_default_weights_include_role_fit(self):
+        assert DEFAULT_FIT_WEIGHTS == {
+            "scheme_fit": 0.30,
+            "gap_match": 0.35,
+            "role_fit": 0.35,
+        }
+
 
 # ── generate_top_50_candidates ───────────────────────────────────────────────
 
@@ -125,6 +134,12 @@ class TestGenerateTop50Candidates:
         alice = result[result["player_name"] == "Alice"].iloc[0]
         assert alice["overall_fit"] == pytest.approx(75.0)
         assert alice["stage1_rank_score"] == pytest.approx(75.0 / 100)
+
+    def test_default_role_fit_can_change_stage1_order(self, base_df):
+        """Bob's stronger role fit should beat Alice under default weights."""
+        result = generate_top_50_candidates(base_df)
+        assert result.loc[0, "player_name"] == "Bob"
+        assert result.loc[0, "overall_fit"] == pytest.approx(68.75)
 
     def test_index_is_reset(self, base_df):
         result = generate_top_50_candidates(base_df)
@@ -184,6 +199,37 @@ class TestRefineToTop10:
         pd.testing.assert_series_equal(
             result_raw["personalized_fit"].reset_index(drop=True),
             result_norm["personalized_fit"].reset_index(drop=True),
+            check_names=False,
+        )
+
+    def test_user_role_weight_is_normalized(self, base_df):
+        top50 = generate_top_50_candidates(
+            base_df,
+            weights={"scheme_fit": 0.5, "gap_match": 0.5},
+        )
+        result = refine_to_top_10(
+            top50,
+            user_preferences={
+                "scheme_fit_weight": 1,
+                "gap_match_weight": 1,
+                "role_fit_weight": 2,
+            },
+        )
+        bob = result[result["player_name"] == "Bob"].iloc[0]
+        expected = (0.25 * 60.0) + (0.25 * 50.0) + (0.50 * 95.0)
+        assert bob["personalized_fit"] == pytest.approx(expected)
+
+    def test_missing_future_preference_columns_are_ignored(self, top50):
+        result = refine_to_top_10(
+            top50,
+            user_preferences={
+                "scheme_fit_weight": 1,
+                "program_fit_weight": 100,
+            },
+        )
+        pd.testing.assert_series_equal(
+            result["personalized_fit"].reset_index(drop=True),
+            result["scheme_fit"].reset_index(drop=True),
             check_names=False,
         )
 
