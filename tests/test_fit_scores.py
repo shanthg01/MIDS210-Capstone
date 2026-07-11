@@ -111,3 +111,13 @@ def test_portal_candidate_and_current_school_flags_present(client, H):
     data = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()
     assert data["is_portal_candidate"] is False
     assert data["is_current_school"] is False
+
+
+def test_scheme_fit_stale_fields_present(client, H):
+    # No real team_system_profiles row for out-of-range school — stale flag
+    # should default to False, reason to None.
+    data = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()
+    assert "scheme_fit_stale" in data
+    assert "scheme_fit_stale_reason" in data
+    assert data["scheme_fit_stale"] is False
+    assert data["scheme_fit_stale_reason"] is None

@@ -348,3 +348,46 @@ class TestShouldContinue:
             "errors": [],
         }
         assert should_continue(state) == "dedup"
+
+
+# ---------------------------------------------------------------------------
+# coach_departure response shape (Gate 7)
+# ---------------------------------------------------------------------------
+
+class TestCoachDepartureResponseShape:
+    """coach_departure tool returns JSON with stale-flag fields even on DB failure."""
+
+    def test_db_failure_response_has_stale_flag_field(self):
+        """When DB is unavailable the error-path response still includes
+        team_system_profiles_stale_flagged so callers can parse consistently."""
+        import json
+        from unittest.mock import patch
+
+        with patch(
+            "portalpoint.agents.news_monitoring.resolve._get_engine",
+            side_effect=Exception("no db"),
+        ):
+            raw = _invoke(
+                __import__(
+                    "portalpoint.agents.news_monitoring.resolve",
+                    fromlist=["coach_departure"],
+                ).coach_departure,
+                coach_name="Test Coach",
+                school_from="Test University",
+            )
+
+        result = json.loads(raw)
+        assert result["event"] == "coach_departure"
+        assert "team_system_profiles_stale_flagged" in result
+        assert result["team_system_profiles_stale_flagged"] == 0
+        assert result["status"] == "log_only_no_db"
+
+    def test_fit_score_response_has_stale_fields(self):
+        """FitScoreResponse schema includes scheme_fit_stale + scheme_fit_stale_reason."""
+        from portalpoint.api.schemas.fit_score import FitScoreResponse
+        fields = FitScoreResponse.model_fields
+        assert "scheme_fit_stale" in fields
+        assert "scheme_fit_stale_reason" in fields
+        # Defaults: False / None
+        assert fields["scheme_fit_stale"].default is False
+        assert fields["scheme_fit_stale_reason"].default is None

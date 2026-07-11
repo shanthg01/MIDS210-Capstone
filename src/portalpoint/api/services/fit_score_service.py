@@ -21,7 +21,7 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
-from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember
+from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember, TeamSystemProfile
 from portalpoint.modeling.gap_matching import GAP_FEATURES
 
 
@@ -108,6 +108,8 @@ def stub_fit_score(
     school_id: int,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
+    scheme_fit_stale: bool = False,
+    scheme_fit_stale_reason: str | None = None,
 ) -> FitScoreResponse:
     rng = random.Random(player_id * 1000 + school_id)
     gap = round(rng.uniform(55.0, 95.0), 1)
@@ -146,6 +148,8 @@ def stub_fit_score(
         is_portal_candidate=False,  # no real row to check — pair is outside model scope
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 
@@ -153,6 +157,8 @@ def real_fit_score(
     row: PlayerTeamFitScore,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
+    scheme_fit_stale: bool = False,
+    scheme_fit_stale_reason: str | None = None,
 ) -> FitScoreResponse:
     # role_fit is model-written where playing-time rows have been synced.
     # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
@@ -202,6 +208,8 @@ def real_fit_score(
         is_portal_candidate=row.is_portal_candidate,
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 
@@ -267,17 +275,33 @@ async def get_fit_score(
         db, player_id, school_id, season
     )
 
+    # Check whether the destination school's M2 team_system_profile is stale
+    # (set by coach_departure tool in the news-monitoring agent).
+    stale_result = await db.execute(
+        select(TeamSystemProfile.stale_flag, TeamSystemProfile.stale_reason).where(
+            TeamSystemProfile.school_id == school_id,
+            TeamSystemProfile.season == season,
+        )
+    )
+    stale_row = stale_result.first()
+    scheme_fit_stale = bool(stale_row.stale_flag) if stale_row else False
+    scheme_fit_stale_reason = stale_row.stale_reason if stale_row else None
+
     if row is not None:
         return real_fit_score(
             row,
             is_current_school=is_current_school,
             is_roster_baseline_member=is_roster_baseline_member,
+            scheme_fit_stale=scheme_fit_stale,
+            scheme_fit_stale_reason=scheme_fit_stale_reason,
         )
     return stub_fit_score(
         player_id,
         school_id,
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 

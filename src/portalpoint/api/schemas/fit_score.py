@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -97,3 +98,8 @@ class FitScoreResponse(BaseModel):
     # player has a stale player_season_stats row but is absent from the latest
     # roster outlook.
     is_roster_baseline_member: bool = False
+    # True when the news-monitoring agent detected a coaching change at school_id
+    # and M2 team_system_profiles has not yet been re-run for this school/season.
+    # Surfaces as a warning: scheme fit score may not reflect the new coaching staff's system.
+    scheme_fit_stale: bool = False
+    scheme_fit_stale_reason: Optional[str] = None

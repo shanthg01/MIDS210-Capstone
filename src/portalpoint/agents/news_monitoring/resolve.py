@@ -268,6 +268,22 @@ def coach_departure(coach_name: str, school_from: str) -> str:
                 },
             )
 
+            # Flag all team_system_profiles rows for this school as stale.
+            # Scheme fit scores computed against the old coaching staff's style
+            # vector may no longer be accurate until M2 is re-run for this school.
+            if school_id is not None:
+                result = conn.execute(
+                    sql_text(
+                        "UPDATE team_system_profiles "
+                        "SET stale_flag = true, stale_reason = 'coaching_change' "
+                        "WHERE school_id = :school_id"
+                    ),
+                    {"school_id": school_id},
+                )
+                rows_flagged = result.rowcount
+            else:
+                rows_flagged = 0
+
         return json.dumps({
             "event": "coach_departure",
             "coach_name": coach_name,
@@ -275,10 +291,11 @@ def coach_departure(coach_name: str, school_from: str) -> str:
             "school_id": school_id,
             "event_date": event_date,
             "status": "logged_to_program_events",
+            "team_system_profiles_stale_flagged": rows_flagged,
             "message": (
                 f"Coaching departure logged for {coach_name} ({school_from}). "
-                "Pending manual review — M2 team_system_profiles should be "
-                "marked stale for this school after confirmation."
+                f"Pending manual review — {rows_flagged} team_system_profiles row(s) "
+                "flagged stale (scheme fit scores may be outdated until M2 reruns)."
             ),
         }, indent=2)
 
@@ -290,6 +307,7 @@ def coach_departure(coach_name: str, school_from: str) -> str:
             "school_from": school_from,
             "event_date": event_date,
             "status": "log_only_no_db",
+            "team_system_profiles_stale_flagged": 0,
             "error": str(exc),
             "message": (
                 f"DB write failed; event logged in-memory only. "
