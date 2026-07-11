@@ -1,6 +1,6 @@
 # PortalPoint Model Dependency Graph
 
-**Last updated:** June 25, 2026 (Player Projection Phase 2a real-data validated against Issue #37, beats Phase 0 on offense)
+**Last updated:** July 9, 2026 (Role Fit, Destination Projection, and Recommendation v1 merged; Team Rating remains in open PR #49)
 **Scope:** Model inputs, outputs, downstream consumers, and execution order.
 
 This document is the dependency contract for PortalPoint's data science stack. It
@@ -22,6 +22,7 @@ Raw data / ingest
   -> Gap Matching
   -> Player Projection
   -> Role Fit / Playing Time
+  -> Destination-Adjusted Player Projection
   -> Team Rating Projection
   -> Program Fit
   -> Fit Score Calibration / Overall Fit
@@ -53,7 +54,7 @@ Player Game Logs + Game Context + HE Impact Labels        |
     |                                                     |
     v                                                     |
 Neutral Player Projection <------------------------------+
-    writes: neutral player_projections or prediction artifacts
+    writes: neutral player_projections
     |
     v
 Role Fit / Playing Time <------ Roster Snapshots + Transfers
@@ -63,7 +64,7 @@ Role Fit / Playing Time <------ Roster Snapshots + Transfers
     v
 Destination-Adjusted Player Projection
     consumes: neutral projection + role/minutes
-    writes: destination player projections or predictions
+    writes: destination player_projections
     |
     v
 Team Rating Projection
@@ -144,8 +145,10 @@ always block an MVP run.
 
 ## Execution Order
 
-Current completed scripts stop at Gap Matching. Planned scripts should extend the
-same local-first pattern.
+Merged scripts now extend through neutral projection, playing time, destination-adjusted
+projection, and the baseline recommendation engine. Team Rating Projection is in
+open PR #49 and should be merged/rerun before treating `team_rating_projections`
+as current.
 
 ```text
 1.  Apply migrations
@@ -159,13 +162,13 @@ same local-first pattern.
 8.  Run M2 Team System Clustering
 9.  Run M3 Scheme Fit
 10. Run Gap Matching baseline or v2
-11. Run Neutral Player Projection — ✅ Phase 0 done (`run_player_projection.py`); Phase 1 (Kalman) is notebook-only validation, no script
-12. Run Role Fit / Playing Time
-13. Run Destination-Adjusted Player Projection
-14. Run Team Rating Projection
+11. Run Neutral Player Projection — ✅ Phase 2a next-season forecast production path (`run_player_projection.py`)
+12. Run Role Fit / Playing Time — ✅ `playing-time-rotation-v2` full 2027 write completed
+13. Run Destination-Adjusted Player Projection — ✅ `player-destination-proj-v1` baseline completed
+14. Run Team Rating Projection — open PR #49 on `team-projection`, not merged to `main`
 15. Run Program Fit
 16. Run Fit Score Calibration / Overall Fit refresh
-17. Run Recommendation Engine
+17. Run Recommendation Engine — ✅ baseline v1 script; API wiring still pending
 18. Verify API + frontend outputs
 ```
 
@@ -180,14 +183,14 @@ same local-first pattern.
 | `transfers` / `transfer_portal_events` | Real for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped, 0 matched — matcher bug, not a backfill gap | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, 357 distinct schools (target ~365) | Issue #17 item 4 |
 | `roster_state_features` | Depends on roster_snapshots above — re-run against the full 357-school set if last built against a narrower subset | Issue #17 item 6 |
-| `player_team_fit_scores.role_fit` | Implemented in branch by `playing-time-rotation-v2`; full 2027 all-school write pending | Role Fit |
+| `player_team_fit_scores.role_fit` | Real for 2027 rows written/synced by `playing-time-rotation-v2`; program fit remains placeholder so composite scores are still partial | Role Fit |
 | `player_team_fit_scores.program_fit` | Placeholder `50.0` | Program Fit |
 | `player_team_fit_scores.overall_fit` | Partial; compressed until all components are real | Fit Score Calibration |
 | `player_projections` | **Real — multiple neutral `model_version`s coexist.** `player-projection-shrinkage-v2` (Phase 0 baseline), `player-projection-phase2a-v2` (same-season Phase 2a diagnostic), and `player-proj-phase2a-fcast-v1` (production next-season forecast, observed `S` -> target `S+1`) — separate partial-unique-index keys, can't collide. Phase 1 (Kalman) is validation-only, doesn't write here. | Player Projection |
 | `playing_time_projections` | Implemented Role Fit source-of-truth table; live 2026 portal cycle writes target `season=2027` rows with 2026 context in `opportunity_drivers` | Role Fit |
-| `team_rating_projections` | Table exists; no real rows yet | Team Rating Projection |
+| `team_rating_projections` | Table exists; real implementation is in open PR #49 and needs merge/rerun before rows are current | Team Rating Projection |
 | `predictions` | Table/API exists; no real rows yet | Transfer Success |
-| `recommendations` | Table/API exists; no real rows yet | Recommendation Engine |
+| `recommendations` | Table exists; baseline v1 engine/runner can write rows, but `/api/recommendations` still serves stub scores on `main` | Recommendation Engine |
 
 ## Canonical Question Chain
 

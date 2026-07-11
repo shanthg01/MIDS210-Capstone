@@ -23,24 +23,24 @@ Each model narrows a different dimension of uncertainty. This is the through-lin
 
 ## Persona: Gonzaga Bulldogs
 
-**System:** Motion offense, high 3PT volume, elite assisted-shot rate, up-tempo pace, multi-skill bigs. High-major (WCC). Heavy portal recruiter.
+**System:** Rim-pressure offense, strong assisted-shot rate, up-tempo pace, and a jump-shot funnel defensive profile. High-major (WCC). Heavy portal recruiter.
 
-**Roster situation:** Two senior wings exhausted eligibility — combined 31% of team minutes departing. Primary need: SG/SF with catch-and-shoot capability, off-ball movement, perimeter defense.
+**Roster situation:** Current roster gaps emphasize on-ball guard creation, assist pressure, and frontcourt depth/rebounding. Primary need: a high-fit lead guard, with a secondary big who can stabilize the center rotation.
 
 **Three targets:**
 
 | Player | Pos | From | Transfer direction |
 |---|---|---|---|
-| **Jalen Moore** | SG | Loyola Marymount (WCC) | Mid-major → same conference high-major |
-| **DeShawn Carter** | SF | Memphis (AAC) | Mid-major → high-major |
-| **Cam Ellis** | PF/C | Bradley (MVC) | Mid-major → high-major |
+| **Daeshun Ruffin** | PG | Jackson St. (SWAC) | Low-major → high-major |
+| **Elijah Crawford** | PG | Illinois Chicago (MVC) | Mid-major → high-major |
+| **Kyle Evans** | C | UC Irvine (Big West) | Mid-major → high-major |
 
 ---
 
 ## Entry Point: Portal Search
 
 ```
-GET /api/players/search?available_only=true&position=SG,SF
+GET /api/players/search?available_only=true&position=PG,C
 ```
 
 `available_only=true` filters to `player_team_fit_scores.is_portal_candidate = true`. This flag is set by `portalpoint.modeling.availability.sync_portal_candidate_flags()`, called on every `ingest_transfers_247sports.py` run and every `run_gap_matching.py` run. It identifies players with a matched `Entered` or `Committed` row in `transfer_portal_events` for the current season. The flag scopes the recommendation surface without restricting what the underlying models score — all ~9.7M player×school rows in `player_team_fit_scores` remain intact; portal candidacy is a filter layer, not a modeling constraint.
@@ -132,29 +132,29 @@ The news agent does **not** replace `ingest_transfers_247sports.py`, `ingest_bar
 
 **K selection:** Silhouette score sweep across k=4–16 + elbow inspection of inertia. Final K chosen per-group (offense K and defense K may differ). Run interactively in `notebooks/models/team_clustering.ipynb`; fixed params used by `scripts/run_team_clustering.py`.
 
-**Label assignment:** Manual, after centroid inspection. Coaching-vocabulary names (e.g., "High-Efficiency Motion", "Pack-Line Halfcourt", "Fast-Break Transition"). Labels stored in `team_system_profiles.system_label`.
+**Label assignment:** Manual, after centroid inspection. Coaching-vocabulary names (e.g., "Rim Pressure Offense", "Pack-Line Halfcourt", "Fast-Break Transition"). Labels stored in `team_system_profiles.system_label`.
 
 **Output:** `team_system_profiles` — one row per school×season, with offense cluster, defense cluster, and composite label. MLflow artifact: `team-k{K}-v2-2026` in `s3://portalpoint-data/models/`.
 
 ### Gonzaga Profile
 
-- **Label:** "High-Efficiency Motion"
-- **Offense centroid features:** 3PT rate 41.2%, assisted% 68.3%, rim% 34.1%, pace 71.4 pos/40, transition PPP 1.14
-- **Defense centroid features:** moderate transition defense, low scramble allowed
-- **Peer programs in same cluster:** Virginia Tech, Creighton, Purdue (motion-offense, high assisted%)
+- **Label:** "Rim Pressure Offense / Jump-Shot Funnel Defense"
+- **Gonzaga offensive feature values:** 3PT rate 30.8%, assisted% 57.5%, rim rate 38.4%, pace 69.5 pos/40, transition frequency 23.8%
+- **Defense centroid features:** funnels opponents into jump-shot volume while protecting the rim and transition floor balance
+- **Peer programs in same cluster:** visible in the team cluster scatter and centroid heatmap generated from `team_system_profiles`
 
 ### Visual Callouts
 
 - **VISUAL 1a:** Elbow + silhouette curves showing K selection for offense and defense groups
 - **VISUAL 1b:** 2D PCA/UMAP scatter of all team-season vectors, colored by cluster label — Gonzaga highlighted, peer cluster members labeled
-- **VISUAL 1c:** Centroid feature heatmap across all clusters — shows what makes "High-Efficiency Motion" distinct from neighbors (e.g., vs. "Transition-Heavy" cluster)
+- **VISUAL 1c:** Centroid feature heatmap across all clusters — shows what makes "Rim Pressure Offense / Jump-Shot Funnel Defense" distinct from neighbors
 - **VISUAL 1d:** Table of 5–8 peer programs in Gonzaga's cluster with their key feature values
 
 ---
 
 ## Step 2 — Who Are These Players? Player Clustering (M1)
 
-**Question:** What archetype is each target, and does that archetype family belong in a "High-Efficiency Motion" system?
+**Question:** What archetype is each target, and does that archetype family belong in Gonzaga's rim-pressure system?
 
 ### Technical Approach
 
@@ -170,17 +170,17 @@ The news agent does **not** replace `ingest_transfers_247sports.py`, `ingest_bar
 
 | Player | Archetype | Centroid distance | Key distinguishing features |
 |---|---|---|---|
-| **Moore** | 3-and-D Wing | 0.31 (high confidence) | 3PT rate 43.1%, assisted% 77%, above-avg defensive indicators, low usage 18.4% |
-| **Carter** | Isolation Scorer | 0.28 (high confidence) | Usage 26.8%, assisted% own shots 38%, high mid-range freq, low 3PT 29.2% |
-| **Ellis** | Stretch-5 / Playmaking Big | 0.44 (moderate confidence) | Rim% 58.3%, 3PT rate 34.7% (high for his position), assist rate 21.4%, OrtG 117 |
+| **Ruffin** | Lead Scoring Playmaker | 0.44 | Usage 36.2%, 3PT rate 29.2%, assist rate 45.2%, BPM +4.1 |
+| **Crawford** | Lead Scoring Playmaker | 0.47 | Usage 31.1%, 3PT rate 28.5%, assist rate 43.0%, BPM +2.6 |
+| **Evans** | Post Scoring Big | 0.48 | Usage 16.1%, rim-heavy profile, assist rate 6.4%, BPM +3.0 |
 
-Moore and Ellis have archetype families that appear in Gonzaga's historical roster composition. Carter's archetype is rare in motion-offense programs — the system doesn't create isolation looks.
+Ruffin and Crawford both profile as lead scoring playmakers, while Evans gives the board a contrasting frontcourt archetype. The comparison is useful because the model can separate "best guard fit" from "best roster-shape complement" rather than treating all portal targets as interchangeable.
 
 ### Visual Callouts
 
 - **VISUAL 2a:** Silhouette curve showing k=9 selection
 - **VISUAL 2b:** 2D UMAP scatter of all player-season vectors colored by archetype — three targets highlighted with labels
-- **VISUAL 2c:** Per-archetype centroid feature heatmap (9 rows × key features) — highlights what separates "Isolation Scorer" from "3-and-D Wing"
+- **VISUAL 2c:** Per-archetype centroid feature heatmap (9 rows × key features) — highlights what separates lead scoring playmakers from post scoring bigs
 - **VISUAL 2d:** Table of 5 peer players in each target's cluster (name, school, season) — grounds archetypes in recognizable players
 
 ---
@@ -203,14 +203,14 @@ Moore and Ellis have archetype families that appear in Gonzaga's historical rost
 
 ### Results
 
-| | 3PT% | Rim% | Usage% | Assisted% | Pace | **Scheme Fit** |
-|---|---|---|---|---|---|---|
-| **Gonzaga target** | 41.2 | 34.1 | — | 68.3 | 71.4 | — |
-| **Moore** | 43.1 | 28.7 | 18.4 | 77.0 | 70.2 | **78.4** |
-| **Carter** | 29.2 | 31.4 | 26.8 | 38.0 | 68.9 | **52.1** |
-| **Ellis** | 34.7 | 58.3 | 20.1 | 61.2 | 69.8 | **71.3** |
+| | 3PT Att% | Rim Att% | Usage% | Assist% | **Scheme Fit** |
+|---|---|---|---|---|---|
+| **Gonzaga target** | 30.8 | 38.4 | — | 57.5 | — |
+| **Ruffin** | 29.2 | 37.8 | 36.2 | 42.6 | **99.6** |
+| **Crawford** | 28.5 | 21.0 | 31.1 | 38.6 | **89.7** |
+| **Evans** | 3.5 | 76.7 | 16.1 | 6.0 | **80.8** |
 
-Carter's 52.1 is driven almost entirely by the assisted% gap (38.0 vs. 68.3 target): Gonzaga's system produces catch-and-shoot looks, Carter's game requires iso creation. This dimension alone drops his cosine similarity substantially.
+Ruffin is the strongest pure scheme match: his rim pressure and 3PT mix closely track Gonzaga's offensive shape. Crawford remains a strong guard fit, while Evans is a different bet — less guard creation, but a clear rim-pressure/frontcourt profile.
 
 ### Visual Callouts
 
@@ -239,17 +239,17 @@ Carter's 52.1 is driven almost entirely by the assisted% gap (38.0 vs. 68.3 targ
 
 ### Gonzaga Roster State
 
-**Departing:** 31% of minutes from SG/SF slot. Departed skill profile: catch-and-shoot 3PT volume, off-ball movement, perimeter defensive activity.
+**Departing / roster context:** The current gap vector points toward guard creation and assist pressure, with a secondary frontcourt/rebounding need.
 
-**Post-departure roster:** Strong at the backcourt initiator role, strong in the frontcourt, thin at the off-ball wing slot. `roster_state_features` captures this — returning/departing/incoming minutes by position and skill group, updated after 247Sports ingestion.
+**Post-departure roster:** `roster_state_features` captures returning/departing/incoming minutes by position and skill group, updated after 247Sports ingestion. The visualization normalizes those needs against each target's skill profile.
 
 ### Results
 
 | Player | Gap Match | Key driver |
 |---|---|---|
-| **Moore** | **82.1** | Exact SG position + catch-and-shoot profile maps directly onto departed skill shape |
-| **Carter** | **61.4** | Position fits (SF), but skill shape mismatch — gap needs a shooter, Carter's a creator; soft weighting limits but doesn't eliminate the penalty |
-| **Ellis** | **74.8** | Fills a secondary PF gap (also real); efficient rim-finisher addresses a smaller but real hole |
+| **Ruffin** | **69.3** | Best all-around guard fit; high assist/usage profile maps to the creation need |
+| **Crawford** | **58.5** | Similar lead-guard archetype, but lower gap alignment than Ruffin |
+| **Evans** | **67.8** | Strong secondary match through center/frontcourt value and rebounding profile |
 
 ### Visual Callouts
 
@@ -318,21 +318,21 @@ Phase 0 is in production. Phase 2a is the technically complex, novel contributio
 ### Projection Results
 
 ```
-GET /api/players/1042/projection        # neutral, defaults to Phase 0
-GET /api/players/1042/projection?model_version=player-projection-phase2a-v1
+GET /api/players/7578028029286400392/projection        # neutral, defaults to Phase 0
+GET /api/players/7578028029286400392/projection?model_version=player-proj-phase2a-fcast-v1
 ```
 
-| Player | Last season PPG | Phase 0 Proj Off RAPM | Phase 2a Proj Off RAPM | Δ Ph2a vs Ph0 | Phase 0 Proj Def RAPM |
-|---|---|---|---|---|---|
-| **Moore** | 14.8 PPG / 43.1% 3PT | +4.2 | +4.7 | +0.5 | +0.8 |
-| **Carter** | 17.4 PPG / 29.2% 3PT | +6.1 | +6.4 | +0.3 | −1.4 |
-| **Ellis** | 11.2 PPG / 6.8 RPG | +3.1 | +3.4 | +0.3 | +2.3 |
+| Player | Current season summary | Phase 0 Value/100 | Phase 2a Forecast Value/100 | Δ Ph2a vs Ph0 |
+|---|---|---|---|---|
+| **Ruffin** | 23.3 PPG / 29.2% 3PT / 36.2% usage | +3.3 | +1.7 | −1.6 |
+| **Crawford** | 14.1 PPG / 28.5% 3PT / 31.1% usage | +2.7 | −0.7 | −3.3 |
+| **Evans** | 12.1 PPG / 16.1% usage / center profile | +2.1 | +4.2 | +2.1 |
 
-Phase 2a shifts are modest for these players (all mid-career, not developmental edges). The bigger Phase 2a gains appear for sophomore/junior players with a clear development trajectory — worth showing in the notebook with a contrasting example player.
+Phase 2a separates the board more sharply than Phase 0: Ruffin leads the neutral production case in Phase 0, while Evans gets the largest cross-season lift.
 
 ### Visual Callouts
 
-- **VISUAL 5a:** Per-player skill comparison table: last season observed rate vs. Phase 0 shrunk rate vs. Phase 2a smoothed rate, for all 10 skills. Annotate where shrinkage pulled a stat toward the prior (e.g., Moore's 3PT% is slightly shrunk because his sample was 22 games at moderate minute share).
+- **VISUAL 5a:** Per-player skill comparison table: last season observed rate vs. Phase 0 shrunk rate vs. Phase 2a smoothed rate, for all 10 skills.
 - **VISUAL 5b:** Phase 0 shrinkage weight chart — bar showing `games_played × min_pct` for each player alongside how much their estimates moved from raw to shrunk (small movement = high confidence; large movement = sparse signal).
 - **VISUAL 5c:** Phase 2a cross-season trajectory — for each player, a line chart showing their skill estimate (± uncertainty band) across seasons 2021–2026 with the Phase 2a Kalman smoothed estimate overlaid. Demonstrates where the persistence/drift model adds vs. subtracts from the per-season estimate.
 - **VISUAL 5d:** Phase 0 vs. Phase 2a scatter (all players in DB) — show that Ph2a is uniformly better on offense, neutral on defense. Highlight the three targets.
@@ -369,24 +369,24 @@ Phase 2a shifts are modest for these players (all mid-career, not developmental 
 
 | Player | Proj Minutes | 90% CI | Proj Usage Rate | Role Fit |
 |---|---|---|---|---|
-| **Moore** | **28.4 min/g** | 22.1–34.7 | 19.2% | **76.3** |
-| **Carter** | **19.2 min/g** | 11.4–27.0 | 23.8% | **48.1** |
-| **Ellis** | **22.8 min/g** | 17.3–28.3 | 18.6% | **68.7** |
+| **Ruffin** | **28.6 min/g** | 21.9–35.3 | 16.7% | **73.3** |
+| **Crawford** | **23.6 min/g** | 17.8–29.5 | 13.7% | **65.6** |
+| **Evans** | **25.1 min/g** | 20.9–29.3 | 10.4% | **71.4** |
 
-Carter's wide CI (11.4–27.0) reflects genuine model uncertainty: the training data has seen both outcomes for this archetype×system pairing — programs that adapted around an isolation scorer, and programs that didn't. Moore's tight CI reflects high historical precedent for 3-and-D wings in motion systems.
+Ruffin projects for the largest role, while Evans has the tightest frontcourt rotation case. Crawford's interval leaves room for either a starter-level guard role or a smaller deployment depending on fit and roster competition.
 
 ### Updated Composite Fit (Role Fit now live)
 
 | Player | Scheme (×0.30) | Gap (×0.20) | Role (×0.25) | Program (×0.25, stub) | **Composite** |
 |---|---|---|---|---|---|
-| Moore | 78.4 | 82.1 | 76.3 | 50.0 | **72.6** |
-| Carter | 52.1 | 61.4 | 48.1 | 50.0 | **52.9** |
-| Ellis | 71.3 | 74.8 | 68.7 | 50.0 | **66.4** |
+| Ruffin | 99.6 | 69.3 | 73.3 | 50.0 | **68.7** |
+| Crawford | 89.7 | 58.5 | 65.6 | 50.0 | **63.6** |
+| Evans | 80.8 | 67.8 | 71.4 | 50.0 | **62.8** |
 
 ### Visual Callouts
 
-- **VISUAL 6a:** Horizontal bar chart — projected minutes per game for each player, with 90% CI whiskers. Three players side by side. Annotate Carter's wide CI explicitly.
-- **VISUAL 6b:** Usage rate projection alongside minutes — dual-axis or paired bars showing that Carter's usage stays elevated even at reduced minutes (system won't absorb his style at full-star rate)
+- **VISUAL 6a:** Horizontal bar chart — projected minutes per game for each player, with 90% CI whiskers.
+- **VISUAL 6b:** Usage rate projection alongside minutes — paired bars showing how role expectations differ across the two guards and the center.
 
 ---
 
@@ -428,44 +428,39 @@ Transfer-outcome matrix: source tier × destination tier (4 tiers each). Real si
 
 ### Results
 
-| | Moore | Carter | Ellis |
+| | Ruffin | Crawford | Evans |
 |---|---|---|---|
-| Neutral Off RAPM (Ph 0) | +4.2 | +6.1 | +3.1 |
-| Δ1 Role/Usage | +0.3 | −0.8 | +0.2 |
-| Δ2 Style/Skill Fit | +0.4 | −0.6 | +0.1 |
-| Δ3 Roster Context | +0.2 | −0.1 | +0.2 |
-| Δ4 Competition Tier | 0.0 | +0.2 | +0.0 |
-| **Dest Off RAPM** | **+5.1** | **+4.8** | **+3.6** |
-| Δ total vs neutral | **+0.9** | **−1.3** | **+0.5** |
-| Proj PPG | 14.2 | 11.3 | 9.4 |
-| Proj APG | 4.1 | 1.8 | 2.1 |
-| Proj RPG | 3.8 | 3.1 | 6.8 |
+| Neutral Value/100 (Ph 0) | +3.3 | +2.7 | +2.1 |
+| **Destination Value/100** | **+3.3** | **+4.8** | **+4.5** |
+| Δ total vs neutral | **−0.1** | **+2.1** | **+2.4** |
+| Projected minutes | 28.6 | 23.6 | 25.1 |
+| Projected usage | 16.7 | 13.7 | 10.4 |
 
-Carter's −1.3 destination delta quantifies the system mismatch: his +6.1 neutral value is real, but Gonzaga's system cannot deploy that value fully. Δ2 (style/skill fit) and Δ1 (reduced minutes → usage cut) account for most of the drag.
+Crawford and Evans receive the largest destination uplift, while Ruffin remains the cleanest composite fit because his scheme and role scores are strongest.
 
 ### Visual Callouts
 
-- **VISUAL 7a:** Waterfall chart per player — neutral Off RAPM as baseline, each delta (Δ1–Δ4) as a step up or down, destination RAPM as the final bar. Three players side by side or three separate charts with consistent y-axis.
-- **VISUAL 7b:** Final projected stat line comparison table — Moore vs. Carter vs. Ellis, PPG/APG/RPG alongside Dest Off/Def RAPM and composite fit score.
+- **VISUAL 7a:** Waterfall chart per player — neutral value/100 as baseline, each delta (Δ1–Δ4) as a step up or down, destination value/100 as the final bar. Three players side by side or three separate charts with consistent y-axis.
+- **VISUAL 7b:** Final comparison table — Ruffin vs. Crawford vs. Evans, destination value/100, projected minutes, role fit, and composite fit score.
 
 ---
 
 ## Final Board
 
-| | **Moore** | **Carter** | **Ellis** |
+| | **Ruffin** | **Crawford** | **Evans** |
 |---|---|---|---|
-| Archetype | 3-and-D Wing | Isolation Scorer | Stretch-5 |
-| Scheme Fit | 78.4 | 52.1 | 71.3 |
-| Gap Match | 82.1 | 61.4 | 74.8 |
-| Role Fit | 76.3 | 48.1 | 68.7 |
-| **Composite Fit** | **72.6** | **52.9** | **66.4** |
-| Neutral Off RAPM | +4.2 | +6.1 | +3.1 |
-| Dest Off RAPM | +5.1 | +4.8 | +3.6 |
-| System delta | **+0.9** | **−1.3** | **+0.5** |
-| Proj Minutes (CI) | 28.4 (22–35) | 19.2 (11–27) | 22.8 (17–28) |
-| Proj PPG / APG | 14.2 / 4.1 | 11.3 / 1.8 | 9.4 / 2.1 |
+| Archetype | Lead Scoring Playmaker | Lead Scoring Playmaker | Post Scoring Big |
+| Scheme Fit | 99.6 | 89.7 | 80.8 |
+| Gap Match | 69.3 | 58.5 | 67.8 |
+| Role Fit | 73.3 | 65.6 | 71.4 |
+| **Composite Fit** | **68.7** | **63.6** | **62.8** |
+| Neutral Value/100 | +3.3 | +2.7 | +2.1 |
+| Dest Value/100 | +3.3 | +4.8 | +4.5 |
+| System delta | **−0.1** | **+2.1** | **+2.4** |
+| Proj Minutes (CI) | 28.6 (22–35) | 23.6 (18–29) | 25.1 (21–29) |
+| Proj usage | 16.7% | 13.7% | 10.4% |
 
-**Recommendation:** Moore is the lead target — every model layer agrees. Ellis is the right secondary target (system-compatible archetype, fills a real secondary gap, consistent CI). Carter is the "talent trap" — best neutral player on the board, but every fit dimension penalizes him and the wide minutes CI means the staff can't even count on his volume materializing.
+**Recommendation:** Ruffin is the lead target on composite fit — the scheme score is elite, the projected minutes are starter-level, and the role fit is strongest. Crawford and Evans are the upside cases in destination value, with Evans especially useful as the frontcourt complement if roster construction is prioritized over pure guard fit.
 
 ---
 
@@ -473,4 +468,4 @@ Carter's −1.3 destination delta quantifies the system mismatch: his +6.1 neutr
 
 > Every model narrows a different dimension of uncertainty. Clustering identifies whether the archetype even belongs. Scheme/Gap Fit measures alignment quantitatively. Player Projection tells you the floor — neutral talent. Playing Time tells you whether that talent deploys. Destination Projection synthesizes all five into a single answer: *what does this player do for us, in our system, this season.*
 >
-> Carter's case is the best slide in the deck. Raw stats say recruit him. Every model layer says don't.
+> Ruffin is the cleanest fit, while Crawford and Evans show why destination projection matters: fit score and destination value can point to different kinds of roster decisions.

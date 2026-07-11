@@ -154,9 +154,8 @@ def real_fit_score(
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
 ) -> FitScoreResponse:
-    # role_fit and program_fit are not yet computed (Models 4 + program calculator
-    # pending) — their scalar values are the 50.0 stub written by M3/Gap Matching,
-    # and their breakdowns are seeded random for plausible-looking UI fields.
+    # role_fit is model-written where playing-time rows have been synced.
+    # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
     rng = random.Random(row.player_id * 1000 + row.school_id)
     bd = row.breakdown or {}
     scheme_bd = bd.get("scheme", {})
