@@ -77,6 +77,8 @@ class Coach(Base):
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # head/assistant
     tenure_start: Mapped[Optional[date]] = mapped_column(Date)
+    tenure_end: Mapped[Optional[date]] = mapped_column(Date)
+    departure_date: Mapped[Optional[date]] = mapped_column(Date)
     twitter_handle: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1351,4 +1353,69 @@ class AuditLog(Base):
     resource_id: Mapped[Optional[int]] = mapped_column(Integer)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))   # supports IPv6
     user_agent: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Program Events (news-monitoring agent write target)
+# ---------------------------------------------------------------------------
+
+class ProgramEvent(Base):
+    """Generic event log written by the news-monitoring agent.
+
+    Deliberately broader than transfer_portal_events (which stays
+    transfer-specific and is managed by the deterministic ETL pipeline).
+    The agent writes here first, then feeds transfer_portal_events for
+    portal-entry events so sync_portal_candidate_flags() stays authoritative.
+    """
+    __tablename__ = "program_events"
+    __table_args__ = (
+        Index("ix_program_events_school_date", "school_id", "event_date"),
+        Index("ix_program_events_player", "player_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_type: Mapped[str] = mapped_column(
+        String(50), nullable=False,
+        # transfer_entry, transfer_commitment, coaching_hire, coaching_fire,
+        # injury, suspension, nil_deal, recruiting_decommit, recruiting_commitment
+    )
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))
+    coach_id: Mapped[Optional[int]] = mapped_column(ForeignKey("coaches.id"))
+    event_date: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    raw_text: Mapped[Optional[str]] = mapped_column(Text)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    match_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'matched'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProgramEventReviewQueue(Base):
+    """Staging area for sub-threshold or ambiguous program events.
+
+    Mirrors program_events schema but holds events awaiting human confirmation
+    before promotion.  Mirrors transfer_portal_events.match_status='ambiguous'
+    pattern already established in the deterministic ETL pipeline.
+    """
+    __tablename__ = "program_events_review_queue"
+    __table_args__ = (
+        Index("ix_peq_school_date", "school_id", "event_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))
+    coach_id: Mapped[Optional[int]] = mapped_column(ForeignKey("coaches.id"))
+    event_date: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    raw_text: Mapped[Optional[str]] = mapped_column(Text)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    review_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
