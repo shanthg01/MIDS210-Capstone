@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** July 9, 2026 (Role Fit, Destination Projection, and Recommendation v1 status corrected on `main`)
+**Last updated:** July 11, 2026 (news agent production scaffolding, Gate 7 stale flag, main merge)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -56,7 +56,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
 | `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves Player Projection Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision; response includes Phase 2a's `projected_box_score`/`projected_rates` when present — see `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates model scope. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate`, `is_current_school`, `is_roster_baseline_member`, and (Gate 7) `scheme_fit_stale`/`scheme_fit_stale_reason` — set when the news-monitoring agent has detected a coaching change at that school and M2 `team_system_profiles` has not yet been re-run. Falls back to full stub only when the pair predates model scope. |
 | `recommendations.py` | Stub API / v1 engine exists | Program-facing response shape exists and currently returns real DB players with stub scores. `src/portalpoint/modeling/recommendations.py` and `scripts/run_recommendations.py` implement a baseline scheme+gap ranking engine; API wiring to persisted recommendations is still pending. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub on `main` | Blocked on merging/rerunning Team Rating Projection PR #49. |
@@ -72,6 +72,8 @@ Important backend modules:
 | `src/portalpoint/core/security.py` | Password hashing/JWT helpers. |
 | `src/portalpoint/db/models.py` | SQLAlchemy ORM models. |
 | `src/portalpoint/db/session.py` | Async DB session setup. |
+| `src/portalpoint/modeling/entity_resolution.py` | Shared player/school fuzzy-match module — used by both `ingest_transfers_247sports.py` and the news-monitoring agent. |
+| `src/portalpoint/agents/news_monitoring/` | LangGraph ReAct news-monitoring agent package (`state.py`, `config.py`, `extract.py`, `resolve.py`, `graph.py`, `sources/tavily.py`). Entrypoint: `scripts/run_news_monitoring.py`. |
 
 ---
 
