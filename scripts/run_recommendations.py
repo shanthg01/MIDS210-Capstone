@@ -126,6 +126,18 @@ ORDER BY rec_stage1_fit DESC
 LIMIT 50
 """
 
+# ── SQL: role_fit freshness check ────────────────────────────────────────────
+# role_fit sits at the 50.0 stub baseline until run_playing_time.py has synced
+# real values for this season. That's a valid neutral fallback, not an error —
+# but it silently makes rec-v1.1's role signal inert, so we warn instead of
+# gating (unlike destination_projection.py, which hard-gates on this table).
+
+ROLE_FIT_FRESHNESS_SQL = """
+SELECT EXISTS(
+    SELECT 1 FROM playing_time_projections WHERE season = :season LIMIT 1
+) AS has_role_fit_data
+"""
+
 DELETE_SQL = "DELETE FROM recommendations WHERE user_id = %s"
 
 INSERT_SQL = """
@@ -155,6 +167,12 @@ def build_candidate_pool(engine, school_id: int, season: int) -> pd.DataFrame:
         )
     log.info("Candidate pool: %d rows for school_id=%d season=%d", len(df), school_id, season)
     return df
+
+
+def check_role_fit_freshness(engine, season: int) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(text(ROLE_FIT_FRESHNESS_SQL), {"season": season}).fetchone()
+    return bool(row[0])
 
 
 def upsert_recommendations(engine, top10: pd.DataFrame, user_id: int) -> int:
@@ -213,6 +231,13 @@ def main() -> None:
                     args.school_id, args.season)
         return
 
+    if not check_role_fit_freshness(engine, args.season):
+        log.warning(
+            "No playing_time_projections found for season=%d — role_fit will be "
+            "the 50.0 stub for all candidates; rec-v1.1 role signal is inert this run.",
+            args.season,
+        )
+
     # ── Stage 2: per-user re-rank using saved preferences → Top-10 ──────────
     all_mean_scores: list[float] = []
 
@@ -226,7 +251,12 @@ def main() -> None:
             # "program_fit_weight": float(user["weight_program"]),
         }
 
-        top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
+        try:
+            top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
+        except ValueError as e:
+            log.error("user_id=%d — skipping, invalid preference weights: %s", uid, e)
+            continue
+
         mean_score = float(top10["personalized_fit"].mean())
         all_mean_scores.append(mean_score)
 
