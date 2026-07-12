@@ -4,7 +4,7 @@
 **Depends on:** Team Rating Projection (`team-roster-proj-v1`, PR #49 merged to `main` 2026-07-11)
 **Issue:** [#22](https://github.com/shanthg01/MIDS210-Capstone/issues/22)
 **Date:** 2026-07-11
-**Status:** ✅ Implemented and run for real against the live DB. `rec-v1.2`, `tests/test_recommendation_engine.py` extended to 35 tests (pure-unit, no DB), 236 pure-unit tests green repo-wide. Real run: school_id=301 (Lehigh), season=2027, 8 active users, 80 rows written to `recommendations`. MLflow `recommendation-engine` v1 registered, `@champion` alias set (first production run, no prior baseline to gate against).
+**Status:** ✅ Implemented and run for real against the live DB. `rec-v1.2`, `tests/test_recommendation_engine.py` extended to 46 tests (pure-unit, no DB; targeted suite green), with the original 236-test pure-unit suite green before the review follow-up. Real run: school_id=301 (Lehigh), season=2027, 8 active users, 80 rows written to `recommendations`. MLflow `recommendation-engine` v1 registered, `@champion` alias set (first production run, no prior baseline to gate against).
 
 **One more real bug found and fixed during the live run (not in the original plan):** `maybe_promote()` was called with `artifact_path=""` and no model had ever been logged to the run — `register_model` failed with `Unable to find a logged_model with artifact_path None`. This script had apparently never completed a real (non-dry-run) run before; the failure mode was always latent, just never exercised. Fixed the same way `destination_projection.py` already had to (`DestProjectionPyfunc` precedent) — added a trivial `RecEnginePyfunc` marker model (the engine is a weighted-sum formula, not a serializable sklearn model) and log it via `mlflow.pyfunc.log_model(artifact_path="rec_engine_model", ...)` before calling `maybe_promote(..., "rec_engine_model", ...)`.
 
@@ -102,8 +102,8 @@ def team_impact_fit(delta_adj_em: pd.Series) -> pd.Series:
 
 `0` delta → `50.0` (neutral). `+5` or worse → `100`/`0`. Rows with no matching
 `team_rating_projections` row (LEFT JOIN miss) get `team_impact_fit = 50.0`
-(neutral, same convention as the `program_fit` placeholder) via `fillna(50.0)`
-**before** calling `calculate_overall_fit()` — a per-row `NaN` would otherwise
+(neutral, same convention as the `program_fit` placeholder) by filling the raw
+`delta_adj_em` with `0.0` before normalization. A per-row `NaN` would otherwise
 poison the weighted sum for that row, not just leave the column "absent"
 (`_normalize_available_weights` only handles whole-column absence, not
 per-row nulls).
@@ -168,7 +168,8 @@ now happened:
    plus `trp.delta_adj_em`.
 2. In `main()`, call the already-written (currently unused/commented)
    `generate_top_50_candidates()` from `modeling/recommendations.py`, after
-   computing `team_impact_fit` and `fillna(50.0)`.
+   filling missing raw `delta_adj_em` values with `0.0` and computing
+   `team_impact_fit` (where raw zero maps to the neutral output score `50.0`).
 3. Delete the now-redundant `_STAGE1_*_WEIGHT` SQL constants.
 
 ### 4.3 Freshness check
@@ -179,7 +180,10 @@ Mirror `check_role_fit_freshness()` / `ROLE_FIT_FRESHNESS_SQL`:
 TEAM_RATING_FRESHNESS_SQL = """
 SELECT EXISTS(
     SELECT 1 FROM team_rating_projections
-    WHERE season = :season AND expires_at > now() LIMIT 1
+    WHERE season = :season
+      AND school_id = :school_id
+      AND expires_at > now()
+    LIMIT 1
 ) AS has_team_rating_data
 """
 ```
@@ -255,9 +259,9 @@ job) is a natural next step, not yet done.
 
 Extended the existing `tests/test_recommendation_engine.py` (pure-unit, no
 DB — distinct from `tests/test_recommendations.py`, which is API router
-tests requiring a DB fixture). 35 tests total in the file after this change
-(fixed 2 stale assertions from the old 3-component formula, added the rest),
-all green alongside 236 pure-unit tests repo-wide:
+tests requiring a DB fixture). 46 tests total after review follow-up, all
+green; the original implementation was also green alongside 236 pure-unit
+tests repo-wide:
 
 - `team_impact_fit()`: `0.0` delta → `50.0`; `±DELTA_ADJ_EM_CLIP` → `100.0`/`0.0`;
   values beyond the clip saturate; monotonic in delta; `NaN` input propagates

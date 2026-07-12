@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "calculate_overall_fit",
+    "fixed_team_impact_preferences",
     "generate_top_50_candidates",
     "refine_to_top_10",
     "team_impact_fit",
@@ -60,14 +61,49 @@ def team_impact_fit(delta_adj_em: pd.Series) -> pd.Series:
     ``±DELTA_ADJ_EM_CLIP`` before rescaling.
 
     NaN input (e.g. before the caller fills LEFT JOIN misses) propagates as
-    NaN — callers must ``fillna(TEAM_IMPACT_FIT_NEUTRAL)`` on the raw
-    ``delta_adj_em`` column (or on this function's output) before passing the
-    result into :func:`calculate_overall_fit`, since a per-row NaN there
-    poisons that row's weighted sum rather than being treated as an absent
-    column.
+    NaN. Callers must ``fillna(0.0)`` on the raw ``delta_adj_em`` before
+    calling this function, or fill this function's output with
+    ``TEAM_IMPACT_FIT_NEUTRAL``. Do not use ``TEAM_IMPACT_FIT_NEUTRAL`` as a
+    raw delta: it is an output-scale value and would clip to a score of 100.
     """
     clipped = delta_adj_em.clip(-DELTA_ADJ_EM_CLIP, DELTA_ADJ_EM_CLIP)
     return ((clipped + DELTA_ADJ_EM_CLIP) / (2 * DELTA_ADJ_EM_CLIP)) * 100
+
+
+def fixed_team_impact_preferences(
+    scheme_weight: float,
+    gap_weight: float,
+    role_weight: float,
+) -> dict[str, float]:
+    """Reserve the default 20% team-impact share in Stage 2 preferences.
+
+    The three user-controlled weights are relative preferences for the
+    remaining 80%. If all three are zero, use the Stage 1 default proportions
+    so team impact cannot accidentally become 100% after normalization.
+    """
+    user_weights = {
+        "scheme_fit_weight": float(scheme_weight),
+        "gap_match_weight": float(gap_weight),
+        "role_fit_weight": float(role_weight),
+    }
+    if any(weight < 0 for weight in user_weights.values()):
+        raise ValueError("Stage 2 preference weights must be non-negative")
+
+    raw_sum = sum(user_weights.values())
+    if raw_sum <= 0:
+        user_weights = {
+            "scheme_fit_weight": DEFAULT_FIT_WEIGHTS["scheme_fit"],
+            "gap_match_weight": DEFAULT_FIT_WEIGHTS["gap_match"],
+            "role_fit_weight": DEFAULT_FIT_WEIGHTS["role_fit"],
+        }
+        raw_sum = sum(user_weights.values())
+
+    team_impact_share = DEFAULT_FIT_WEIGHTS["team_impact_fit"]
+    scale = (1.0 - team_impact_share) / raw_sum
+    return {
+        **{col: weight * scale for col, weight in user_weights.items()},
+        "team_impact_fit_weight": team_impact_share,
+    }
 
 _RISK_CONFIG: dict = {
     "low":    {"confidence_floor": 0.70, "penalty": 2.0},

@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 
 import mlflow
 import pandas as pd
+from mlflow.exceptions import MlflowException
 from sqlalchemy import text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
@@ -57,6 +58,7 @@ from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 from portalpoint.modeling.recommendations import (
     DEFAULT_FIT_WEIGHTS,
     TEAM_IMPACT_FIT_NEUTRAL,
+    fixed_team_impact_preferences,
     generate_top_50_candidates,
     refine_to_top_10,
     team_impact_fit,
@@ -78,9 +80,9 @@ EXPIRES_DAYS = 7
 USERS_SQL = """
 SELECT
     u.id                                AS user_id,
-    COALESCE(up.weight_scheme, 0.30)    AS weight_scheme,
-    COALESCE(up.weight_gap,    0.35)    AS weight_gap,
-    COALESCE(up.weight_role,   0.35)    AS weight_role
+    COALESCE(up.weight_scheme, 0.25)    AS weight_scheme,
+    COALESCE(up.weight_gap,    0.30)    AS weight_gap,
+    COALESCE(up.weight_role,   0.25)    AS weight_role
     -- future — uncomment when program fit is ready:
     -- , COALESCE(up.weight_program, 0.0) AS weight_program
 FROM users u
@@ -154,7 +156,10 @@ SELECT EXISTS(
 TEAM_RATING_FRESHNESS_SQL = """
 SELECT EXISTS(
     SELECT 1 FROM team_rating_projections
-    WHERE season = :season AND expires_at > now() LIMIT 1
+    WHERE season = :season
+      AND school_id = :school_id
+      AND expires_at > now()
+    LIMIT 1
 ) AS has_team_rating_data
 """
 
@@ -195,9 +200,12 @@ def check_role_fit_freshness(engine, season: int) -> bool:
     return bool(row[0])
 
 
-def check_team_rating_freshness(engine, season: int) -> bool:
+def check_team_rating_freshness(engine, school_id: int, season: int) -> bool:
     with engine.connect() as conn:
-        row = conn.execute(text(TEAM_RATING_FRESHNESS_SQL), {"season": season}).fetchone()
+        row = conn.execute(
+            text(TEAM_RATING_FRESHNESS_SQL),
+            {"school_id": school_id, "season": season},
+        ).fetchone()
     return bool(row[0])
 
 
@@ -266,12 +274,12 @@ def main() -> None:
     # (both 2027 on the live DB, verified 2026-07-11) — no +1 offset here,
     # unlike destination_projection.py's dest_season = t.season + 1 (a
     # different pair of tables with a genuine observed-vs-target split).
-    if not check_team_rating_freshness(engine, args.season):
+    if not check_team_rating_freshness(engine, args.school_id, args.season):
         log.warning(
-            "No team_rating_projections found for season=%d — "
+            "No team_rating_projections found for school_id=%d season=%d — "
             "team_impact_fit will be the %.1f neutral stub for all candidates; "
             "team-rating signal is inert this run.",
-            args.season, TEAM_IMPACT_FIT_NEUTRAL,
+            args.school_id, args.season, TEAM_IMPACT_FIT_NEUTRAL,
         )
 
     # delta_adj_em is NaN wherever the LEFT JOIN in CANDIDATE_SQL found no
@@ -288,19 +296,11 @@ def main() -> None:
 
     for _, user in users_df.iterrows():
         uid = int(user["user_id"])
-        user_preferences = {
-            "scheme_fit_weight":      float(user["weight_scheme"]),
-            "gap_match_weight":       float(user["weight_gap"]),
-            "role_fit_weight":        float(user["weight_role"]),
-            "team_impact_fit_weight": DEFAULT_FIT_WEIGHTS["team_impact_fit"],
-            # team_impact_fit_weight is a fixed macro-signal weight, not a
-            # per-user preference yet — user_preferences has no
-            # weight_team_rating column (see recommendation_engine_plan.md §5).
-            # future — uncomment when program fit is ready:
-            # "program_fit_weight": float(user["weight_program"]),
-        }
 
         try:
+            user_preferences = fixed_team_impact_preferences(
+                user["weight_scheme"], user["weight_gap"], user["weight_role"]
+            )
             top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
         except ValueError as e:
             log.error("user_id=%d — skipping, invalid preference weights: %s", uid, e)
@@ -353,6 +353,21 @@ def main() -> None:
         })
         mlflow.pyfunc.log_model(artifact_path="rec_engine_model", python_model=RecEnginePyfunc())
         run_id = run.info.run_id
+
+    # Promotion controls MLflow alias metadata only. Like the other model
+    # runners, recommendation rows are written before this comparison.
+    try:
+        champion = client.get_model_version_by_alias("recommendation-engine", "champion")
+        champion_weights = client.get_run(champion.run_id).data.params.get("stage1_weights")
+        if champion_weights != str(DEFAULT_FIT_WEIGHTS):
+            log.warning(
+                "mean_overall_fit is not directly comparable to champion — "
+                "weight formula changed (%s -> %s)",
+                champion_weights,
+                DEFAULT_FIT_WEIGHTS,
+            )
+    except MlflowException:
+        pass  # No registered champion yet.
 
     result = maybe_promote(
         client, "recommendation-engine", run_id, "rec_engine_model",

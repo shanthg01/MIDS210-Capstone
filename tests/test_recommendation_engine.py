@@ -11,8 +11,10 @@ import pytest
 import pandas as pd
 import numpy as np
 
+from scripts.run_recommendations import TEAM_RATING_FRESHNESS_SQL, USERS_SQL
 from portalpoint.modeling.recommendations import (
     calculate_overall_fit,
+    fixed_team_impact_preferences,
     generate_top_50_candidates,
     refine_to_top_10,
     team_impact_fit,
@@ -145,11 +147,69 @@ class TestTeamImpactFit:
         result = team_impact_fit(pd.Series([np.nan]))
         assert pd.isna(result.iloc[0])
 
+    def test_fillna_zero_before_transform_is_neutral(self):
+        raw_delta = pd.Series([1.0, np.nan, -1.0]).fillna(0.0)
+        result = team_impact_fit(raw_delta)
+        assert result.iloc[1] == pytest.approx(TEAM_IMPACT_FIT_NEUTRAL)
+
+    def test_neutral_output_constant_is_not_a_raw_delta(self):
+        result = team_impact_fit(pd.Series([TEAM_IMPACT_FIT_NEUTRAL]))
+        assert result.iloc[0] == pytest.approx(100.0)
+        assert result.iloc[0] != TEAM_IMPACT_FIT_NEUTRAL
+
     def test_output_always_in_0_100_range(self):
         rng = np.random.default_rng(7)
         deltas = pd.Series(rng.uniform(-50, 50, 200))
         result = team_impact_fit(deltas)
         assert ((result >= 0) & (result <= 100)).all()
+
+
+class TestFixedTeamImpactPreferences:
+    @pytest.mark.parametrize(
+        "raw_weights",
+        [
+            (0.25, 0.30, 0.25),
+            (0.30, 0.35, 0.35),
+            (0.90, 0.05, 0.05),
+            (0.0, 0.0, 0.0),
+        ],
+    )
+    def test_reserves_exactly_twenty_percent(self, raw_weights):
+        weights = fixed_team_impact_preferences(*raw_weights)
+        assert sum(weights.values()) == pytest.approx(1.0)
+        assert weights["team_impact_fit_weight"] == pytest.approx(0.20)
+        assert sum(
+            value for key, value in weights.items() if key != "team_impact_fit_weight"
+        ) == pytest.approx(0.80)
+
+    def test_default_split_matches_stage1_weights(self):
+        weights = fixed_team_impact_preferences(0.25, 0.30, 0.25)
+        assert weights == {
+            "scheme_fit_weight": pytest.approx(DEFAULT_FIT_WEIGHTS["scheme_fit"]),
+            "gap_match_weight": pytest.approx(DEFAULT_FIT_WEIGHTS["gap_match"]),
+            "role_fit_weight": pytest.approx(DEFAULT_FIT_WEIGHTS["role_fit"]),
+            "team_impact_fit_weight": pytest.approx(DEFAULT_FIT_WEIGHTS["team_impact_fit"]),
+        }
+
+    def test_all_zero_weights_fall_back_to_stage1_defaults(self):
+        assert fixed_team_impact_preferences(0.0, 0.0, 0.0) == (
+            fixed_team_impact_preferences(0.25, 0.30, 0.25)
+        )
+
+    def test_negative_weight_is_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            fixed_team_impact_preferences(-0.1, 0.5, 0.5)
+
+
+class TestRunnerContracts:
+    def test_no_preference_fallback_matches_stage1_component_weights(self):
+        assert "COALESCE(up.weight_scheme, 0.25)" in USERS_SQL
+        assert "COALESCE(up.weight_gap,    0.30)" in USERS_SQL
+        assert "COALESCE(up.weight_role,   0.25)" in USERS_SQL
+
+    def test_team_rating_freshness_is_school_scoped(self):
+        assert "school_id = :school_id" in TEAM_RATING_FRESHNESS_SQL
+        assert "season = :season" in TEAM_RATING_FRESHNESS_SQL
 
 
 # ── generate_top_50_candidates ───────────────────────────────────────────────
