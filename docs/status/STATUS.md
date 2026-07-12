@@ -1,6 +1,6 @@
 # PortalPoint Status Index
 
-**Last updated:** July 1, 2026
+**Last updated:** July 9, 2026
 
 The original single status tracker has been split into three focused handoff docs:
 
@@ -10,7 +10,7 @@ The original single status tracker has been split into three focused handoff doc
 | Architecture | [`ARCHITECTURE_STATUS.md`](ARCHITECTURE_STATUS.md) | Local/cloud infrastructure, Postgres/Alembic, S3, ingest, MLflow, and operational runbook context. |
 | Application | [`APPLICATION_STATUS.md`](APPLICATION_STATUS.md) | Product direction, backend routers, frontend pages, tests, and app-side blockers. |
 
-Start with `MODEL_STATUS.md` for the current critical path. M1 (re-trained, tuned group-weighted, now writes top-three archetype memberships), M2 (two-layer offense/defense team systems with reviewed labels), M3, Gap Matching, and Player Projection (Model #8 — Phase 2a next-season forecast production API default, Phase 0 v2 retained as baseline comparator) are complete; `fit_scores.py` serves real `scheme_fit` + `gap_match` from `player_team_fit_scores` with dynamic current-season resolution. Role Fit (M4) is the next critical-path model after that.
+Start with `MODEL_STATUS.md` for the current critical path. M1 (re-trained, tuned group-weighted, now writes top-three archetype memberships), M2 (two-layer offense/defense team systems with reviewed labels), M3, Gap Matching, Player Projection (Model #8 — Phase 2a next-season forecast production API default, Phase 0 v2 retained as baseline comparator), Role Fit / Playing Time, and Destination-Adjusted Projection are complete baselines on `main`. Recommendation Engine v1 exists as a script/engine, but the API still serves stub scores. Team Rating Projection is the active model PR (#49); Program Fit and final fit-score calibration remain the main gaps after that.
 
 For the model dependency DAG, input/output contracts, and planned run order, see
 [`../models/model_dependency_graph.md`](../models/model_dependency_graph.md).
