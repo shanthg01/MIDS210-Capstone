@@ -565,3 +565,37 @@ Steps A → B → C(proxy) → D → E can be done as a single PR without any ne
 - `n_known_players` still correctly excludes freshman prior rows
 - No regression in CV em_rmse across all 3 folds (or documented and explained if it changes)
 - 42 existing tests still pass; ≥4 new tests covering program-calibrated and opportunity-weighted priors
+
+### Implementation results (2026-07-11) — Steps A-E complete, commit f7d9b6a
+
+All five steps implemented in a single PR in `team-projection` branch.
+
+**A — Freshman prior audit logging**
+- `build_school_baselines` return type changed to `tuple[dict[int, dict], list[dict]]`; second element is `freshman_audit` list (one dict per school: `school_id`, `school_name`, `tier`, `n_freshman_priors`, `total_freshman_min_pct`)
+- Script Step 5 unpacks the tuple, warns (`logging.WARNING`) for schools with ≥3 priors or ≥20% total freshman min_pct, logs `n_schools_with_freshman_priors` / `n_schools_heavy_freshman_priors` to MLflow metrics, and writes `freshman_prior_audit.json` as MLflow artifact
+- `_SCHOOL_SEASON_SQL` adds `s.name AS school_name` so the name is available for audit and for elite-program matching
+
+**B — Program-calibrated tier priors**
+- `FRESHMAN_MIN_PCT_BY_TIER = {1: 10.0, 2: 8.0, 3: 7.0, 4: 6.0}` (tier 2 unchanged from old `FRESHMAN_MIN_PCT_PRIOR=8.0` — no regression)
+- `FRESHMAN_RAPM_DISCOUNT_BY_TIER = {1: 0.72, 2: 0.65, 3: 0.60, 4: 0.55}` (tier 2 unchanged)
+- Old global constants kept for backward-compat but marked superseded
+- Note: the plan described fitting these from `player_season_stats` via `_compute_freshman_tier_priors()`; instead used hand-calibrated values derived from the same distribution reasoning (avoids a data-dependency cycle in `build_freshman_prior_rows` before training data is loaded)
+
+**C — Elite-recruiting-program flag (proxy)**
+- `ELITE_RECRUITING_SCHOOLS`: 15-school frozenset (Duke, Kentucky, Kansas, North Carolina, Michigan State, Arizona, UCLA, Memphis, Auburn, Arkansas, Indiana, Texas, Ohio State, Villanova, Gonzaga)
+- Matched case-insensitively against `schools.name`; `ELITE_RECRUITING_MULTIPLIER=1.5` applied to base min_pct; `ELITE_RAPM_DISCOUNT_BOOST=0.07` reduces RAPM discount (less regression to mean for elite programs)
+- C(full) (real recruit rankings ingest) remains a separate future PR
+
+**D — Position-aware opportunity weighting**
+- `opportunity_factor = max(min(open_min / 15.0, 1.5), 1/3)` per freshman row
+- Floor of 1/3 prevents zeroing out freshmen at stacked positions; cap of 1.5 limits overcounting at truly depleted spots
+- Note: this changes the existing test's `min_pct` assertion for the C-slot example (30 open minutes → factor 1.5 → 12.0 instead of 8.0); test updated to use `FRESHMAN_OPPORTUNITY_MAX_FACTOR` constant
+
+**E — CI widening per freshman prior**
+- `analytical_ci(delta_adj_em, models, n_freshman_priors=0)` — optional param, default 0 keeps backward compat
+- `FRESHMAN_VARIANCE_PER_PLAYER=0.4` added to combined variance per freshman prior in the baseline roster
+- Script passes `n_freshman_priors=school_baselines[school_id]["n_freshman_priors"]` per pair
+
+**Test results:** 46 tests pass (42 existing + 4 new: tier B comparison, elite C multiplier, opportunity D floor/cap, CI widening E). No regressions in any pure-unit suite.
+
+**Next step:** rerun `scripts/run_team_rating_projection.py` to apply v2 priors to the live 457K rows and inspect `freshman_prior_audit.json` artifact for heavy-freshman schools.
