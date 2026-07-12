@@ -459,8 +459,109 @@ Fixed runtime: ~28 minutes.
 
 5. **`returning_pct` continuity proxy:** Improved in PR follow-up — source-season `roster_state_features` now provides the fraction of returning minutes from `returning_minutes_by_position` over returning plus departing/open minutes. It still falls back to 1.0 if roster-state JSON is missing.
 
-6. **`@champion` alias not yet registered:** `maybe_promote` skipped (no prior Staging version to compare against — true first run). Before the next rerun, register current v1 as `@champion` via `client.set_registered_model_alias("team-rating-scorer", "champion", version="1")`. Without this, the next run will also skip the gate.
+6. **`@champion` alias:** Registered manually on v1 after first run (`run_id=b7deb48ffa1341e088167a0eb3df688f`) — `maybe_promote` had been skipping silently because `mlflow.active_run().data.metrics` returns a stale snapshot from run-start (logged metrics aren't visible). Fixed in `run_team_rating_projection.py` to use `mlflow.get_run(run_id).data.metrics` instead.
 
-7. **`estimate_usage_value_coef` analog:** The slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
+7. **`estimate_usage_value_coef` analog:** Slot-baseline fills are position/tier averages, not learned usage-value adjustments. Same zero-overlap limitation as Destination Projection's `estimate_usage_value_coef` — fallback values used everywhere.
 
 8. **API semantics:** Stub replaced. Follow-up fixed the endpoint to honor the requested `season` and ignore expired rows.
+
+9. **38% negative delta rows (open item, 2026-07-11):** Post-rerun spot-check found 173,777 / 457,345 rows (38%) have negative `delta_adj_em` (avg −0.445). Root-cause hypothesis: the playing time model projects near-zero expected minutes (1-2 min) for most candidates at most schools, so any slight displacement of an incumbent produces a small negative. Duke spot-check shows all top candidates positive; Cal shows near-zero mixed, consistent with a program that projects almost no rotation slots for transfers. This is **playing-time model behavior propagating correctly**, not a team-rating-projection bug — but it means 38% of recommendations show net-negative impact, which is unintuitive for the coaching UI. Possible fixes: (a) filter recommendation surface to pairs where `expected_minutes > threshold` (e.g. ≥5 min); (b) investigate whether playing-time model's minute projections at low-fit schools are too conservative; (c) surface `expected_minutes` prominently alongside `delta_adj_em` in the UI so coaches understand the basis. Root-cause investigation is a joint team-rating / playing-time issue. **Not a blocker but should be resolved before coach-facing exposure.**
+
+---
+
+## 20. Freshman Prior v2 — Implementation Plan
+
+See also: `ajaypatel-8` comment in PR #49 (2026-07-05).
+
+The current freshman prior (`build_freshman_prior_rows`) is a conservative floor: every unmatched incoming freshman gets `8.0` min_pct, capped at 30% team total, with a `0.65` RAPM discount on the slot baseline. This prevents the worst failure (Duke's freshman class treated as zero depth) but systematically underrates elite programs with 5-star classes.
+
+### Problems with current approach
+
+- One global prior for all freshmen regardless of recruit quality, school, or position need
+- Duke/Kentucky/Arkansas freshmen getting same prior as generic low-major freshmen
+- No uncertainty widening — freshman prior rows look equally "known" to `n_known_players`
+- No audit output: can't quickly inspect which schools have high freshman prior exposure
+
+### Upgrade path (in priority order)
+
+**A. Freshman prior audit logging (low effort, unblocks validation)**
+
+Log per-school freshman prior counts and total allocated min_pct at the end of Step 5. Write to MLflow as a CSV artifact (`freshman_prior_audit.csv`) and add a spot-check log line for schools with ≥3 freshman priors or total freshman min_pct ≥ 20%.
+
+Implementation: add to `build_school_baselines()` return value and log in `run_team_rating_projection.py` Step 5.
+
+**B. Program-calibrated prior (medium effort, biggest easy win)**
+
+Historical freshman development varies by program tier. A P6 school's freshman class predictably contributes more minutes than a low-major freshman class. Use historical `player_season_stats` to compute the average minutes fraction played by first-year players by conference tier:
+
+```python
+freshman_tier_prior = {
+    1: 0.65,   # P6/high-major: freshmen contribute ~14 min_pct on average
+    2: 0.55,   # mid-major
+    3: 0.50,   # low-mid
+    4: 0.45,   # low-major
+}
+FRESHMAN_RAPM_DISCOUNT_BY_TIER = {1: 0.70, 2: 0.65, 3: 0.60, 4: 0.55}
+```
+
+Replace the global `FRESHMAN_RAPM_DISCOUNT = 0.65` and `FRESHMAN_MIN_PCT_PRIOR = 8.0` with tier-keyed lookups. Fit actual values from `player_season_stats` (join on `class_year = 'fr'`, compute average min_pct by school conference tier per season).
+
+Implementation: new helper `_compute_freshman_tier_priors(engine, seasons)` in `team_rating_projection.py`, called from `build_historical_roster_states` and passed to `build_school_baselines`.
+
+**C. Recruiting-aware prior (higher effort, highest impact for elite programs)**
+
+Map recruit quality signal (if available) to a min_pct and RAPM prior:
+
+| Recruit tier | min_pct prior | RAPM discount | Notes |
+|---|---|---|---|
+| Elite (5-star / top-25) | 22.0 | 0.85 | Starter-caliber projection |
+| High (top-100) | 14.0 | 0.75 | High-rotation projection |
+| Mid (top-200) | 8.0 | 0.65 | Current default — unchanged |
+| Unknown/unranked | 6.0 | 0.55 | Conservative |
+
+Data source options (in preference order):
+1. 247Sports composite recruit ranking — not yet ingested; would require a new `recruit_rankings` table and ingest script
+2. On3/Rivals rating — same gap
+3. **Proxy available now:** school-level recruiting reputation by program archetype (from `team_system_profiles.label`) or conference tier. Duke/Kentucky/Kansas P6-tier programs with historically strong freshman classes can get a programmatic multiplier without any new data source.
+
+For MVP: use conference tier + a hand-curated "elite recruiting program" flag (a small set of ~10-15 schools historically known for 5-star classes) as a proxy until recruit rankings are ingested.
+
+**D. Position-aware opportunity weighting**
+
+A 5-star center only matters if the school has open C/PF minutes. Combine recruit quality (tier C above) with `open_minutes_by_position`:
+
+```python
+opportunity_factor = min(open_minutes_by_position.get(position, 0.0) / 15.0, 1.5)
+adjusted_min_pct = base_min_pct * opportunity_factor
+```
+
+If the frontcourt is already full (`open_minutes ≈ 0`), scale down even a high-rated freshman. If there's a major gap (open_minutes ≥ 20+), scale up.
+
+**E. Wider CI for freshman priors**
+
+Freshman prior rows should inflate uncertainty because high school → college translation is noisy. Two approaches:
+- Add a `freshman_prior_variance_inflation` multiplier to the analytical CI when `explanation['n_freshman_priors'] > 0`
+- Or increase slot-baseline RAPM variance used in the CI bootstrap (if bootstrap CI is ever brought back)
+
+Simplest: in `analytical_ci`, accept an optional `n_freshman_priors` param and add `n_freshman_priors × freshman_variance_per_player` to the combined variance term.
+
+### Suggested implementation order
+
+| Step | Work | Effort | Unblocks |
+|---|---|---|---|
+| A | Freshman prior audit logging | 1-2h | Validation of B/C |
+| B | Program-calibrated (tier-based) priors | 3-4h | Better elite-program baseline accuracy |
+| C (proxy) | Elite-recruiting-program flag (no new data) | 2-3h | Duke/Kentucky/etc. without new ingest |
+| D | Position-aware opportunity weighting | 2h | Correct size of opportunity per slot |
+| E | Freshman CI widening | 1h | Honest uncertainty for freshman-heavy rosters |
+| C (full) | Real recruit rankings ingest | separate PR | True recruiting-aware prior |
+
+Steps A → B → C(proxy) → D → E can be done as a single PR without any new data sources. C(full) requires a new ingest pipeline (separate PR).
+
+### Acceptance criteria
+
+- Duke/Kentucky/Arizona rerun shows materially higher freshman prior impact than a generic low-major with the same number of incoming freshmen
+- Audit CSV logged to MLflow; spot-check table visible in run output for schools with ≥3 freshman priors
+- `n_known_players` still correctly excludes freshman prior rows
+- No regression in CV em_rmse across all 3 folds (or documented and explained if it changes)
+- 42 existing tests still pass; ≥4 new tests covering program-calibrated and opportunity-weighted priors
