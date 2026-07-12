@@ -270,6 +270,34 @@ export interface FitScoreResponse {
   computed_at: string;
   model_version: string;
   cache_hit: boolean;
+  // PR #33 follow-ups — populated by backend, was silently dropped by FE
+  is_portal_candidate: boolean;      // player has Entered/Committed portal event this season
+  is_current_school: boolean;        // player already on this school's own roster
+  is_roster_baseline_member: boolean; // player counts in shared roster baseline
+  // Gate 7 (PR #50) — set when news-monitoring agent detects a coaching change
+  scheme_fit_stale: boolean;
+  scheme_fit_stale_reason: string | null;
+}
+
+// ── Roster Impact Ranking ─────────────────────────────────────────────────────
+
+export interface RosterImpactItem {
+  player_id: string;
+  player_name: string;
+  position: string;
+  delta_adjEM: number;
+  current_adjEM: number;
+  projected_adjEM: number;
+  confidence_interval: [number, number];
+  expected_minutes_input: number;
+  candidate_usage_role: string | null;
+}
+
+export interface RosterImpactResponse {
+  school_id: number;
+  season: number;
+  players: RosterImpactItem[];
+  total: number;
 }
 
 // ── Team Rating Projection ────────────────────────────────────────────────────
@@ -277,14 +305,21 @@ export interface FitScoreResponse {
 export interface TeamRatingProjectionResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
+  season: number;
   current_adjEM: number;
   projected_adjEM: number;
   delta_adjEM: number;
+  baseline_adj_o: number | null;
+  baseline_adj_d: number | null;
+  projected_adj_o: number | null;
+  projected_adj_d: number | null;
   confidence_interval: [number, number];
   national_percentile: number;
   conference_rank: number;
   context: string;
   expected_minutes_input: number;
+  candidate_usage_role: string | null;
+  explanation: Record<string, unknown> | null;
   model_version: string;
 }
 
@@ -365,7 +400,7 @@ export interface FitComponents {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
-  program_fit: number;
+  team_impact_fit: number; // M6 delta_adjEM → 0-100; replaces program_fit (descoped)
 }
 
 export interface RecommendationItem {

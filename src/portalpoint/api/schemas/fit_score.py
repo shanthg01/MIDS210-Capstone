@@ -97,3 +97,8 @@ class FitScoreResponse(BaseModel):
     # player has a stale player_season_stats row but is absent from the latest
     # roster outlook.
     is_roster_baseline_member: bool = False
+    # Gate 7 (PR #50 / migration b1d3f5a7c9e2): set when the news-monitoring
+    # agent detects a coaching change at this school — signals cached scheme
+    # fit scores may no longer reflect the current system.
+    scheme_fit_stale: bool = False
+    scheme_fit_stale_reason: str | None = None

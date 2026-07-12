@@ -4,7 +4,8 @@ const LABEL_MAP: Record<string, string> = {
   gap_match: 'Gap Match',
   scheme_fit: 'Scheme Fit',
   role_fit: 'Role Fit',
-  program_fit: 'Program Fit',
+  program_fit: 'Program Fit',    // FitScorePage breakdown (stubbed, descoped)
+  team_impact_fit: 'Team Impact', // RecommendationCard — M6 delta_adjEM normalized
 };
 
 export function scoreColor(v: number): 'success' | 'warning' | 'error' {
@@ -13,10 +14,10 @@ export function scoreColor(v: number): 'success' | 'warning' | 'error' {
   return 'error';
 }
 
-// Components backed by a real model (M3 scheme-cos-v2, gap-cos-v1). Everything
-// else (role_fit, program_fit) is a 50.0 stub with a seeded-random breakdown
-// until Model 4 and the Program Fit calculator are built.
-export const LIVE_COMPONENTS = new Set(['scheme_fit', 'gap_match']);
+// Real models: scheme_fit (scheme-cos-v3), gap_match (gap-cos-v4), role_fit
+// (playing-time-rotation-v2, Issue #25). program_fit remains a 50.0 stub
+// (descoped 2026-07-11 — no NIL/geography/academic proxy data yet).
+export const LIVE_COMPONENTS = new Set(['scheme_fit', 'gap_match', 'role_fit']);
 
 export function DataStatusChip({ component }: { component: string }) {
   const isLive = LIVE_COMPONENTS.has(component);

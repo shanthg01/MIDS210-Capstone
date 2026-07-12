@@ -2,10 +2,34 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from portalpoint.api.deps import CurrentUser
-from portalpoint.api.schemas.projection import TeamRatingProjectionResponse
+from portalpoint.api.schemas.projection import RosterImpactItem, RosterImpactResponse, TeamRatingProjectionResponse
 from portalpoint.db.session import AsyncSessionLocal
 
 router = APIRouter(prefix="/api/projections", tags=["projections"])
+
+_TOP_SQL = """
+WITH user_school AS (
+    SELECT school_id FROM users WHERE id = :user_id
+)
+SELECT
+    trp.player_id, p.full_name, p.position,
+    trp.delta_adj_em, trp.current_adj_em, trp.projected_adj_em,
+    trp.ci_lower, trp.ci_upper,
+    trp.expected_minutes_input, trp.candidate_usage_role,
+    trp.school_id
+FROM team_rating_projections trp
+JOIN players p          ON p.id = trp.player_id
+JOIN user_school us     ON trp.school_id = us.school_id
+JOIN player_team_fit_scores ptf
+    ON  ptf.player_id  = trp.player_id
+    AND ptf.school_id  = us.school_id
+    AND ptf.season     = :fit_season
+WHERE trp.season       = :trp_season
+  AND trp.expires_at   > now()
+  AND ptf.is_portal_candidate = true
+ORDER BY trp.delta_adj_em DESC
+LIMIT :limit
+"""
 
 _FETCH_SQL = """
 SELECT
@@ -24,6 +48,55 @@ WHERE player_id = :player_id
 ORDER BY computed_at DESC
 LIMIT 1
 """
+
+
+@router.get("/team-rating/top", response_model=RosterImpactResponse)
+async def get_top_roster_impact(
+    current_user: CurrentUser,
+    season: int = Query(default=2027),
+    fit_season: int = Query(default=2027),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> RosterImpactResponse:
+    """Rank all portal candidates for the current user's school by delta AdjEM."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(_TOP_SQL),
+            {
+                "user_id": current_user,
+                "trp_season": season,
+                "fit_season": fit_season,
+                "limit": limit,
+            },
+        )
+        rows = result.mappings().all()
+
+    if not rows:
+        # Return empty list rather than 404 — school may just not have run yet.
+        async with AsyncSessionLocal() as session:
+            school_result = await session.execute(
+                text("SELECT school_id FROM users WHERE id = :uid"),
+                {"uid": current_user},
+            )
+            school_row = school_result.first()
+        school_id = int(school_row[0]) if school_row and school_row[0] else 0
+        return RosterImpactResponse(school_id=school_id, season=season, players=[], total=0)
+
+    school_id = int(rows[0]["school_id"])
+    players = [
+        RosterImpactItem(
+            player_id=str(r["player_id"]),
+            player_name=r["full_name"],
+            position=r["position"] or "",
+            delta_adjEM=float(r["delta_adj_em"]),
+            current_adjEM=float(r["current_adj_em"]),
+            projected_adjEM=float(r["projected_adj_em"]),
+            confidence_interval=(float(r["ci_lower"]), float(r["ci_upper"])),
+            expected_minutes_input=float(r["expected_minutes_input"]),
+            candidate_usage_role=r.get("candidate_usage_role"),
+        )
+        for r in rows
+    ]
+    return RosterImpactResponse(school_id=school_id, season=season, players=players, total=len(players))
 
 
 @router.get("/team-rating", response_model=TeamRatingProjectionResponse)

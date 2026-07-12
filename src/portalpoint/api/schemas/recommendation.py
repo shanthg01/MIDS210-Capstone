@@ -9,7 +9,9 @@ class FitComponents(BaseModel):
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
-    program_fit: float = Field(..., ge=0, le=100)
+    # M6 delta_adjEM normalized to 0-100 (clip ±5 AdjEM → 0-100, 0 delta = 50.0).
+    # program_fit excluded — descoped 2026-07-11; DEFAULT_FIT_WEIGHTS uses this instead.
+    team_impact_fit: float = Field(..., ge=0, le=100)
 
 
 class RecommendationItem(BaseModel):
