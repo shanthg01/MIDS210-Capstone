@@ -5,32 +5,40 @@ Non-interactive run of the 2-stage recommendation engine.
 
 For each active user of a school:
   1. Reads their saved fit weights from user_preferences table (Option B).
-  2. Assembles a Top-50 candidate pool via SQL using the rec-v1.1 fit weights.
-  3. Runs Stage 2 (re-rank with user weights → Top-10) per user.
-  4. Upserts results to the recommendations table.
+  2. Assembles a candidate pool via SQL (availability filter only, no ranking).
+  3. Runs Stage 1 (vectorized rank score → Top-50) in Python, including the
+     normalized Team Rating Projection signal (team_impact_fit).
+  4. Runs Stage 2 (re-rank with user weights → Top-10) per user.
+  5. Upserts results to the recommendations table.
 
-Stage 1 as a Python step is not needed today — SQL handles filtering and ranking
-with the same scheme/gap/role weights as DEFAULT_FIT_WEIGHTS.
-It will be reintroduced when predictions + team_rating_projections tables are ready
-and the rank formula becomes: adjusted_projection + team_rating_delta + overall_fit/100.
+Stage 1 moved from SQL to Python (rec-v1.2) now that team_rating_projections
+is real — team_impact_fit's clip+rescale can't be expressed as a static SQL
+weight constant the way scheme/gap/role could. See
+docs/models/recommendation_engine_plan.md for the full design.
 
 For exploration use notebooks/models/recommendation_engine.ipynb.
 
 Usage:
-  uv run python scripts/run_recommendations.py --school_id 301 --season 2025
-  uv run python scripts/run_recommendations.py --school_id 301 --season 2025 --user_id 1001
-  uv run python scripts/run_recommendations.py --school_id 301 --season 2025 --dry-run   # safe smoke test
+  uv run python scripts/run_recommendations.py --school_id 301 --season 2027
+  uv run python scripts/run_recommendations.py --school_id 301 --season 2027 --user_id 1001
+  uv run python scripts/run_recommendations.py --school_id 301 --season 2027 --dry-run   # safe smoke test
+
+Pass whatever MAX(player_team_fit_scores.season) currently resolves to — check
+via fit_score_service.get_current_season() semantics, or just query the max.
 
 Tables used today:
   users                   — school_id, is_active
   user_preferences        — weight_scheme, weight_gap, weight_role per user
   player_team_fit_scores  — scheme_fit, gap_match, role_fit
+  team_rating_projections — delta_adj_em (same season as player_team_fit_scores.season)
   players                 — player_name, position
   transfers               — availability_status
 
 Tables stubbed (uncomment when ready):
   predictions             — player_projection, data_confidence  (Model 5)
-  team_rating_projections — team_rating_delta                   (Model 6)
+
+Program Fit (Model, Issue #20) is descoped from the active roadmap (2026-07-11)
+and is not part of this engine's weight formula.
 """
 from __future__ import annotations
 
@@ -41,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 
 import mlflow
 import pandas as pd
+from mlflow.exceptions import MlflowException
 from sqlalchemy import text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
@@ -48,9 +57,11 @@ from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 from portalpoint.modeling.recommendations import (
     DEFAULT_FIT_WEIGHTS,
+    TEAM_IMPACT_FIT_NEUTRAL,
+    fixed_team_impact_preferences,
+    generate_top_50_candidates,
     refine_to_top_10,
-    # future — uncomment when predictions + team_rating_projections tables ready:
-    # generate_top_50_candidates,
+    team_impact_fit,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -61,7 +72,7 @@ if hasattr(sys.stderr, "reconfigure"):
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "rec-v1.1"
+MODEL_VERSION = "rec-v1.2"
 EXPIRES_DAYS = 7
 
 # ── SQL: users + their saved weights ────────────────────────────────────────
@@ -69,9 +80,9 @@ EXPIRES_DAYS = 7
 USERS_SQL = """
 SELECT
     u.id                                AS user_id,
-    COALESCE(up.weight_scheme, 0.30)    AS weight_scheme,
-    COALESCE(up.weight_gap,    0.35)    AS weight_gap,
-    COALESCE(up.weight_role,   0.35)    AS weight_role
+    COALESCE(up.weight_scheme, 0.25)    AS weight_scheme,
+    COALESCE(up.weight_gap,    0.30)    AS weight_gap,
+    COALESCE(up.weight_role,   0.25)    AS weight_role
     -- future — uncomment when program fit is ready:
     -- , COALESCE(up.weight_program, 0.0) AS weight_program
 FROM users u
@@ -80,17 +91,22 @@ WHERE u.school_id = :school_id
   AND u.is_active  = true
 """
 
-# ── SQL: Top-50 candidate pool ───────────────────────────────────────────────
-# Availability filter and Top-50 ranking are handled here in SQL today, using
-# the current DEFAULT_FIT_WEIGHTS so the pre-filter matches Stage 2 defaults.
-# When Models 5–6 land, remove ORDER BY / LIMIT, uncomment the extra joins,
-# and let generate_top_50_candidates() compute the rank formula instead.
+# ── SQL: candidate pool ───────────────────────────────────────────────────────
+# Availability filtering (is_portal_candidate) is handled here in SQL; ranking
+# is Stage 1's job now (generate_top_50_candidates(), in Python — see module
+# docstring).
+#
+# Season semantics (verified against the live DB 2026-07-11, corrects the
+# original plan's assumption): player_team_fit_scores.season now carries real
+# scheme_fit/gap_match/role_fit together at season=2027 (role_fit's
+# sync_role_fit_scores() upserted directly into the same season Scheme
+# Fit/Gap Matching already cover, it didn't create a separate "observed"
+# season) — MAX(player_team_fit_scores.season) is 2027, not 2026. That's the
+# same season team_rating_projections already uses. The join below matches
+# season directly; a `ptf.season + 1` offset (destination_projection.py's
+# convention, for a *different* pair of tables) returns zero rows here.
 
-_STAGE1_SCHEME_WEIGHT = DEFAULT_FIT_WEIGHTS["scheme_fit"]
-_STAGE1_GAP_WEIGHT = DEFAULT_FIT_WEIGHTS["gap_match"]
-_STAGE1_ROLE_WEIGHT = DEFAULT_FIT_WEIGHTS["role_fit"]
-
-CANDIDATE_SQL = f"""
+CANDIDATE_SQL = """
 SELECT
     ptf.player_id,
     ptf.school_id,
@@ -99,43 +115,52 @@ SELECT
     ptf.scheme_fit,
     ptf.gap_match,
     ptf.role_fit,
-    (
-        {_STAGE1_SCHEME_WEIGHT} * ptf.scheme_fit
-        + {_STAGE1_GAP_WEIGHT} * ptf.gap_match
-        + {_STAGE1_ROLE_WEIGHT} * ptf.role_fit
-    ) AS rec_stage1_fit,
-    ptf.overall_fit
+    ptf.overall_fit,
+    trp.delta_adj_em
     -- future — uncomment when Model 5 (predictions) is ready:
     -- , pr.predicted_per_change  AS player_projection
     -- , pr.confidence            AS data_confidence
-    -- future — uncomment when Model 6 (team_rating_projections) is ready:
-    -- , trp.delta_adj_em         AS team_rating_delta
 FROM player_team_fit_scores ptf
 JOIN players p
     ON p.id = ptf.player_id
+LEFT JOIN team_rating_projections trp
+    ON trp.player_id  = ptf.player_id
+   AND trp.school_id  = ptf.school_id
+   AND trp.season     = ptf.season
+   AND trp.expires_at > now()
 -- future — uncomment when Model 5 ready:
 -- LEFT JOIN predictions pr
 --     ON pr.player_id = ptf.player_id AND pr.school_id = ptf.school_id
--- future — uncomment when Model 6 ready:
--- LEFT JOIN team_rating_projections trp
---     ON trp.player_id = ptf.player_id AND trp.school_id = ptf.school_id
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
   AND ptf.is_portal_candidate = true
-ORDER BY rec_stage1_fit DESC
-LIMIT 50
 """
 
 # ── SQL: role_fit freshness check ────────────────────────────────────────────
 # role_fit sits at the 50.0 stub baseline until run_playing_time.py has synced
 # real values for this season. That's a valid neutral fallback, not an error —
-# but it silently makes rec-v1.1's role signal inert, so we warn instead of
+# but it silently makes the role signal inert, so we warn instead of
 # gating (unlike destination_projection.py, which hard-gates on this table).
 
 ROLE_FIT_FRESHNESS_SQL = """
 SELECT EXISTS(
     SELECT 1 FROM playing_time_projections WHERE season = :season LIMIT 1
 ) AS has_role_fit_data
+"""
+
+# ── SQL: team_rating_projections freshness check ─────────────────────────────
+# Same neutral-fallback reasoning as role_fit above: team_impact_fit() maps a
+# missing delta_adj_em to TEAM_IMPACT_FIT_NEUTRAL (50.0), a valid degraded
+# state, not an error — warn instead of hard-gating.
+
+TEAM_RATING_FRESHNESS_SQL = """
+SELECT EXISTS(
+    SELECT 1 FROM team_rating_projections
+    WHERE season = :season
+      AND school_id = :school_id
+      AND expires_at > now()
+    LIMIT 1
+) AS has_team_rating_data
 """
 
 DELETE_SQL = "DELETE FROM recommendations WHERE user_id = %s"
@@ -172,6 +197,15 @@ def build_candidate_pool(engine, school_id: int, season: int) -> pd.DataFrame:
 def check_role_fit_freshness(engine, season: int) -> bool:
     with engine.connect() as conn:
         row = conn.execute(text(ROLE_FIT_FRESHNESS_SQL), {"season": season}).fetchone()
+    return bool(row[0])
+
+
+def check_team_rating_freshness(engine, school_id: int, season: int) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(TEAM_RATING_FRESHNESS_SQL),
+            {"school_id": school_id, "season": season},
+        ).fetchone()
     return bool(row[0])
 
 
@@ -220,13 +254,11 @@ def main() -> None:
         return
     log.info("Found %d user(s) to process", len(users_df))
 
-    # ── Build shared Top-50 candidate pool for this school ───────────────────
-    # Today: SQL handles availability filter + ORDER BY overall_fit LIMIT 50.
-    # future — when Models 5–6 land, replace with generate_top_50_candidates():
-    # pool = build_candidate_pool(engine, args.school_id, args.season)  # no LIMIT in SQL
-    # top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS, filter_available=True)
-    top50 = build_candidate_pool(engine, args.school_id, args.season)
-    if top50.empty:
+    # ── Build candidate pool for this school ─────────────────────────────────
+    # SQL handles availability filter (is_portal_candidate) + the season-offset
+    # team_rating_projections join only; ranking happens in Python below.
+    pool = build_candidate_pool(engine, args.school_id, args.season)
+    if pool.empty:
         log.warning("No candidates found — check that school_id=%d season=%d has fit scores",
                     args.school_id, args.season)
         return
@@ -234,24 +266,41 @@ def main() -> None:
     if not check_role_fit_freshness(engine, args.season):
         log.warning(
             "No playing_time_projections found for season=%d — role_fit will be "
-            "the 50.0 stub for all candidates; rec-v1.1 role signal is inert this run.",
+            "the 50.0 stub for all candidates; role signal is inert this run.",
             args.season,
         )
+
+    # team_rating_projections uses the same season as player_team_fit_scores
+    # (both 2027 on the live DB, verified 2026-07-11) — no +1 offset here,
+    # unlike destination_projection.py's dest_season = t.season + 1 (a
+    # different pair of tables with a genuine observed-vs-target split).
+    if not check_team_rating_freshness(engine, args.school_id, args.season):
+        log.warning(
+            "No team_rating_projections found for school_id=%d season=%d — "
+            "team_impact_fit will be the %.1f neutral stub for all candidates; "
+            "team-rating signal is inert this run.",
+            args.school_id, args.season, TEAM_IMPACT_FIT_NEUTRAL,
+        )
+
+    # delta_adj_em is NaN wherever the LEFT JOIN in CANDIDATE_SQL found no
+    # matching team_rating_projections row — must be filled to a raw AdjEM
+    # delta of 0 (neutral) before normalizing, not left NaN, since a per-row
+    # NaN would poison that row's weighted sum in calculate_overall_fit.
+    pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
+
+    # ── Stage 1: vectorized rank score → Top-50 ──────────────────────────────
+    top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS)
 
     # ── Stage 2: per-user re-rank using saved preferences → Top-10 ──────────
     all_mean_scores: list[float] = []
 
     for _, user in users_df.iterrows():
         uid = int(user["user_id"])
-        user_preferences = {
-            "scheme_fit_weight": float(user["weight_scheme"]),
-            "gap_match_weight":  float(user["weight_gap"]),
-            "role_fit_weight":   float(user["weight_role"]),
-            # future — uncomment when program fit is ready:
-            # "program_fit_weight": float(user["weight_program"]),
-        }
 
         try:
+            user_preferences = fixed_team_impact_preferences(
+                user["weight_scheme"], user["weight_gap"], user["weight_role"]
+            )
             top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
         except ValueError as e:
             log.error("user_id=%d — skipping, invalid preference weights: %s", uid, e)
@@ -264,8 +313,8 @@ def main() -> None:
             log.info("[DRY RUN] user_id=%d — would write %d rows (mean_fit=%.1f)",
                      uid, len(top10), mean_score)
             print(top10[["final_rank", "player_id", "player_name", "position",
-                          "scheme_fit", "gap_match", "role_fit", "rec_stage1_fit",
-                          "personalized_fit"]].to_string(index=False))
+                          "scheme_fit", "gap_match", "role_fit", "team_impact_fit",
+                          "stage1_rank_score", "personalized_fit"]].to_string(index=False))
         else:
             n = upsert_recommendations(engine, top10, uid)
             log.info("user_id=%d → %d recommendations written (mean_fit=%.1f)", uid, n, mean_score)
@@ -275,6 +324,17 @@ def main() -> None:
         return
 
     # ── MLflow tracking ──────────────────────────────────────────────────────
+    import mlflow.pyfunc
+
+    class RecEnginePyfunc(mlflow.pyfunc.PythonModel):
+        """Marker artifact — the recommendation engine is a weighted-sum
+        formula over other models' outputs, not a serializable sklearn
+        model; register_model needs *some* logged model artifact to attach
+        a version to, same pattern as destination_projection.py's
+        DestProjectionPyfunc."""
+        def predict(self, context, model_input):
+            return model_input
+
     client = setup_mlflow("recommendation-engine")
     overall_mean = sum(all_mean_scores) / len(all_mean_scores) if all_mean_scores else 0.0
 
@@ -287,13 +347,30 @@ def main() -> None:
             "stage1_weights": str(DEFAULT_FIT_WEIGHTS),
         })
         mlflow.log_metrics({
-            "pool_size":        float(len(top50)),
+            "pool_size":        float(len(pool)),
+            "top50_size":       float(len(top50)),
             "mean_overall_fit": overall_mean,
         })
+        mlflow.pyfunc.log_model(artifact_path="rec_engine_model", python_model=RecEnginePyfunc())
         run_id = run.info.run_id
 
+    # Promotion controls MLflow alias metadata only. Like the other model
+    # runners, recommendation rows are written before this comparison.
+    try:
+        champion = client.get_model_version_by_alias("recommendation-engine", "champion")
+        champion_weights = client.get_run(champion.run_id).data.params.get("stage1_weights")
+        if champion_weights != str(DEFAULT_FIT_WEIGHTS):
+            log.warning(
+                "mean_overall_fit is not directly comparable to champion — "
+                "weight formula changed (%s -> %s)",
+                champion_weights,
+                DEFAULT_FIT_WEIGHTS,
+            )
+    except MlflowException:
+        pass  # No registered champion yet.
+
     result = maybe_promote(
-        client, "recommendation-engine", run_id, "",
+        client, "recommendation-engine", run_id, "rec_engine_model",
         metric_name="mean_overall_fit",
         new_value=overall_mean,
         higher_is_better=True,
