@@ -371,8 +371,9 @@ def run_team_rating_projection(
             mlflow.log_artifact(off_path, artifact_path="team_rating_models")
             mlflow.log_artifact(def_path, artifact_path="team_rating_models")
 
-        if not skip_cv and GATE_METRIC in mlflow.active_run().data.metrics:
-            gate_value = mlflow.active_run().data.metrics[GATE_METRIC]
+        fresh_metrics = mlflow.get_run(run_id).data.metrics
+        if not skip_cv and GATE_METRIC in fresh_metrics:
+            gate_value = fresh_metrics[GATE_METRIC]
             outcome = maybe_promote(
                 client,
                 MLFLOW_MODEL_NAME,
