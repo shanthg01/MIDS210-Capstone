@@ -5,11 +5,12 @@ Non-interactive run of the 2-stage recommendation engine.
 
 For each active user of a school:
   1. Reads their saved fit weights from user_preferences table (Option B).
-  2. Assembles a Top-50 candidate pool via SQL (availability filter + ORDER BY overall_fit).
+  2. Assembles a Top-50 candidate pool via SQL using the rec-v1.1 fit weights.
   3. Runs Stage 2 (re-rank with user weights → Top-10) per user.
   4. Upserts results to the recommendations table.
 
-Stage 1 as a Python step is not needed today — SQL handles filtering and ranking.
+Stage 1 as a Python step is not needed today — SQL handles filtering and ranking
+with the same scheme/gap/role weights as DEFAULT_FIT_WEIGHTS.
 It will be reintroduced when predictions + team_rating_projections tables are ready
 and the rank formula becomes: adjusted_projection + team_rating_delta + overall_fit/100.
 
@@ -22,8 +23,8 @@ Usage:
 
 Tables used today:
   users                   — school_id, is_active
-  user_preferences        — weight_scheme, weight_gap per user
-  player_team_fit_scores  — scheme_fit, gap_match (Models 3 + 4)
+  user_preferences        — weight_scheme, weight_gap, weight_role per user
+  player_team_fit_scores  — scheme_fit, gap_match, role_fit
   players                 — player_name, position
   transfers               — availability_status
 
@@ -60,7 +61,7 @@ if hasattr(sys.stderr, "reconfigure"):
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "rec-v1"
+MODEL_VERSION = "rec-v1.1"
 EXPIRES_DAYS = 7
 
 # ── SQL: users + their saved weights ────────────────────────────────────────
@@ -68,10 +69,10 @@ EXPIRES_DAYS = 7
 USERS_SQL = """
 SELECT
     u.id                                AS user_id,
-    COALESCE(up.weight_scheme, 0.5)     AS weight_scheme,
-    COALESCE(up.weight_gap,    0.5)     AS weight_gap
-    -- future — uncomment when Models 5–6 ready:
-    -- , COALESCE(up.weight_role,    0.0) AS weight_role
+    COALESCE(up.weight_scheme, 0.30)    AS weight_scheme,
+    COALESCE(up.weight_gap,    0.35)    AS weight_gap,
+    COALESCE(up.weight_role,   0.35)    AS weight_role
+    -- future — uncomment when program fit is ready:
     -- , COALESCE(up.weight_program, 0.0) AS weight_program
 FROM users u
 LEFT JOIN user_preferences up ON up.user_id = u.id
@@ -80,11 +81,16 @@ WHERE u.school_id = :school_id
 """
 
 # ── SQL: Top-50 candidate pool ───────────────────────────────────────────────
-# Availability filter and Top-50 ranking are handled here in SQL today.
+# Availability filter and Top-50 ranking are handled here in SQL today, using
+# the current DEFAULT_FIT_WEIGHTS so the pre-filter matches Stage 2 defaults.
 # When Models 5–6 land, remove ORDER BY / LIMIT, uncomment the extra joins,
 # and let generate_top_50_candidates() compute the rank formula instead.
 
-CANDIDATE_SQL = """
+_STAGE1_SCHEME_WEIGHT = DEFAULT_FIT_WEIGHTS["scheme_fit"]
+_STAGE1_GAP_WEIGHT = DEFAULT_FIT_WEIGHTS["gap_match"]
+_STAGE1_ROLE_WEIGHT = DEFAULT_FIT_WEIGHTS["role_fit"]
+
+CANDIDATE_SQL = f"""
 SELECT
     ptf.player_id,
     ptf.school_id,
@@ -92,6 +98,12 @@ SELECT
     p.position,
     ptf.scheme_fit,
     ptf.gap_match,
+    ptf.role_fit,
+    (
+        {_STAGE1_SCHEME_WEIGHT} * ptf.scheme_fit
+        + {_STAGE1_GAP_WEIGHT} * ptf.gap_match
+        + {_STAGE1_ROLE_WEIGHT} * ptf.role_fit
+    ) AS rec_stage1_fit,
     ptf.overall_fit
     -- future — uncomment when Model 5 (predictions) is ready:
     -- , pr.predicted_per_change  AS player_projection
@@ -110,8 +122,20 @@ JOIN players p
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
   AND ptf.is_portal_candidate = true
-ORDER BY ptf.overall_fit DESC
+ORDER BY rec_stage1_fit DESC
 LIMIT 50
+"""
+
+# ── SQL: role_fit freshness check ────────────────────────────────────────────
+# role_fit sits at the 50.0 stub baseline until run_playing_time.py has synced
+# real values for this season. That's a valid neutral fallback, not an error —
+# but it silently makes rec-v1.1's role signal inert, so we warn instead of
+# gating (unlike destination_projection.py, which hard-gates on this table).
+
+ROLE_FIT_FRESHNESS_SQL = """
+SELECT EXISTS(
+    SELECT 1 FROM playing_time_projections WHERE season = :season LIMIT 1
+) AS has_role_fit_data
 """
 
 DELETE_SQL = "DELETE FROM recommendations WHERE user_id = %s"
@@ -143,6 +167,12 @@ def build_candidate_pool(engine, school_id: int, season: int) -> pd.DataFrame:
         )
     log.info("Candidate pool: %d rows for school_id=%d season=%d", len(df), school_id, season)
     return df
+
+
+def check_role_fit_freshness(engine, season: int) -> bool:
+    with engine.connect() as conn:
+        row = conn.execute(text(ROLE_FIT_FRESHNESS_SQL), {"season": season}).fetchone()
+    return bool(row[0])
 
 
 def upsert_recommendations(engine, top10: pd.DataFrame, user_id: int) -> int:
@@ -201,6 +231,13 @@ def main() -> None:
                     args.school_id, args.season)
         return
 
+    if not check_role_fit_freshness(engine, args.season):
+        log.warning(
+            "No playing_time_projections found for season=%d — role_fit will be "
+            "the 50.0 stub for all candidates; rec-v1.1 role signal is inert this run.",
+            args.season,
+        )
+
     # ── Stage 2: per-user re-rank using saved preferences → Top-10 ──────────
     all_mean_scores: list[float] = []
 
@@ -209,12 +246,17 @@ def main() -> None:
         user_preferences = {
             "scheme_fit_weight": float(user["weight_scheme"]),
             "gap_match_weight":  float(user["weight_gap"]),
-            # future — uncomment when Models 5–6 ready:
-            # "role_fit_weight":    float(user["weight_role"]),
+            "role_fit_weight":   float(user["weight_role"]),
+            # future — uncomment when program fit is ready:
             # "program_fit_weight": float(user["weight_program"]),
         }
 
-        top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
+        try:
+            top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
+        except ValueError as e:
+            log.error("user_id=%d — skipping, invalid preference weights: %s", uid, e)
+            continue
+
         mean_score = float(top10["personalized_fit"].mean())
         all_mean_scores.append(mean_score)
 
@@ -222,7 +264,8 @@ def main() -> None:
             log.info("[DRY RUN] user_id=%d — would write %d rows (mean_fit=%.1f)",
                      uid, len(top10), mean_score)
             print(top10[["final_rank", "player_id", "player_name", "position",
-                          "scheme_fit", "gap_match", "personalized_fit"]].to_string(index=False))
+                          "scheme_fit", "gap_match", "role_fit", "rec_stage1_fit",
+                          "personalized_fit"]].to_string(index=False))
         else:
             n = upsert_recommendations(engine, top10, uid)
             log.info("user_id=%d → %d recommendations written (mean_fit=%.1f)", uid, n, mean_score)

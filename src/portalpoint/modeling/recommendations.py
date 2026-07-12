@@ -6,8 +6,9 @@ Stage 2 — re-rank with user preference weights + risk penalty → Top-10 picks
 Availability filtering is owned by the caller (SQL WHERE clause in
 run_recommendations.py) — the engine receives a pre-filtered pool.
 
-Only scheme_fit (Model 3) and gap_match (Model 4) are wired today.
-Placeholder weight keys for Models 5-6+ are commented below.
+scheme_fit (Model 3), gap_match (Model 4), and role_fit (playing-time model)
+are wired today. Program fit, player projection, team-rating impact, and
+confidence-aware risk penalties remain future extensions.
 """
 from __future__ import annotations
 
@@ -25,10 +26,10 @@ __all__ = [
 ]
 
 DEFAULT_FIT_WEIGHTS: dict = {
-    "scheme_fit": 0.5,
-    "gap_match":  0.5,
-    # placeholders — uncomment and re-proportion when Models 5–6 land:
-    # 'role_fit':    0.0,
+    "scheme_fit": 0.30,
+    "gap_match":  0.35,
+    "role_fit":   0.35,
+    # placeholders — uncomment and re-proportion when future signals land:
     # 'program_fit': 0.0,
     # 'player_projection': 0.0, # future (separate from adjusted_projection)
     # 'data_confidence': 0.0,   # future
@@ -41,6 +42,31 @@ _RISK_CONFIG: dict = {
     "medium": {"confidence_floor": 0.50, "penalty": 1.0},
     "high":   {"confidence_floor": 0.00, "penalty": 0.0},
 }
+
+
+def _normalize_available_weights(df: pd.DataFrame, raw_weights: dict) -> dict:
+    """Keep weights for present score columns and normalize them to sum to 1.0."""
+    usable_weights: dict[str, float] = {}
+    missing_cols: list[str] = []
+
+    for col, raw_value in raw_weights.items():
+        weight = float(raw_value)
+        if weight < 0:
+            raise ValueError(f"Weights must be non-negative; got {col}={weight}")
+        if col not in df.columns:
+            missing_cols.append(col)
+            continue
+        if weight > 0:
+            usable_weights[col] = weight
+
+    if missing_cols:
+        logger.debug("Ignoring preference weights for unavailable columns: %s", missing_cols)
+
+    total = sum(usable_weights.values())
+    if total <= 0:
+        raise ValueError("At least one positive preference weight must reference an available column")
+
+    return {col: weight / total for col, weight in usable_weights.items()}
 
 
 def calculate_overall_fit(
@@ -92,6 +118,7 @@ def generate_top_50_candidates(
     df : pd.DataFrame
         Pre-filtered candidate pool (available players only). Required columns:
         every key in *weights*.
+        Current fit columns: ``scheme_fit``, ``gap_match``, ``role_fit``.
         Future columns (when predictions + team_rating_projections tables ready):
         ``player_projection``, ``data_confidence``, ``team_rating_delta``.
     weights : dict, optional
@@ -133,12 +160,15 @@ def refine_to_top_10(
     df_top_50 : pd.DataFrame
         Output of :func:`generate_top_50_candidates`. Required columns:
         any column referenced by user_preferences keys (minus ``_weight`` suffix).
+        Current fit columns: ``scheme_fit``, ``gap_match``, ``role_fit``.
         Future columns (when predictions table ready):
         ``adjusted_projection``, ``team_rating_delta``, ``data_confidence``.
     user_preferences : dict, optional
         Mapping of ``<col>_weight`` keys to raw (un-normalised) weights.
-        Supported keys: ``scheme_fit_weight``, ``gap_match_weight``.
-        Defaults to equal 0.5 / 0.5.
+        Supported keys: ``scheme_fit_weight``, ``gap_match_weight``,
+        ``role_fit_weight``. Missing/future columns are ignored and remaining
+        positive weights are normalized.
+        Defaults to DEFAULT_FIT_WEIGHTS.
     risk_tolerance : str
         One of ``'low'``, ``'medium'``, ``'high'``.  Controls the confidence
         penalty applied to low-confidence candidates.
@@ -163,15 +193,17 @@ def refine_to_top_10(
         )
 
     if user_preferences is None:
-        user_preferences = {"scheme_fit_weight": 0.5, "gap_match_weight": 0.5}
+        user_preferences = {
+            f"{col}_weight": weight
+            for col, weight in DEFAULT_FIT_WEIGHTS.items()
+        }
 
-    # Strip _weight suffix and normalise so weights sum to 1.0
+    # Strip _weight suffix and normalize against the columns available in this pool.
     raw_weights = {
         key.removesuffix("_weight"): val
         for key, val in user_preferences.items()
     }
-    total = sum(raw_weights.values())
-    normalized_weights = {col: w / total for col, w in raw_weights.items()}
+    normalized_weights = _normalize_available_weights(df_top_50, raw_weights)
 
     risk = _RISK_CONFIG[risk_tolerance]
     confidence_floor: float = risk["confidence_floor"]
