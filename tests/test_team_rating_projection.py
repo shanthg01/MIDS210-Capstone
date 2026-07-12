@@ -11,6 +11,14 @@ import pytest
 
 from portalpoint.modeling.team_rating_projection import (
     ROSTER_FEATURES,
+    ELITE_RECRUITING_SCHOOLS,
+    ELITE_RECRUITING_MULTIPLIER,
+    FRESHMAN_MIN_PCT_BY_TIER,
+    FRESHMAN_RAPM_DISCOUNT_BY_TIER,
+    FRESHMAN_OPPORTUNITY_SCALE_MINUTES,
+    FRESHMAN_OPPORTUNITY_MAX_FACTOR,
+    FRESHMAN_OPPORTUNITY_FLOOR_FACTOR,
+    FRESHMAN_VARIANCE_PER_PLAYER,
     _conference_tier,
     _freshman_prior_positions,
     _incoming_freshman_count,
@@ -248,6 +256,8 @@ def test_freshman_prior_positions_use_open_minutes():
 
 
 def test_build_freshman_prior_rows_discount_slot_baselines():
+    # C has 30 open minutes → opportunity_factor hits MAX (1.5) → 8.0 * 1.5 = 12.0
+    # PG has 10 open minutes → factor = 10/15 = 0.667 → 8.0 * 0.667 ≈ 5.333
     row = pd.Series({
         "class_balance": {"incoming_fr": 2},
         "open_minutes_by_position": {"C": 30.0, "PG": 10.0},
@@ -261,8 +271,10 @@ def test_build_freshman_prior_rows_discount_slot_baselines():
     rows = build_freshman_prior_rows(row, 2, baselines)
     assert len(rows) == 2
     assert rows[0]["position"] == "C"
-    assert rows[0]["min_pct"] == pytest.approx(8.0)
-    assert rows[0]["off_adj_rapm"] == pytest.approx(1.3)
+    # opportunity_factor = min(30/15, 1.5) = 1.5; base = 8.0; adjusted = 12.0
+    assert rows[0]["min_pct"] == pytest.approx(8.0 * FRESHMAN_OPPORTUNITY_MAX_FACTOR)
+    # tier-2 RAPM discount = 0.65; slot off_adj_rapm = 2.0
+    assert rows[0]["off_adj_rapm"] == pytest.approx(2.0 * FRESHMAN_RAPM_DISCOUNT_BY_TIER[2])
     assert rows[0]["is_freshman_prior"] is True
 
 
@@ -521,3 +533,91 @@ def test_roster_features_has_14_elements():
 
 def test_roster_features_no_duplicates():
     assert len(ROSTER_FEATURES) == len(set(ROSTER_FEATURES))
+
+
+# ---------------------------------------------------------------------------
+# Freshman Prior v2 — Steps B-E
+# ---------------------------------------------------------------------------
+
+def _minimal_slot_baselines(tier: int = 1) -> dict:
+    pos_list = ["PG", "SG", "SF", "PF", "C"]
+    return {
+        (tier, pos): {
+            "off_adj_rapm": 1.0, "def_adj_rapm": 0.5,
+            "three_point_rate": 0.35, "off_reb_pct": 0.25, "usage_rate": 20.0,
+        }
+        for pos in pos_list
+    }
+
+
+def test_freshman_prior_tier1_uses_higher_min_pct_than_tier2():
+    """B: Tier 1 base min_pct (10) > Tier 2 (8) with no open-minutes signal."""
+    row = pd.Series({
+        "class_balance": {"incoming_fr": 1},
+        # zero open minutes → floor factor applied → both tiers scale equally
+        "open_minutes_by_position": {"PG": 0.0},
+    })
+    bl1 = _minimal_slot_baselines(1)
+    bl2 = _minimal_slot_baselines(2)
+    rows1 = build_freshman_prior_rows(row, 1, bl1)
+    rows2 = build_freshman_prior_rows(row, 2, bl2)
+    assert len(rows1) == len(rows2) == 1
+    # Both use floor factor (same scalar), so tier1 > tier2 driven purely by base
+    assert rows1[0]["min_pct"] > rows2[0]["min_pct"]
+    assert FRESHMAN_MIN_PCT_BY_TIER[1] > FRESHMAN_MIN_PCT_BY_TIER[2]
+
+
+def test_freshman_prior_elite_school_multiplier():
+    """C: A school in ELITE_RECRUITING_SCHOOLS gets a higher base min_pct."""
+    elite_name = next(iter(ELITE_RECRUITING_SCHOOLS))  # any school from the set
+    row = pd.Series({
+        "class_balance": {"incoming_fr": 1},
+        "open_minutes_by_position": {"PG": 15.0},  # factor = 1.0 → min_pct = base exactly
+    })
+    baselines = _minimal_slot_baselines(2)
+    rows_plain = build_freshman_prior_rows(row, 2, baselines, school_name="Unknown State")
+    rows_elite = build_freshman_prior_rows(row, 2, baselines, school_name=elite_name)
+    assert len(rows_plain) == len(rows_elite) == 1
+    # Elite school gets ELITE_RECRUITING_MULTIPLIER applied to base min_pct
+    expected_elite_min_pct = min(
+        FRESHMAN_MIN_PCT_BY_TIER[2] * ELITE_RECRUITING_MULTIPLIER, 30.0
+    )
+    assert rows_elite[0]["min_pct"] == pytest.approx(expected_elite_min_pct, rel=0.01)
+    assert rows_elite[0]["min_pct"] > rows_plain[0]["min_pct"]
+
+
+def test_freshman_prior_opportunity_weighting_floor_and_cap():
+    """D: opportunity_factor clamped to [FLOOR, MAX]; 0 open minutes → floor."""
+    row_zero = pd.Series({
+        "class_balance": {"incoming_fr": 1},
+        "open_minutes_by_position": {"SG": 0.0},
+    })
+    row_max = pd.Series({
+        "class_balance": {"incoming_fr": 1},
+        "open_minutes_by_position": {"SG": 100.0},  # well above scale → cap
+    })
+    baselines = _minimal_slot_baselines(2)
+    rows_zero = build_freshman_prior_rows(row_zero, 2, baselines)
+    rows_max = build_freshman_prior_rows(row_max, 2, baselines)
+    assert len(rows_zero) == len(rows_max) == 1
+    # Floor case
+    expected_floor_min_pct = FRESHMAN_MIN_PCT_BY_TIER[2] * FRESHMAN_OPPORTUNITY_FLOOR_FACTOR
+    assert rows_zero[0]["min_pct"] == pytest.approx(expected_floor_min_pct, rel=0.01)
+    # Cap case
+    expected_cap_min_pct = FRESHMAN_MIN_PCT_BY_TIER[2] * FRESHMAN_OPPORTUNITY_MAX_FACTOR
+    assert rows_max[0]["min_pct"] == pytest.approx(expected_cap_min_pct, rel=0.01)
+
+
+def test_analytical_ci_widens_with_freshman_priors():
+    """E: CI is strictly wider when n_freshman_priors > 0."""
+    models = TeamRatingModels(off_resid_std=2.0, def_resid_std=3.0)
+    lo0, hi0 = analytical_ci(1.0, models, n_freshman_priors=0)
+    lo2, hi2 = analytical_ci(1.0, models, n_freshman_priors=2)
+    width0 = hi0 - lo0
+    width2 = hi2 - lo2
+    assert width2 > width0
+    # Verify the exact extra variance contribution
+    extra_var = 2 * FRESHMAN_VARIANCE_PER_PLAYER
+    base_var = 2.0 * (2.0 ** 2 + 3.0 ** 2)
+    expected_width2 = 2 * 1.2816 * np.sqrt(base_var + extra_var)
+    assert width2 == pytest.approx(expected_width2, rel=1e-4)

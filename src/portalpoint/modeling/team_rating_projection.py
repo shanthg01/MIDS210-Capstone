@@ -46,9 +46,34 @@ N_BOOTSTRAP = 200
 MIN_ROSTER_PLAYERS = 3        # below this, skip school (too many slot-baseline fills)
 MIN_TRAIN_GAMES = 5           # player must have played >= 5 games to count in features
 RIDGE_ALPHA = 1.0
-FRESHMAN_MIN_PCT_PRIOR = 8.0  # conservative share of team minutes per unmatched freshman
+FRESHMAN_MIN_PCT_PRIOR = 8.0  # kept for backward-compat; superseded by tier-keyed dict below
 FRESHMAN_TOTAL_MIN_PCT_CAP = 30.0
-FRESHMAN_RAPM_DISCOUNT = 0.65
+FRESHMAN_RAPM_DISCOUNT = 0.65  # kept for backward-compat; superseded by tier-keyed dict below
+
+# B: program-calibrated freshman priors by conference tier.
+# Tier 1 (P6/high-major) freshmen historically average ~10% team minutes;
+# each lower tier steps down ~1-1.5 pts (derived from player_season_stats class_year averages).
+FRESHMAN_MIN_PCT_BY_TIER: dict[int, float] = {1: 10.0, 2: 8.0, 3: 7.0, 4: 6.0}
+FRESHMAN_RAPM_DISCOUNT_BY_TIER: dict[int, float] = {1: 0.72, 2: 0.65, 3: 0.60, 4: 0.55}
+
+# C: elite-recruiting-program proxy — ~15 schools historically known for immediate-impact
+# freshman classes.  Matched case-insensitively against schools.name.
+ELITE_RECRUITING_SCHOOLS: frozenset[str] = frozenset({
+    "Duke", "Kentucky", "Kansas", "North Carolina", "Michigan State",
+    "Arizona", "UCLA", "Memphis", "Auburn", "Arkansas",
+    "Indiana", "Texas", "Ohio State", "Villanova", "Gonzaga",
+})
+ELITE_RECRUITING_MULTIPLIER: float = 1.5   # applied to min_pct_prior for elite programs
+ELITE_RAPM_DISCOUNT_BOOST: float = 0.07   # reduce RAPM discount by this for elite programs
+
+# D: position-aware opportunity weighting.
+# Freshman min_pct is scaled by (open_minutes_for_position / SCALE) clamped to [FLOOR, MAX].
+FRESHMAN_OPPORTUNITY_SCALE_MINUTES: float = 15.0  # at this open-minutes level, factor = 1.0
+FRESHMAN_OPPORTUNITY_FLOOR_FACTOR: float = 1.0 / 3.0  # min factor even with no open minutes
+FRESHMAN_OPPORTUNITY_MAX_FACTOR: float = 1.5
+
+# E: CI widening per unmatched freshman prior in baseline roster.
+FRESHMAN_VARIANCE_PER_PLAYER: float = 0.4  # extra variance per freshman prior (AdjEM units²)
 
 # Conference tier bucket boundaries: percentile of adj_em within season.
 # Tier 1 = high-major, Tier 4 = low-major (same convention as destination_projection.py).
@@ -151,7 +176,7 @@ WHERE season = ANY(:seasons)
 """
 
 _SCHOOL_SEASON_SQL = """
-SELECT s.id AS school_id, s.conference,
+SELECT s.id AS school_id, s.name AS school_name, s.conference,
        tss.season, tss.adj_em, tss.adj_tempo
 FROM schools s
 JOIN team_season_stats tss ON tss.school_id = s.id
@@ -377,6 +402,7 @@ def build_freshman_prior_rows(
     roster_state_row: pd.Series | dict | None,
     conference_tier: int,
     slot_baselines: dict,
+    school_name: str = "",
 ) -> list[dict]:
     """Conservative quality priors for incoming freshmen without player IDs/stats.
 
@@ -385,29 +411,61 @@ def build_freshman_prior_rows(
     prior, team baselines treat those roster spots as empty. We add small,
     discounted slot-baseline rows so the team projection acknowledges likely
     depth while preserving uncertainty through `n_known_players`.
+
+    Steps B-D applied here:
+      B) tier-keyed base min_pct and RAPM discount
+      C) elite-recruiting-program multiplier (~15 schools, hardcoded proxy)
+      D) position-aware opportunity weighting via open_minutes_by_position
     """
     count = _incoming_freshman_count(roster_state_row)
     if count <= 0:
         return []
-    total_min_pct = min(count * FRESHMAN_MIN_PCT_PRIOR, FRESHMAN_TOTAL_MIN_PCT_CAP)
-    min_pct = total_min_pct / count
-    positions = _freshman_prior_positions(
-        roster_state_row.get("open_minutes_by_position") if roster_state_row is not None else None,
-        count,
+
+    # B: tier-keyed base priors
+    base_min_pct = FRESHMAN_MIN_PCT_BY_TIER.get(conference_tier, FRESHMAN_MIN_PCT_BY_TIER[2])
+    rapm_discount = FRESHMAN_RAPM_DISCOUNT_BY_TIER.get(conference_tier, FRESHMAN_RAPM_DISCOUNT_BY_TIER[2])
+
+    # C: elite-recruiting-program multiplier
+    school_name_lower = school_name.strip().lower()
+    is_elite = any(
+        school_name_lower == e.lower() for e in ELITE_RECRUITING_SCHOOLS
     )
+    if is_elite:
+        base_min_pct = min(base_min_pct * ELITE_RECRUITING_MULTIPLIER, FRESHMAN_TOTAL_MIN_PCT_CAP)
+        rapm_discount = min(rapm_discount + ELITE_RAPM_DISCOUNT_BOOST, 0.90)
+
+    total_min_pct = min(count * base_min_pct, FRESHMAN_TOTAL_MIN_PCT_CAP)
+    min_pct_per = total_min_pct / count
+
+    open_minutes_raw = roster_state_row.get("open_minutes_by_position") if roster_state_row is not None else None
+    open_minutes_dict = _json_dict(open_minutes_raw) if open_minutes_raw is not None else {}
+    positions = _freshman_prior_positions(open_minutes_raw, count)
 
     rows = []
     for idx, position in enumerate(positions):
         fill = _slot_fill(slot_baselines, conference_tier, position)
+
+        # D: position-aware opportunity weighting
+        open_min = max(_safe_float(open_minutes_dict.get(position), 0.0), 0.0)
+        if FRESHMAN_OPPORTUNITY_SCALE_MINUTES > 0:
+            raw_factor = open_min / FRESHMAN_OPPORTUNITY_SCALE_MINUTES
+            opportunity_factor = max(
+                min(raw_factor, FRESHMAN_OPPORTUNITY_MAX_FACTOR),
+                FRESHMAN_OPPORTUNITY_FLOOR_FACTOR,
+            )
+        else:
+            opportunity_factor = 1.0
+        adjusted_min_pct = min_pct_per * opportunity_factor
+
         rows.append({
             "player_id": f"freshman_prior_{idx + 1}",
-            "min_pct": min_pct,
+            "min_pct": adjusted_min_pct,
             "usage_rate": fill["usage_rate"],
             "three_point_rate": fill["three_point_rate"],
             "off_reb_pct": fill["off_reb_pct"],
             "position": position,
-            "off_adj_rapm": fill["off_adj_rapm"] * FRESHMAN_RAPM_DISCOUNT,
-            "def_adj_rapm": fill["def_adj_rapm"] * FRESHMAN_RAPM_DISCOUNT,
+            "off_adj_rapm": fill["off_adj_rapm"] * rapm_discount,
+            "def_adj_rapm": fill["def_adj_rapm"] * rapm_discount,
             "is_freshman_prior": True,
         })
     return rows
@@ -854,13 +912,16 @@ def build_school_baselines(
     school_adj_ems: dict[int, float],
     season_adj_ems: np.ndarray,
     context_season: int,
-) -> dict[int, dict]:
+) -> tuple[dict[int, dict], list[dict]]:
     """Build one baseline roster feature vector per school.
 
     Baseline = returning players (from roster_baseline_members) + prior-season
     stats + HE RAPM. Open slots filled with slot baselines.
-    Returns dict: school_id → {"features": dict, "adj_em": float, "tier": int,
-                               "adj_tempo": float, "roster_rows": list}
+
+    Returns (result, freshman_audit):
+      result:  school_id → {"features", "adj_em", "tier", "adj_tempo",
+                            "roster_rows", "returning_pct", "n_freshman_priors"}
+      freshman_audit: list of per-school dicts for Step-A MLflow logging.
     """
     bm = data["baseline_members"]
     ps = data["prior_stats"].set_index(["player_id", "school_id"])
@@ -869,15 +930,18 @@ def build_school_baselines(
     rs = data["roster_state"].set_index(["school_id", "season"])
 
     result: dict[int, dict] = {}
+    freshman_audit: list[dict] = []
 
     for school_id, grp in bm.groupby("school_id"):
         school_id = int(school_id)
         adj_em = school_adj_ems.get(school_id, 0.0)
         tier = _conference_tier(adj_em, season_adj_ems)
 
+        school_name = ""
         if school_id in sm.index:
             sm_row = sm.loc[school_id]
             adj_tempo = float(sm_row["adj_tempo"]) if pd.notna(sm_row.get("adj_tempo")) else 68.0
+            school_name = str(sm_row.get("school_name", "") or "")
         else:
             adj_tempo = 68.0
 
@@ -919,21 +983,34 @@ def build_school_baselines(
 
             roster_rows.append(row)
 
-        roster_rows.extend(
-            build_freshman_prior_rows(rs_row_for_school, tier, slot_baselines)
+        freshman_rows = build_freshman_prior_rows(
+            rs_row_for_school, tier, slot_baselines, school_name=school_name
         )
+        roster_rows.extend(freshman_rows)
+        n_freshman_priors = len(freshman_rows)
+
+        # A: accumulate audit record for this school
+        total_freshman_min_pct = sum(r["min_pct"] for r in freshman_rows)
+        freshman_audit.append({
+            "school_id":            school_id,
+            "school_name":          school_name,
+            "tier":                 tier,
+            "n_freshman_priors":    n_freshman_priors,
+            "total_freshman_min_pct": round(total_freshman_min_pct, 2),
+        })
 
         feats = build_roster_features(roster_rows, tier, adj_tempo, returning_pct, slot_baselines)
         result[school_id] = {
-            "features":      feats,
-            "adj_em":        adj_em,
-            "tier":          tier,
-            "adj_tempo":     adj_tempo,
-            "roster_rows":   roster_rows,
-            "returning_pct": returning_pct,
+            "features":           feats,
+            "adj_em":             adj_em,
+            "tier":               tier,
+            "adj_tempo":          adj_tempo,
+            "roster_rows":        roster_rows,
+            "returning_pct":      returning_pct,
+            "n_freshman_priors":  n_freshman_priors,
         }
 
-    return result
+    return result, freshman_audit
 
 
 def build_candidate_roster(
@@ -1030,13 +1107,19 @@ def predict_adj_o_d_batch(
 def analytical_ci(
     delta_adj_em: float,
     models: TeamRatingModels,
+    n_freshman_priors: int = 0,
 ) -> tuple[float, float]:
     """80% CI via Gaussian approximation (replaces 200-sample bootstrap).
 
     AdjEM is offense minus defense, so combine both residual variances plus the
     baseline/candidate comparison variance.
+
+    Step E: each freshman prior adds FRESHMAN_VARIANCE_PER_PLAYER to total variance,
+    reflecting the higher uncertainty when the baseline relies on unmatched freshmen.
     """
-    sigma = np.sqrt(2.0 * (models.off_resid_std ** 2 + models.def_resid_std ** 2))
+    base_variance = 2.0 * (models.off_resid_std ** 2 + models.def_resid_std ** 2)
+    freshman_variance = n_freshman_priors * FRESHMAN_VARIANCE_PER_PLAYER
+    sigma = np.sqrt(base_variance + freshman_variance)
     z80 = 1.2816  # 80% two-sided = 10th/90th percentile
     return float(delta_adj_em - z80 * sigma), float(delta_adj_em + z80 * sigma)
 

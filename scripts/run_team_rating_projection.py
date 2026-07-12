@@ -201,11 +201,32 @@ def run_team_rating_projection(
         # Step 5: Build baseline rosters per school
         # ------------------------------------------------------------------
         log.info("Step 5: Building 2027 baseline rosters...")
-        school_baselines = build_school_baselines(
+        school_baselines, freshman_audit = build_school_baselines(
             data, slot_baselines, school_adj_ems, season_adj_ems, source_season
         )
         log.info("  -> %d schools with baseline rosters", len(school_baselines))
         mlflow.log_param("n_schools_baseline", len(school_baselines))
+
+        # A: Log freshman-prior audit as MLflow artifact; warn for heavy-freshman schools
+        heavy_fr = [a for a in freshman_audit if a["n_freshman_priors"] >= 3 or a["total_freshman_min_pct"] >= 20.0]
+        if heavy_fr:
+            log.warning(
+                "Step 5 (freshman audit): %d school(s) with ≥3 priors or ≥20%% freshman min_pct: %s",
+                len(heavy_fr),
+                ", ".join(f"{a['school_name']}(n={a['n_freshman_priors']}, {a['total_freshman_min_pct']}%%)"
+                          for a in heavy_fr[:10]),
+            )
+        audit_df = pd.DataFrame(freshman_audit)
+        mlflow.log_metric("n_schools_with_freshman_priors", int((audit_df["n_freshman_priors"] > 0).sum()))
+        mlflow.log_metric("n_schools_heavy_freshman_priors", len(heavy_fr))
+        mlflow.log_dict(
+            audit_df.to_dict(orient="records"),
+            "freshman_prior_audit.json",
+        )
+        log.info(
+            "  -> freshman prior audit: %d schools have ≥1 prior, %d heavy (≥3 or ≥20%%)",
+            int((audit_df["n_freshman_priors"] > 0).sum()), len(heavy_fr),
+        )
 
         # ------------------------------------------------------------------
         # Step 6: Candidate counterfactuals (vectorized per player)
@@ -300,7 +321,8 @@ def run_team_rating_projection(
                 delta_adj_d  = ca_adj_d - bl_adj_d
                 delta_adj_em = delta_adj_o - delta_adj_d
 
-                ci_lower, ci_upper = analytical_ci(delta_adj_em, models)
+                n_fr = school_baselines[school_id].get("n_freshman_priors", 0)
+                ci_lower, ci_upper = analytical_ci(delta_adj_em, models, n_freshman_priors=n_fr)
 
                 delta = {
                     "baseline_adj_o":  round(bl_adj_o, 3),
