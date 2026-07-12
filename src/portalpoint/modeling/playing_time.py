@@ -209,6 +209,19 @@ transfer_pairs AS (
     FROM transfer_portal_events
     WHERE player_id IS NOT NULL
       AND match_status = 'matched'
+),
+hep_dedup AS (
+    SELECT DISTINCT ON (player_id, season)
+        player_id,
+        season,
+        pos_confidence_pg,
+        pos_confidence_sg,
+        pos_confidence_sf,
+        pos_confidence_pf,
+        pos_confidence_c
+    FROM hoop_explorer_player_stats
+    WHERE player_id IS NOT NULL
+    ORDER BY player_id, season, updated_at DESC, id DESC
 )
 SELECT
     pss.player_id,
@@ -306,7 +319,7 @@ LEFT JOIN prior_position_context ppc
 LEFT JOIN player_history ph
     ON ph.player_id = pss.player_id
    AND ph.season = pss.season
-LEFT JOIN hoop_explorer_player_stats hep
+LEFT JOIN hep_dedup hep
     ON hep.player_id = pss.player_id
    AND hep.season = pss.season
 LEFT JOIN player_archetypes pa
@@ -434,6 +447,19 @@ transfer_rows AS (
       AND player_id IS NOT NULL
       AND match_status = 'matched'
     ORDER BY player_id, updated_at DESC NULLS LAST, id DESC
+),
+hep_dedup AS (
+    SELECT DISTINCT ON (player_id, season)
+        player_id,
+        season,
+        pos_confidence_pg,
+        pos_confidence_sg,
+        pos_confidence_sf,
+        pos_confidence_pf,
+        pos_confidence_c
+    FROM hoop_explorer_player_stats
+    WHERE player_id IS NOT NULL
+    ORDER BY player_id, season, updated_at DESC, id DESC
 )
 SELECT
     fit.player_id,
@@ -537,7 +563,7 @@ LEFT JOIN prior_position_context ppc
 LEFT JOIN player_history ph
     ON ph.player_id = fit.player_id
    AND ph.season = %(source_season)s
-LEFT JOIN hoop_explorer_player_stats hep
+LEFT JOIN hep_dedup hep
     ON hep.player_id = fit.player_id
    AND hep.season = %(source_season)s
 LEFT JOIN player_archetypes pa

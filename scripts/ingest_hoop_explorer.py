@@ -59,6 +59,7 @@ import pandas as pd
 import requests
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from portalpoint.db.models import (
     HoopExplorerPlayerStats,
@@ -206,6 +207,61 @@ def _fuzzy_match(name: str, candidates: list[str], threshold: float = 0.82) -> s
     return matches[0] if matches else None
 
 
+# Ambiguity margin for _fuzzy_match_safe: if the best and second-best candidate score
+# within this margin of each other, refuse to guess rather than pick arbitrarily.
+FUZZY_MATCH_AMBIGUITY_MARGIN = 0.05
+
+
+def _name_tokens(name: str) -> tuple[str, str]:
+    """(first, last) tokens. Single-token names use the same token for both."""
+    parts = name.strip().split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    return parts[0], parts[-1]
+
+
+def _tokenwise_ratio(name_a: str, name_b: str) -> float:
+    """min(first-name ratio, last-name ratio) — NOT whole-string ratio.
+
+    Whole-string ratio dilutes a short differing token against a long shared one:
+    'matthew mayer' vs 'matthew moyer' scores ~0.92 whole-string (13 chars, 1 diff)
+    even though the last-name token itself is only 0.8 similar. Same failure mode
+    let 'tj johnson' fuzzy-match 'rj johnson' (different real players, Issue #53) —
+    whole-string ratio ~0.90, but the first-name token ('tj' vs 'rj') is only 0.5.
+    Requiring both tokens to independently clear the threshold catches both cases.
+    """
+    fa, la = _name_tokens(name_a)
+    fb, lb = _name_tokens(name_b)
+    first_ratio = difflib.SequenceMatcher(None, fa, fb).ratio()
+    last_ratio = difflib.SequenceMatcher(None, la, lb).ratio()
+    return min(first_ratio, last_ratio)
+
+
+def _fuzzy_match_safe(name: str, candidates: list[str], threshold: float) -> str | None:
+    """Token-wise fuzzy match with an ambiguity guard.
+
+    Replaces plain difflib whole-string matching for player names (see
+    _tokenwise_ratio docstring for why). Also refuses to pick a winner when the
+    top two candidates are too close to call (FUZZY_MATCH_AMBIGUITY_MARGIN) —
+    better to leave player_id unmatched than to guess wrong.
+    """
+    if not candidates:
+        return None
+    scored = sorted(
+        ((c, _tokenwise_ratio(name, c)) for c in candidates),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    best_name, best_score = scored[0]
+    if best_score < threshold:
+        return None
+    if len(scored) > 1 and (best_score - scored[1][1]) < FUZZY_MATCH_AMBIGUITY_MARGIN:
+        return None
+    return best_name
+
+
 # ---------------------------------------------------------------------------
 # CSV acquisition
 # ---------------------------------------------------------------------------
@@ -241,14 +297,39 @@ def load_csv(path: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def _upsert(session, model, conflict_cols: list[str], rows: list[dict]) -> int:
+    """Per-row upsert. Each row runs in its own savepoint so one bad row (e.g. a
+    player_id/season collision hitting the uq_he_player_stats_player_season partial
+    unique index — see Issue #53) can't abort the whole batch. On an IntegrityError
+    for a row with a `player_id`, retry once with player_id=None instead of losing
+    the row entirely.
+    """
     if not rows:
         return 0
     count = 0
     for row in rows:
-        stmt = pg_insert(model).values(**row)
-        update_cols = {k: stmt.excluded[k] for k in row if k not in conflict_cols and k != "id"}
-        stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-        await session.execute(stmt)
+        try:
+            async with session.begin_nested():
+                stmt = pg_insert(model).values(**row)
+                update_cols = {k: stmt.excluded[k] for k in row if k not in conflict_cols and k != "id"}
+                stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+                await session.execute(stmt)
+        except IntegrityError as exc:
+            if "player_id" in row and row["player_id"] is not None:
+                log.warning(
+                    "upsert collision on %s row (conflict_cols=%s, player_id=%s) — "
+                    "retrying with player_id=None: %s",
+                    model.__tablename__, conflict_cols, row["player_id"], exc.orig,
+                )
+                retry_row = {**row, "player_id": None}
+                async with session.begin_nested():
+                    stmt = pg_insert(model).values(**retry_row)
+                    update_cols = {
+                        k: stmt.excluded[k] for k in retry_row if k not in conflict_cols and k != "id"
+                    }
+                    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
+                    await session.execute(stmt)
+            else:
+                raise
         count += 1
     await session.commit()
     return count
@@ -438,6 +519,12 @@ async def ingest_player_stats(
     unmatched_teams: list[str] = []
     unmatched_players: list[str] = []
     records: list[dict] = []
+    # Guards against two different HE rows (different he_player_code) resolving to the
+    # same player_id in this season's batch — e.g. Issue #53's "TJ Johnson"/"RJ Johnson"
+    # collision. First claim wins; a later claimant is rejected and logged rather than
+    # silently duplicating (player_id, season) in hoop_explorer_player_stats.
+    claimed_player_ids: dict[int, str] = {}
+    collided_players: list[str] = []
 
     for r in rows:
         he_code = _str_or_none(r.get("player_code"))
@@ -468,15 +555,27 @@ async def ingest_player_stats(
                 if player_id is None:
                     roster = roster_by_school_season.get((season, int(school_id)), [])
                     roster_names = [name for name, _pid in roster]
-                    fuzzy_name = _fuzzy_match(std_lower, roster_names, threshold=0.88)
+                    fuzzy_name = _fuzzy_match_safe(std_lower, roster_names, threshold=0.88)
                     if fuzzy_name:
                         player_id = next(pid for name, pid in roster if name == fuzzy_name)
             if player_id is None:
                 player_id = unique_player_by_name.get(std_lower)
             if player_id is None:
-                fuzzy_name = _fuzzy_match(std_lower, list(unique_player_by_name.keys()), threshold=0.90)
+                fuzzy_name = _fuzzy_match_safe(std_lower, list(unique_player_by_name.keys()), threshold=0.90)
                 if fuzzy_name:
                     player_id = unique_player_by_name[fuzzy_name]
+            if player_id is not None:
+                prior_claim = claimed_player_ids.get(player_id)
+                if prior_claim is not None and prior_claim != he_code:
+                    log.warning(
+                        "player_id %s claimed by both he_player_code=%s and he_player_code=%s "
+                        "(name='%s') in season=%d — rejecting second claim, leaving unmatched",
+                        player_id, prior_claim, he_code, std_name, season,
+                    )
+                    collided_players.append(std_name)
+                    player_id = None
+                else:
+                    claimed_player_ids[player_id] = he_code
             if player_id is None:
                 unmatched_players.append(std_name)
 
@@ -566,6 +665,12 @@ async def ingest_player_stats(
         )
     if unmatched_teams:
         log.warning("unmatched player-side team names: %s", sorted(set(unmatched_teams))[:20])
+    if collided_players:
+        log.warning(
+            "%d players rejected as player_id collisions this season (sample): %s",
+            len(collided_players),
+            collided_players[:10],
+        )
 
     if dry_run:
         return len(records)
