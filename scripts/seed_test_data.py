@@ -126,6 +126,67 @@ VALUES (
 ON CONFLICT (player_id, season, model_version) WHERE school_id IS NULL
 DO UPDATE SET expires_at = EXCLUDED.expires_at, computed_at = now();
 
+INSERT INTO team_rating_projections
+    (player_id, school_id, season,
+     current_adj_em, projected_adj_em, delta_adj_em,
+     baseline_adj_o, baseline_adj_d, projected_adj_o, projected_adj_d,
+     ci_lower, ci_upper,
+     national_percentile, conference_rank,
+     expected_minutes_input, candidate_usage_role,
+     explanation, minutes_distribution,
+     model_version, expires_at)
+VALUES
+    (101, 9900301, 2027, 5.0, 7.2, 2.2,
+     105.0, 100.0, 107.0, 99.8,
+     1.1, 3.3,
+     60, 3,
+     22.0, 'secondary_creator',
+     '{"candidate_off_contribution": 0.8, "candidate_def_contribution": 0.6}'::jsonb,
+     '{"replacement_slot": 5.0, "same_position_depth": 11.0, "flexible_bench": 6.0}'::jsonb,
+     'team-roster-proj-v1', now() + interval '7 days'),
+    (101, 9900302, 2027, 3.0, 4.5, 1.5,
+     103.0, 100.0, 104.0, 99.5,
+     0.5, 2.5,
+     45, 5,
+     18.0, 'rotation',
+     '{"candidate_off_contribution": 0.5, "candidate_def_contribution": 0.3}'::jsonb,
+     '{}'::jsonb,
+     'team-roster-proj-v1', now() + interval '7 days'),
+    (101, 9900301, 2026, 4.0, 4.4, 0.4,
+     104.0, 100.0, 104.4, 100.0,
+     -0.6, 1.4,
+     52, 4,
+     12.0, 'depth',
+     '{"candidate_off_contribution": 0.2, "candidate_def_contribution": 0.1}'::jsonb,
+     '{}'::jsonb,
+     'team-roster-proj-v1', now() + interval '7 days'),
+    (42, 9900301, 2027, 2.0, 2.3, 0.3,
+     101.0, 99.0, 101.2, 98.9,
+     -0.5, 1.1,
+     40, 6,
+     8.0, 'depth',
+     '{}'::jsonb,
+     '{}'::jsonb,
+     'team-roster-proj-v1', now() - interval '1 day')
+ON CONFLICT ON CONSTRAINT uq_team_rating_projection DO UPDATE SET
+    current_adj_em = EXCLUDED.current_adj_em,
+    projected_adj_em = EXCLUDED.projected_adj_em,
+    delta_adj_em = EXCLUDED.delta_adj_em,
+    baseline_adj_o = EXCLUDED.baseline_adj_o,
+    baseline_adj_d = EXCLUDED.baseline_adj_d,
+    projected_adj_o = EXCLUDED.projected_adj_o,
+    projected_adj_d = EXCLUDED.projected_adj_d,
+    ci_lower = EXCLUDED.ci_lower,
+    ci_upper = EXCLUDED.ci_upper,
+    national_percentile = EXCLUDED.national_percentile,
+    conference_rank = EXCLUDED.conference_rank,
+    expected_minutes_input = EXCLUDED.expected_minutes_input,
+    candidate_usage_role = EXCLUDED.candidate_usage_role,
+    explanation = EXCLUDED.explanation,
+    minutes_distribution = EXCLUDED.minutes_distribution,
+    expires_at = EXCLUDED.expires_at,
+    computed_at = now();
+
 INSERT INTO users (email, hashed_password, full_name, school_id, is_active, is_verified)
 VALUES (:test_email, :test_password_hash, :test_name, 9900301, true, false)
 ON CONFLICT (email) DO UPDATE SET

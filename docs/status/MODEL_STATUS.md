@@ -24,8 +24,8 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | M9 Destination-Adjusted Projection | Complete baseline — P0-P3 fixes applied + re-run 2026-07-01. 454,790 rows, target_season=2027, 2,420 training rows (↑ from 2,125), CV total_resid_std=2.892 (↓ from 2.967). MLflow v3 Staging (Δ=+2.5% vs @champion v2). **P0 box-score basis fixed:** `*_per_40` fields now scaled by `minutes/40`, not `possessions/100`. Cohort validation (P3) logged: tier_down strongest (Spearman=0.402), tier_same weakest (0.153). Known remaining gap: `estimate_usage_value_coef` returns fallback 1.5 every run (zero-overlap bug). Value deltas production-ready; per-game box stats should be validated against named-player checklist before coach-facing exposure. | Fit style/skill delta empirically (biggest R² gain); fix usage-coef zero-overlap; position-specific competition tier effects; barttorvik as secondary RAPM label; add eligibility/timing features. Full roadmap in `../models/destination_projection_plan.md` §19-20. | [`../models/destination_projection_plan.md`](../models/destination_projection_plan.md); [`../../scripts/run_destination_projection.py`](../../scripts/run_destination_projection.py); [`../../src/portalpoint/modeling/destination_projection.py`](../../src/portalpoint/modeling/destination_projection.py) |
 | Program Fit | Not started. | Define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities and learn from feedback. | [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md); `APPLICATION_STATUS.md` |
 | M5 Transfer Success | Not started. | Define outcome label and historical transfer training set; build first predictor writing to `predictions`. | Add confidence/risk explanations and calibration monitoring. | `notebooks/models/` future notebook |
-| M6 Team Rating Projection | In open PR #49 (`team-projection`), not merged to `main` yet. PR adds `team-roster-proj-v1`, migration, runner, tests, docs, and DB-backed API semantics; current `main` endpoint remains stubbed. | Merge/rebase PR #49, then rerun and replace stale `team_rating_projections` rows before treating the output as current. | Recruiting-aware freshman priors, wider player-specific uncertainty, lineup/scenario controls, and broader backtests. | [`../models/team_rating_projection_roster_tool_plan.md`](../models/team_rating_projection_roster_tool_plan.md); PR #49 |
-| M7 Recommendation Engine | Baseline v1 script/engine merged in PR #40; API endpoint still returns DB-player-backed stub scores. Current engine uses scheme + gap only and leaves future hooks for role/program/projection/team-rating/risk inputs. | Wire `/api/recommendations` to persisted `recommendations`; include real role_fit/program_fit/team-rating signals once calibrated. | Explanation-aware ranking, shortlist feedback loops, confidence penalties, and collaborative signals. | [`../../scripts/run_recommendations.py`](../../scripts/run_recommendations.py); [`../../src/portalpoint/modeling/recommendations.py`](../../src/portalpoint/modeling/recommendations.py) |
+| M6 Team Rating Projection | ✅ `team-roster-proj-v1` (2026-07-02, rerun 2026-07-11) — **457,345 rows live** (1,253 portal candidates × 365 D1 schools, target_season=2027). 3-fold CV: em_rmse 1.760/1.965/1.834, off_r2=0.973/0.970/0.976, def_r2=0.950/0.943/0.947. Two Ridge models (off/def) on 14 ROSTER_FEATURES vs BartTorvik adj_o/adj_d. All follow-up fixes landed (Ajay's PR review): source-season team/roster context, real candidate position/3PT/reb from prior stats, scaled explanation attribution, API season+expiry filtering, CI variance from both off/def residuals. **Freshman Prior v2** (2026-07-11, commit f7d9b6a): tier-calibrated base priors (`FRESHMAN_MIN_PCT_BY_TIER`), elite-recruiting-program flag (~15 schools, 1.5× multiplier), position-aware opportunity weighting (open_min/15 clamped [1/3, 1.5]), CI widening per freshman prior (`+0.4` variance/player), per-school audit dict logged to MLflow as `freshman_prior_audit.json`. MLflow `@champion` alias registered (v1). **Known issues:** CI width is constant per global `off_resid_std` (player-specific CI not yet added); 38% of rows have negative delta (expected from minimal-minutes candidates — documented open item); fold 3 off/def RMSE spike (4.8) from RAPM coverage gaps cancels in AdjEM (1.83). Freshman Prior v2 priors not yet applied to live rows (needs rerun). PR #49 open on `team-projection` branch. | Rerun script to apply Freshman Prior v2 to live rows; scale CI by player-specific uncertainty (`n_known_players`, minutes CI); diagnose fold 3 RAPM coverage gap. | [`../models/team_rating_projection_plan.md`](../models/team_rating_projection_plan.md) |
+| M7 Recommendation Engine | Not started; blocked by full fit stack. | Build once scheme/gap/role/program components are real; rank players per program into `recommendations`. | Add collaborative signals, shortlist feedback loops, and explanation-aware ranking. | `APPLICATION_STATUS.md`; future recommendation plan needed |
 
 Immediate modeling order:
 
@@ -39,10 +39,11 @@ Immediate modeling order:
 ✅ Neutral Player Projection     (Phase 2a next-season forecast API default 2026-06-25; Phase 0 v2 retained as baseline comparator)
 ✅ Role Fit / Playing Time       (playing-time-rotation-v2; 457,345 rows, 365 schools, 2027 all-pairs complete; role_fit synced)
 ✅ Destination-Adjusted Proj     (player-destination-proj-v1; 454,790 rows, target=2027; CV resid_std=2.892; v3 Staging; P0-P3 fixes applied)
+✅ Team Rating Projection        (team-roster-proj-v1; 457,345 rows, target=2027; em_rmse 1.76-1.97; Staging; 2026-07-02)
 ✅ Recommendation Engine v1      (scheme+gap ranking script merged; API still stubbed)
 →  Team Rating Projection        (open PR #49; merge + rerun before relying on current DB rows)
 →  Program Fit
-→  fit_scores.py full scoring
+→  fit_scores.py full scoring (wire real role_fit + team rating delta into overall_fit)
 →  Recommendation/API v2
 ```
 
@@ -363,6 +364,55 @@ Full design, every real bug found and fixed, and the complete real-data record l
 | Test coverage | 199 tests passing (`uv run pytest -q`, 2026-06-25). |
 
 **Known real bugs found and fixed this work (full detail in the plan doc §22), for anyone touching this code next:** a `BrokenProcessPool` from an eager full-frame-copy memory blowup in the parallelized Kalman fit; a near-zero-minutes division blowup in Gap C's attempt-rate targets; a `CardinalityViolation` from a small join-fan-out duplicate-row issue in the season-recovery step (now structurally fixed, not just band-aided, by threading the real `season` value through instead of relying on a positionally-reconstructed `season_rank`); a stale-cache risk from cache filenames that didn't vary by the requested `seasons` list; and a test-fixture `expires_at` staleness bug in `scripts/seed_test_data.py` that was silently masked locally by real pipeline writes refreshing the same row.
+
+---
+
+## M6 - Team Rating Projection
+
+| Item | Current state |
+|---|---|
+| Script | `scripts/run_team_rating_projection.py` |
+| Module | `src/portalpoint/modeling/team_rating_projection.py` |
+| Notebook | `notebooks/models/team_rating_projection_roster_tool.ipynb` |
+| Status | ✅ Rerun complete (2026-07-11); Freshman Prior v2 implemented; PR #49 open on `team-projection` branch |
+| Algorithm | Two Ridge models (off/def) trained on 14 ROSTER_FEATURES vs BartTorvik adj_o/adj_d; counterfactual diff = delta_adjEM |
+| Model version | `team-roster-proj-v1` |
+| Training seasons | 2021–2026 (2,158 school-seasons) |
+| Inference | 1,253 portal candidates × 365 D1 schools = 457,345 rows, target_season=2027 |
+| Output table | `team_rating_projections` (migration `c3a9e1f5b847` adds `season`, breakdown columns, extended unique constraint) |
+| MLflow | `team-rating-scorer`, Staging; `@champion` alias registered (v1) |
+| run_id (latest) | `8a33bdc29e334c62b8bc860e2a270afb` (2026-07-11 rerun) |
+
+### CV Metrics (3-fold rolling-origin)
+
+| Fold | val | off_rmse | def_rmse | em_rmse | off_R² | def_R² |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2024 | 2.577 | 2.568 | 1.760 | 0.973 | 0.950 |
+| 2 | 2025 | 2.927 | 2.960 | 1.965 | 0.970 | 0.943 |
+| 3 | 2026 | 4.769 | 4.847 | 1.834 | 0.976 | 0.947 |
+
+- off_resid_std=2.008, def_resid_std=2.057
+- Gate metric: `fold3_em_rmse=1.834` (lower is better; no prior champion to compare)
+
+### Architecture
+
+**14 ROSTER_FEATURES:** `weighted_off_impact`, `weighted_def_impact`, `top1_off_impact`, `top2_impact`, `bench_depth_impact`, `three_pt_coverage`, `rim_protection`, `pg_creation`, `rebounding_coverage`, `usage_concentration`, `returning_minutes_pct`, `n_known_players`, `conference_tier`, `adj_tempo_prior`
+
+Player quality signal: HE `off_adj_rapm`/`def_adj_rapm` (RAPM-based). Candidate inserted via `playing_time_projections.expected_minutes` + `displaced_minutes` JSONB. Slot baselines fill missing players by `(conference_tier, position)` mean RAPM.
+
+Incoming freshmen from roster snapshots receive conservative depth priors via `build_freshman_prior_rows`. **Freshman Prior v2** (2026-07-11): tier-keyed base min_pct (`FRESHMAN_MIN_PCT_BY_TIER={1:10,2:8,3:7,4:6}`), elite-recruiting-program flag (~15 schools with 1.5× multiplier), per-position opportunity weighting (`open_min/15` clamped [1/3,1.5]), per-school audit dict logged to MLflow as `freshman_prior_audit.json`. CI widens by `+0.4` variance per freshman prior (`analytical_ci(n_freshman_priors)`). Freshman prior rows excluded from `n_known_players`. Rerun needed to apply v2 priors to live rows.
+
+CI: analytical Gaussian approximation (`delta ± 1.28×sqrt(2×(off_resid_std² + def_resid_std²))`) replacing 200-sample bootstrap — 200× faster, still a global-width approximation until player/school-specific uncertainty is wired in.
+
+### Known Issues / Improvement Roadmap
+
+- **Fold 3 off/def RMSE spike (4.8 vs 2.6 in folds 1-2):** individual adj_o/adj_d predictions degrade in 2026, but errors are correlated (cancel in AdjEM → em_rmse=1.83). Likely cause: RAPM coverage gaps in 2026 force more slot-baseline fills, degrading individual components while leaving net impact roughly correct. Investigate `n_known_players` distribution for 2026 vs prior seasons.
+- **Candidate profile fields:** now use prior-season candidate position, 3PT rate, and offensive rebounding when `prior_stats` has the player; neutral placeholders remain only as missing-data fallbacks.
+- **Incoming freshman prior:** now covers true freshmen present in roster snapshots but missing from player-season tables; future improvement is to replace the conservative slot prior with recruiting ratings or team-specific freshman development priors.
+- **CI width is constant per model run** (global off/def residual variance). Scale by `playing_time_projections.minutes_ci_upper - minutes_ci_lower` and `n_known_players` for player/school-specific uncertainty.
+- **Continuity proxy:** now uses source-season `roster_state_features` returning/departing/open minutes JSON when present; still falls back to 1.0 when roster-state rows are missing.
+- **MLflow `@champion` alias:** registered (v1, 2026-07-11). Future promotions gate against it normally via `maybe_promote`.
+- **Performance:** Step 6 (counterfactuals) now ~28 min (was hours). Remaining bottleneck: `build_roster_features` creates a pandas DataFrame per player-school pair (~457K calls). Further speedup possible by replacing the DataFrame-based `build_roster_features` with vectorized numpy operations across all schools for a given player.
 
 ---
 

@@ -1210,21 +1210,30 @@ class Recommendation(Base):
 class TeamRatingProjection(Base):
     __tablename__ = "team_rating_projections"
     __table_args__ = (
-        UniqueConstraint("player_id", "school_id", name="uq_team_rating_projection"),
+        UniqueConstraint("player_id", "school_id", "season", name="uq_team_rating_projection"),
+        Index("ix_team_rating_school_season", "school_id", "season"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     current_adj_em: Mapped[float] = mapped_column(Float, nullable=False)
     projected_adj_em: Mapped[float] = mapped_column(Float, nullable=False)
     delta_adj_em: Mapped[float] = mapped_column(Float, nullable=False)
-    ci_lower: Mapped[float] = mapped_column(Float, nullable=False)   # 80% CI lower bound
-    ci_upper: Mapped[float] = mapped_column(Float, nullable=False)   # 80% CI upper bound
+    baseline_adj_o: Mapped[Optional[float]] = mapped_column(Float)
+    baseline_adj_d: Mapped[Optional[float]] = mapped_column(Float)
+    projected_adj_o: Mapped[Optional[float]] = mapped_column(Float)
+    projected_adj_d: Mapped[Optional[float]] = mapped_column(Float)
+    ci_lower: Mapped[float] = mapped_column(Float, nullable=False)
+    ci_upper: Mapped[float] = mapped_column(Float, nullable=False)
     national_percentile: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     conference_rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    expected_minutes_input: Mapped[float] = mapped_column(Float, nullable=False)  # from Model 4
-    model_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    expected_minutes_input: Mapped[float] = mapped_column(Float, nullable=False)
+    candidate_usage_role: Mapped[Optional[str]] = mapped_column(String(40))
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
+    minutes_distribution: Mapped[Optional[dict]] = mapped_column(JSONB)
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
