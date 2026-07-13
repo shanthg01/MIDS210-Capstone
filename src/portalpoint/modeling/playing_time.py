@@ -38,6 +38,13 @@ MIN_TRAIN_GAMES = 5  # matches player_projection.py's MIN_GAMES label-reliabilit
 STANDARD_TEAM_MINUTES = 200.0
 MAX_PLAYER_MINUTES = 40.0
 SYNTHETIC_SCHOOL_ID_FLOOR = 9_900_000
+# Server-side guard against a query that hangs indefinitely (e.g. Issue #53 follow-up:
+# a chunk silently hung for 10+ hours with no traceback — the connection had no
+# statement_timeout, so a dead/half-open connection blocked forever on a socket read
+# instead of erroring out). Generous because sync_role_fit_scores writes into
+# player_team_fit_scores (~15GB, low cache-hit ratio on the current RDS instance
+# class) and can legitimately take many minutes per chunk.
+RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 600_000
 
 # PERF: prepare_playing_time_frame/derive_usage_role/compute_role_fit_score/
 # allocate_displaced_minutes/uncertainty_multiplier/data_quality_flags previously used
@@ -771,8 +778,21 @@ def position_group(position: str | None) -> str:
     return "unknown"
 
 
-def read_sql_frame(engine, sql: str, params: dict[str, Any]) -> pd.DataFrame:
+def _raw_connection_with_timeout(engine):
+    """engine.raw_connection() with a server-side statement_timeout set.
+
+    Without this, a query stuck on a dead/half-open connection (e.g. after a
+    tunneled SSH connection silently drops) blocks forever with no exception —
+    see RAW_CONNECTION_STATEMENT_TIMEOUT_MS.
+    """
     raw_conn = engine.raw_connection()
+    with raw_conn.cursor() as cur:
+        cur.execute(f"SET statement_timeout = {RAW_CONNECTION_STATEMENT_TIMEOUT_MS}")
+    return raw_conn
+
+
+def read_sql_frame(engine, sql: str, params: dict[str, Any]) -> pd.DataFrame:
+    raw_conn = _raw_connection_with_timeout(engine)
     try:
         with raw_conn.cursor() as cur:
             cur.execute(sql, params)
@@ -2152,7 +2172,7 @@ def build_playing_time_records(
 def upsert_playing_time_projections(engine, records: Sequence[tuple], page_size: int = 1000) -> int:
     if not records:
         return 0
-    raw_conn = engine.raw_connection()
+    raw_conn = _raw_connection_with_timeout(engine)
     try:
         with raw_conn.cursor() as cur:
             execute_values(cur, UPSERT_PLAYING_TIME_SQL, records, page_size=page_size)
@@ -2165,7 +2185,7 @@ def upsert_playing_time_projections(engine, records: Sequence[tuple], page_size:
 def sync_role_fit_scores(engine, records: Sequence[tuple], page_size: int = 1000) -> int:
     if not records:
         return 0
-    raw_conn = engine.raw_connection()
+    raw_conn = _raw_connection_with_timeout(engine)
     try:
         with raw_conn.cursor() as cur:
             execute_values(cur, SYNC_ROLE_FIT_SQL, records, page_size=page_size)

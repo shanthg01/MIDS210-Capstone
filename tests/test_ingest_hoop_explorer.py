@@ -31,6 +31,22 @@ class TestNameTokens:
     def test_empty_string(self):
         assert _name_tokens("") == ("", "")
 
+    def test_strips_jr_suffix_before_taking_last_token(self):
+        # Real bug found live during Issue #53's fix rollout: "D.J. Burns Jr." and
+        # "D.J. Stewart Jr." both tokenized to ('d.j.', 'jr.') before this fix,
+        # because the naive last-token pick grabbed the suffix instead of the
+        # real last name — collapsing two different real players onto one score.
+        assert _name_tokens("d.j. burns jr.") == ("d.j.", "burns")
+
+    def test_strips_various_suffixes(self):
+        assert _name_tokens("john smith sr.") == ("john", "smith")
+        assert _name_tokens("john smith ii") == ("john", "smith")
+        assert _name_tokens("john smith iii") == ("john", "smith")
+
+    def test_suffix_only_stripped_when_multiple_tokens_remain(self):
+        # A bare "jr" with nothing else shouldn't be stripped down to empty.
+        assert _name_tokens("jr") == ("jr", "jr")
+
 
 # ---------------------------------------------------------------------------
 # _tokenwise_ratio — the Issue #53 fix
@@ -56,6 +72,12 @@ class TestTokenwiseRatio:
     def test_minor_typo_in_last_name_still_scores_reasonably_high(self):
         ratio = _tokenwise_ratio("john smith", "john smithe")
         assert ratio > 0.85
+
+    def test_different_players_sharing_a_suffix_score_low(self):
+        # The live Issue #53 rollout bug: before suffix-stripping, both names
+        # tokenized to ('d.j.', 'jr.') and scored a false 1.0.
+        ratio = _tokenwise_ratio("d.j. burns jr.", "d.j. stewart jr.")
+        assert ratio < 0.7
 
 
 # ---------------------------------------------------------------------------

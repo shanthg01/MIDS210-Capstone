@@ -212,9 +212,22 @@ def _fuzzy_match(name: str, candidates: list[str], threshold: float = 0.82) -> s
 FUZZY_MATCH_AMBIGUITY_MARGIN = 0.05
 
 
+_NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
 def _name_tokens(name: str) -> tuple[str, str]:
-    """(first, last) tokens. Single-token names use the same token for both."""
-    parts = name.strip().split()
+    """(first, last) tokens. Single-token names use the same token for both.
+
+    Strips a trailing generational suffix (Jr./Sr./II/III/IV) before picking the
+    last token — otherwise two unrelated players sharing a suffix (e.g. "D.J. Burns
+    Jr." and "D.J. Stewart Jr.") both tokenize to the same (first, last) pair
+    ('d.j.', 'jr.'), collapsing the real last-name difference this function exists
+    to catch. Confirmed live during Issue #53's fix: this exact pair fuzzy-matched
+    to each other because of it.
+    """
+    parts = name.strip().lower().split()
+    if parts and parts[-1] in _NAME_SUFFIXES and len(parts) > 1:
+        parts = parts[:-1]
     if not parts:
         return "", ""
     if len(parts) == 1:
@@ -521,9 +534,14 @@ async def ingest_player_stats(
     records: list[dict] = []
     # Guards against two different HE rows (different he_player_code) resolving to the
     # same player_id in this season's batch — e.g. Issue #53's "TJ Johnson"/"RJ Johnson"
-    # collision. First claim wins; a later claimant is rejected and logged rather than
-    # silently duplicating (player_id, season) in hoop_explorer_player_stats.
-    claimed_player_ids: dict[int, str] = {}
+    # collision. An exact match (roster_exact / unique_player_by_name) always wins over
+    # a fuzzy one regardless of processing order; among equal-confidence claims, first
+    # claim wins. The loser gets its player_id nulled (its record if already appended,
+    # via the stored reference; the in-flight one otherwise) rather than silently
+    # duplicating (player_id, season) in hoop_explorer_player_stats.
+    MATCH_EXACT = 2
+    MATCH_FUZZY = 1
+    claimed_player_ids: dict[int, dict] = {}
     collided_players: list[str] = []
 
     for r in rows:
@@ -548,41 +566,63 @@ async def ingest_player_stats(
         he_name_raw = _str_or_none(r.get("player_name"))
         std_name = _he_player_name_to_standard(he_name_raw)
         player_id: int | None = None
+        match_confidence = 0
         if std_name:
             std_lower = std_name.lower()
             if school_id is not None:
                 player_id = roster_exact.get((season, int(school_id), std_lower))
-                if player_id is None:
+                if player_id is not None:
+                    match_confidence = MATCH_EXACT
+                else:
                     roster = roster_by_school_season.get((season, int(school_id)), [])
                     roster_names = [name for name, _pid in roster]
                     fuzzy_name = _fuzzy_match_safe(std_lower, roster_names, threshold=0.88)
                     if fuzzy_name:
                         player_id = next(pid for name, pid in roster if name == fuzzy_name)
+                        match_confidence = MATCH_FUZZY
             if player_id is None:
                 player_id = unique_player_by_name.get(std_lower)
+                if player_id is not None:
+                    match_confidence = MATCH_EXACT
             if player_id is None:
                 fuzzy_name = _fuzzy_match_safe(std_lower, list(unique_player_by_name.keys()), threshold=0.90)
                 if fuzzy_name:
                     player_id = unique_player_by_name[fuzzy_name]
+                    match_confidence = MATCH_FUZZY
             if player_id is not None:
-                prior_claim = claimed_player_ids.get(player_id)
-                if prior_claim is not None and prior_claim != he_code:
-                    log.warning(
-                        "player_id %s claimed by both he_player_code=%s and he_player_code=%s "
-                        "(name='%s') in season=%d — rejecting second claim, leaving unmatched",
-                        player_id, prior_claim, he_code, std_name, season,
-                    )
-                    collided_players.append(std_name)
-                    player_id = None
+                prior = claimed_player_ids.get(player_id)
+                if prior is not None and prior["he_code"] != he_code:
+                    if match_confidence > prior["confidence"]:
+                        log.warning(
+                            "player_id %s: he_player_code=%s (exact) overrides weaker prior "
+                            "claim by he_player_code=%s (fuzzy) in season=%d",
+                            player_id, he_code, prior["he_code"], season,
+                        )
+                        if prior["record"] is not None:
+                            prior["record"]["player_id"] = None
+                        collided_players.append(prior["record"]["player_name"] if prior["record"] else prior["he_code"])
+                        claimed_player_ids[player_id] = {
+                            "he_code": he_code, "confidence": match_confidence, "record": None,
+                        }
+                    else:
+                        log.warning(
+                            "player_id %s claimed by both he_player_code=%s and he_player_code=%s "
+                            "(name='%s') in season=%d — rejecting weaker/later claim, leaving unmatched",
+                            player_id, prior["he_code"], he_code, std_name, season,
+                        )
+                        collided_players.append(std_name)
+                        player_id = None
                 else:
-                    claimed_player_ids[player_id] = he_code
+                    claimed_player_ids[player_id] = {
+                        "he_code": he_code, "confidence": match_confidence, "record": None,
+                    }
             if player_id is None:
                 unmatched_players.append(std_name)
 
         transfer_src = _str_or_none(r.get("transfer_src"))
         transfer_dest = _str_or_none(r.get("transfer_dest"))
 
-        records.append({
+        record = {
             "player_id": player_id,
             "school_id": school_id,
             "season": season,
@@ -647,7 +687,10 @@ async def ingest_player_stats(
             "pos_confidence_sf": _safe_float(r.get("posConfidences[_SF_]")),
             "pos_confidence_pf": _safe_float(r.get("posConfidences[_PF_]")),
             "pos_confidence_c":  _safe_float(r.get("posConfidences[_C_]")),
-        })
+        }
+        records.append(record)
+        if player_id is not None:
+            claimed_player_ids[player_id]["record"] = record
 
     matched_players = sum(1 for r in records if r["player_id"] is not None)
     matched_schools = sum(1 for r in records if r["school_id"] is not None)
