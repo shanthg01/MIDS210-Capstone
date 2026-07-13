@@ -818,7 +818,7 @@ def open_minutes_for_position(raw: Any, position: str | None) -> float:
 
 
 def position_json_value(
-    raw: Any, position: str | None, *, default: float = 0.0, high: float = STANDARD_TEAM_MINUTES
+    raw: Any, position: str | None, *, default: float = np.nan, high: float = STANDARD_TEAM_MINUTES
 ) -> float:
     data = _json_dict(raw)
     if not data:
