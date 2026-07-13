@@ -49,9 +49,26 @@ def get_sync_engine() -> Engine:
     Real env vars win over .env file (matches mlflow_helpers.ensure_aws_env's
     precedence) — needed for CI, which sets DATABASE_URL directly and has no
     .env file at all.
+
+    sslmode is extracted from the URL query string and passed via connect_args
+    instead of the URL — SQLAlchemy's psycopg2 dialect misroutes host resolution
+    when sslmode appears as a URL query param (libpq reads it before applying
+    the explicit host/port, causing it to fall back to service/passfile lookup).
     """
+    import re
     raw_url = os.environ.get("DATABASE_URL") or load_env().get(
         "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5433/portalpoint"
     )
-    sync_url = raw_url.replace("+asyncpg", "+psycopg2").replace("ssl=require", "sslmode=require")
-    return create_engine(sync_url, echo=False, pool_pre_ping=True, pool_recycle=1800)
+    # Strip ssl/sslmode from URL query string; pass via connect_args instead
+    sync_url = raw_url.replace("+asyncpg", "+psycopg2")
+    ssl_required = bool(re.search(r"[?&]ssl(?:mode)?=require", sync_url))
+    sync_url = re.sub(r"[?&]ssl(?:mode)?=require", "", sync_url)
+    # Clean up dangling ? or & left over after stripping
+    sync_url = re.sub(r"\?$", "", sync_url)
+    connect_args: dict = {}
+    if ssl_required:
+        connect_args["sslmode"] = "require"
+    return create_engine(
+        sync_url, echo=False, pool_pre_ping=True, pool_recycle=1800,
+        connect_args=connect_args,
+    )
