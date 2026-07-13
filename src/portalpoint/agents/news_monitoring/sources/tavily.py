@@ -8,7 +8,9 @@ from datetime import date, timedelta
 from langchain_core.tools import tool
 
 from portalpoint.agents.news_monitoring.config import (
+    TAVILY_CHUNKS_PER_SOURCE,
     TAVILY_INCLUDE_DOMAINS,
+    TAVILY_MAX_RESULTS,
     TAVILY_MIN_SCORE,
     TAVILY_SEARCH_DEPTH,
     TAVILY_WINDOW_DAYS,
@@ -43,15 +45,18 @@ def search_news(
         return json.dumps({"error": "TAVILY_API_KEY not set in environment"})
 
     domains = include_domains or TAVILY_INCLUDE_DOMAINS
-    cutoff = (date.today() - timedelta(days=window_days)).isoformat()
+    start_date = (date.today() - timedelta(days=window_days)).isoformat()
 
     try:
         client = TavilyClient(api_key=api_key)
         response = client.search(
             query=query,
             search_depth=TAVILY_SEARCH_DEPTH,
+            topic="news",
             include_domains=domains,
-            max_results=10,
+            max_results=TAVILY_MAX_RESULTS,
+            chunks_per_source=TAVILY_CHUNKS_PER_SOURCE,
+            start_date=start_date,
         )
     except Exception as exc:
         return json.dumps({"error": str(exc), "suggestion": "Check TAVILY_API_KEY and API credits"})

@@ -2,7 +2,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from portalpoint.main import app
+from portalpoint.modeling.io import apply_env_file
 from scripts.seed_test_data import seed_test_data
+
+apply_env_file()
 
 # Deliberately out of range of real ingested ids (~27k players, ~365 schools)
 # so tests exercise the stub-fallback path predictably instead of colliding

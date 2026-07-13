@@ -1381,7 +1381,7 @@ class ProgramEvent(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     event_type: Mapped[str] = mapped_column(
         String(50), nullable=False,
-        # transfer_entry, transfer_commitment, coaching_hire, coaching_fire,
+        # transfer_entry, transfer_commitment, coaching_hire, coach_departed,
         # injury, suspension, nil_deal, recruiting_decommit, recruiting_commitment
     )
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))

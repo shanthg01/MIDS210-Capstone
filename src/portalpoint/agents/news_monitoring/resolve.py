@@ -234,10 +234,10 @@ def transfer_player(player_name: str, school_from: str) -> str:
 def coach_departure(coach_name: str, school_from: str) -> str:
     """Record a coaching departure event in the PortalPoint database.
 
-    Writes to program_events for tracking and downstream stale-flag logic
-    (team_system_profiles for school_from should be flagged stale after a
-    confirmed coaching change, since the system likely changes under new staff).
-    Manual review is required before any model re-training action.
+    Covers any reason a head coach leaves (fired, resigns, retires, takes
+    another job). Writes to program_events as event_type='coach_departed' and
+    flags team_system_profiles stale for school_from (scheme fit may change
+    under new staff). Manual review is required before any Model 2 re-run.
 
     Args:
         coach_name: Name of the departing head coach.
@@ -257,7 +257,7 @@ def coach_departure(coach_name: str, school_from: str) -> str:
                     "  (event_type, school_id, player_id, event_date, source, "
                     "   raw_text, confidence, match_status, created_at) "
                     "VALUES "
-                    "  ('coaching_fire', :school_id, NULL, :event_date, "
+                    "  ('coach_departed', :school_id, NULL, :event_date, "
                     "   'news-agent', :raw_text, 0.7, 'pending_review', NOW()) "
                     "ON CONFLICT DO NOTHING"
                 ),

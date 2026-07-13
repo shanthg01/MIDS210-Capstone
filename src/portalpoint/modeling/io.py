@@ -37,6 +37,12 @@ def load_env() -> dict[str, str]:
     return env
 
 
+def apply_env_file() -> None:
+    """Merge repo-root ``.env`` into ``os.environ`` (existing process env wins)."""
+    for key, value in load_env().items():
+        os.environ.setdefault(key, value)
+
+
 def get_sync_engine() -> Engine:
     """Sync SQLAlchemy engine (psycopg2) for notebook/script DB access.
 

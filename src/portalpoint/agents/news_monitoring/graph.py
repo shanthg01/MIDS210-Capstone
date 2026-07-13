@@ -9,38 +9,19 @@ from langchain_core.messages import SystemMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from portalpoint.agents.news_monitoring.config import GEMINI_MODEL, TARGET_EVENT_TYPES
+from portalpoint.agents.news_monitoring.config import (
+    AGENT_SEARCH_QUERIES,
+    GEMINI_MODEL,
+)
 from portalpoint.agents.news_monitoring.extract import RateLimiter, build_llm
+from portalpoint.agents.news_monitoring.prompts import SYSTEM_PROMPT
 from portalpoint.agents.news_monitoring.resolve import cross_source_dedup
 from portalpoint.agents.news_monitoring.state import AgentState
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = """\
-You are a college basketball news monitoring agent for PortalPoint, a transfer portal scouting platform.
-
-Your job each run:
-1. Perform two targeted Tavily searches:
-   - Transfer news:  "college basketball transfer portal player enters portal"
-   - Coaching news:  "college basketball head coach leaves resigns fired departs"
-2. After each search, classify ALL returned articles in ONE batch call using
-   classify_events_batch_llm (preferred) or classify_event_llm for a single article.
-3. For each confirmed portal entry (confidence >= 0.6):
-   Call transfer_player(player_name, school_from).
-   This writes to program_events + transfer_portal_events + transfers and syncs
-   is_portal_candidate so the player appears in the recommendation engine.
-   Do NOT call it for unknown events.
-4. For each confirmed coach departure (confidence >= 0.6):
-   Call coach_departure(coach_name, school_from) to log for manual review.
-5. Summarise all events found, URLs reviewed, and DB updates made.
-
-Only call transfer_player when you are confident (>= 0.6) this is a real portal entry,
-not a rumour, a commitment to a school (not a portal entry), or a historical reference.
-"""
+# Re-export for backward compatibility
+__all__ = ["SYSTEM_PROMPT", "build_graph", "should_continue", "dedup_node", "build_agent_node"]
 
 
 # ---------------------------------------------------------------------------
