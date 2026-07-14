@@ -41,10 +41,14 @@ SYNTHETIC_SCHOOL_ID_FLOOR = 9_900_000
 # Server-side guard against a query that hangs indefinitely (e.g. Issue #53 follow-up:
 # a chunk silently hung for 10+ hours with no traceback — the connection had no
 # statement_timeout, so a dead/half-open connection blocked forever on a socket read
-# instead of erroring out). Generous because sync_role_fit_scores writes into
-# player_team_fit_scores (~15GB, low cache-hit ratio on the current RDS instance
-# class) and can legitimately take many minutes per chunk.
-RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 600_000
+# instead of erroring out). 600_000 (10 min) was tried first and was too tight — it
+# fired on a legitimate INFERENCE_SQL read (a 12-table CTE) on a cold cache right
+# after an RDS reboot; cache starts empty regardless of instance size, so a first
+# chunk post-reboot is a genuine worst case, not a hang. 40 min leaves large headroom
+# over every real chunk duration observed (worst seen: ~90 min for a full
+# score+write+sync chunk, of which the read is one part) while still bounded far
+# short of "silent hang for hours."
+RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 2_400_000
 
 # PERF: prepare_playing_time_frame/derive_usage_role/compute_role_fit_score/
 # allocate_displaced_minutes/uncertainty_multiplier/data_quality_flags previously used
@@ -346,128 +350,156 @@ WHERE pss.season = ANY(%(seasons)s)
   AND pss.school_id < %(synthetic_school_id_floor)s
     """
 
+# Chunk-invariant CTEs materialized once per run by materialize_inference_staging()
+# instead of inline WITH-CTEs recomputed on every school-id chunk (see that function's
+# docstring). (table_name, select_sql) — select_sql becomes `CREATE TABLE <name> AS
+# <select_sql>`, so each must be a plain SELECT, no trailing semicolon.
+PT_STAGING_TABLES: list[tuple[str, str]] = [
+    ("pt_staging_neutral_projection", """
+        SELECT DISTINCT ON (player_id, season)
+            player_id, season, value_per_100, value_ci_lower, value_ci_upper,
+            skill_percentiles, uncertainty, computed_at, model_version
+        FROM player_projections
+        WHERE school_id IS NULL
+          AND projection_mode = 'neutral'
+          AND expires_at > now()
+          AND season = %(target_season)s
+        ORDER BY
+            player_id, season,
+            CASE WHEN model_version = %(projection_model_version)s THEN 0 ELSE 1 END,
+            computed_at DESC
+    """),
+    ("pt_staging_latest_player_stats", """
+        SELECT DISTINCT ON (player_id)
+            player_id, school_id, season, min_pct, usage_rate, games_played,
+            points_per_game, rebounds_per_game, assists_per_game
+        FROM player_season_stats
+        WHERE season = %(source_season)s
+        ORDER BY player_id, games_played DESC
+    """),
+    ("pt_staging_roster_counts", """
+        SELECT school_id, season, count(*) AS roster_player_count
+        FROM roster_baseline_members
+        WHERE season = %(roster_season)s
+        GROUP BY school_id, season
+    """),
+    ("pt_staging_prior_team_context", """
+        SELECT
+            school_id,
+            season + 1 AS season,
+            sum(min_pct / 100.0 * 40.0) AS prior_team_minutes,
+            CASE
+                WHEN sum(min_pct / 100.0 * 40.0) > 0
+                    THEN sum(power(min_pct / 100.0 * 40.0, 2)) / power(sum(min_pct / 100.0 * 40.0), 2)
+                ELSE NULL
+            END AS prior_team_rotation_hhi,
+            count(*) FILTER (WHERE min_pct >= 50) AS prior_team_rotation_players,
+            sum(usage_rate) AS prior_team_usage_total
+        FROM player_season_stats
+        WHERE season = %(source_season)s
+          AND min_pct IS NOT NULL
+        GROUP BY school_id, season
+    """),
+    ("pt_staging_prior_position_context", """
+        SELECT
+            pss.school_id,
+            pss.season + 1 AS season,
+            p.position,
+            sum(pss.min_pct / 100.0 * 40.0) AS same_position_prior_minutes,
+            max(pss.min_pct / 100.0 * 40.0) AS same_position_prior_max_minutes,
+            count(*) AS same_position_prior_count,
+            sum(pss.usage_rate) AS same_position_usage_total,
+            max(pss.usage_rate) AS same_position_usage_max
+        FROM player_season_stats pss
+        JOIN players p ON p.id = pss.player_id
+        WHERE pss.season = %(source_season)s
+          AND pss.min_pct IS NOT NULL
+        GROUP BY pss.school_id, pss.season, p.position
+    """),
+    ("pt_staging_player_history", """
+        SELECT
+            player_id,
+            %(source_season)s AS season,
+            count(DISTINCT season) FILTER (WHERE season <= %(source_season)s) AS prior_college_seasons,
+            min(season) AS first_observed_season
+        FROM player_season_stats
+        WHERE season <= %(source_season)s
+        GROUP BY player_id
+    """),
+    ("pt_staging_latest_snapshots", """
+        SELECT DISTINCT ON (school_id)
+            id AS roster_snapshot_id, school_id, season
+        FROM roster_snapshots
+        WHERE season = %(roster_season)s
+        ORDER BY school_id, snapshot_date DESC, id DESC
+    """),
+    ("pt_staging_transfer_rows", """
+        SELECT DISTINCT ON (player_id)
+            player_id, season, from_school_id, to_school_id, match_confidence
+        FROM transfer_portal_events
+        WHERE season = %(source_season)s
+          AND player_id IS NOT NULL
+          AND match_status = 'matched'
+        ORDER BY player_id, updated_at DESC NULLS LAST, id DESC
+    """),
+    ("pt_staging_hep_dedup", """
+        SELECT DISTINCT ON (player_id, season)
+            player_id, season, pos_confidence_pg, pos_confidence_sg, pos_confidence_sf,
+            pos_confidence_pf, pos_confidence_c
+        FROM hoop_explorer_player_stats
+        WHERE player_id IS NOT NULL
+        ORDER BY player_id, season, updated_at DESC, id DESC
+    """),
+]
+
+# (table_name, index_columns) applied after each staging table is populated — these
+# tables get joined against once per school-id chunk (5x at the default chunk size),
+# so they need their own indexes same as any other repeatedly-joined table.
+PT_STAGING_INDEXES: list[tuple[str, str]] = [
+    ("pt_staging_neutral_projection", "player_id"),
+    ("pt_staging_latest_player_stats", "player_id"),
+    ("pt_staging_roster_counts", "school_id"),
+    ("pt_staging_prior_team_context", "school_id"),
+    ("pt_staging_prior_position_context", "school_id, position"),
+    ("pt_staging_player_history", "player_id"),
+    ("pt_staging_latest_snapshots", "school_id"),
+    ("pt_staging_transfer_rows", "player_id"),
+    ("pt_staging_hep_dedup", "player_id"),
+]
+
+
+def materialize_inference_staging(
+    engine, *, target_season: int, source_season: int, roster_season: int
+) -> None:
+    """Materialize INFERENCE_SQL's chunk-invariant CTEs into real tables, once per run.
+
+    INFERENCE_SQL used to recompute PT_STAGING_TABLES' 9 CTEs from scratch inline on
+    every school-id chunk — none of them filter on school_ids, so at the default
+    --school-chunk-size (5 chunks) they were fully redundant work 5x over. This is the
+    documented reason --school-chunk-size was capped at 75 instead of 365 (single query)
+    in the first place (see that flag's --help text). Call once per target_season,
+    before looping over school-id chunks and calling build_inference_pairs().
+    """
+    params = {
+        "target_season": target_season,
+        "source_season": source_season,
+        "roster_season": roster_season,
+        "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
+    }
+    raw_conn = _raw_connection_with_timeout(engine)
+    try:
+        with raw_conn.cursor() as cur:
+            for table_name, select_sql in PT_STAGING_TABLES:
+                cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+                cur.execute(f"CREATE TABLE {table_name} AS {select_sql}", params)
+            for table_name, index_cols in PT_STAGING_INDEXES:
+                cur.execute(f"CREATE INDEX ON {table_name} ({index_cols})")
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+
+
 INFERENCE_SQL = """
-WITH neutral_projection AS (
-    SELECT DISTINCT ON (player_id, season)
-        player_id,
-        season,
-        value_per_100,
-        value_ci_lower,
-        value_ci_upper,
-        skill_percentiles,
-        uncertainty,
-        computed_at,
-        model_version
-    FROM player_projections
-    WHERE school_id IS NULL
-      AND projection_mode = 'neutral'
-      AND expires_at > now()
-      AND season = %(target_season)s
-    ORDER BY
-        player_id,
-        season,
-        CASE WHEN model_version = %(projection_model_version)s THEN 0 ELSE 1 END,
-        computed_at DESC
-),
-latest_player_stats AS (
-    SELECT DISTINCT ON (player_id)
-        player_id,
-        school_id,
-        season,
-        min_pct,
-        usage_rate,
-        games_played,
-        points_per_game,
-        rebounds_per_game,
-        assists_per_game
-    FROM player_season_stats
-    WHERE season = %(source_season)s
-    ORDER BY player_id, games_played DESC
-),
-roster_counts AS (
-    SELECT school_id, season, count(*) AS roster_player_count
-    FROM roster_baseline_members
-    WHERE season = %(roster_season)s
-    GROUP BY school_id, season
-),
-prior_team_context AS (
-    SELECT
-        school_id,
-        season + 1 AS season,
-        sum(min_pct / 100.0 * 40.0) AS prior_team_minutes,
-        CASE
-            WHEN sum(min_pct / 100.0 * 40.0) > 0
-                THEN sum(power(min_pct / 100.0 * 40.0, 2)) / power(sum(min_pct / 100.0 * 40.0), 2)
-            ELSE NULL
-        END AS prior_team_rotation_hhi,
-        count(*) FILTER (WHERE min_pct >= 50) AS prior_team_rotation_players,
-        sum(usage_rate) AS prior_team_usage_total
-    FROM player_season_stats
-    WHERE season = %(source_season)s
-      AND min_pct IS NOT NULL
-    GROUP BY school_id, season
-),
-prior_position_context AS (
-    SELECT
-        pss.school_id,
-        pss.season + 1 AS season,
-        p.position,
-        sum(pss.min_pct / 100.0 * 40.0) AS same_position_prior_minutes,
-        max(pss.min_pct / 100.0 * 40.0) AS same_position_prior_max_minutes,
-        count(*) AS same_position_prior_count,
-        sum(pss.usage_rate) AS same_position_usage_total,
-        max(pss.usage_rate) AS same_position_usage_max
-    FROM player_season_stats pss
-    JOIN players p ON p.id = pss.player_id
-    WHERE pss.season = %(source_season)s
-      AND pss.min_pct IS NOT NULL
-    GROUP BY pss.school_id, pss.season, p.position
-),
-player_history AS (
-    SELECT
-        player_id,
-        %(source_season)s AS season,
-        count(DISTINCT season) FILTER (WHERE season <= %(source_season)s) AS prior_college_seasons,
-        min(season) AS first_observed_season
-    FROM player_season_stats
-    WHERE season <= %(source_season)s
-    GROUP BY player_id
-),
-latest_snapshots AS (
-    SELECT DISTINCT ON (school_id)
-        id AS roster_snapshot_id,
-        school_id,
-        season
-    FROM roster_snapshots
-    WHERE season = %(roster_season)s
-    ORDER BY school_id, snapshot_date DESC, id DESC
-),
-transfer_rows AS (
-    SELECT DISTINCT ON (player_id)
-        player_id,
-        season,
-        from_school_id,
-        to_school_id,
-        match_confidence
-    FROM transfer_portal_events
-    WHERE season = %(source_season)s
-      AND player_id IS NOT NULL
-      AND match_status = 'matched'
-    ORDER BY player_id, updated_at DESC NULLS LAST, id DESC
-),
-hep_dedup AS (
-    SELECT DISTINCT ON (player_id, season)
-        player_id,
-        season,
-        pos_confidence_pg,
-        pos_confidence_sg,
-        pos_confidence_sf,
-        pos_confidence_pf,
-        pos_confidence_c
-    FROM hoop_explorer_player_stats
-    WHERE player_id IS NOT NULL
-    ORDER BY player_id, season, updated_at DESC, id DESC
-)
 SELECT
     fit.player_id,
     fit.school_id,
@@ -546,39 +578,39 @@ SELECT
     CASE WHEN rbm.id IS NOT NULL THEN 1 ELSE 0 END AS same_school_baseline
 FROM player_team_fit_scores fit
 JOIN players p ON p.id = fit.player_id
-LEFT JOIN latest_player_stats lps
+LEFT JOIN pt_staging_latest_player_stats lps
     ON lps.player_id = fit.player_id
-LEFT JOIN neutral_projection np
+LEFT JOIN pt_staging_neutral_projection np
     ON np.player_id = fit.player_id
    AND np.season = %(target_season)s
 LEFT JOIN team_season_stats tss
     ON tss.school_id = fit.school_id
    AND tss.season = %(team_context_season)s
-LEFT JOIN roster_counts rc
+LEFT JOIN pt_staging_roster_counts rc
     ON rc.school_id = fit.school_id
    AND rc.season = %(roster_season)s
 LEFT JOIN roster_state_features rsf
     ON rsf.school_id = fit.school_id
    AND rsf.season = %(roster_season)s
-LEFT JOIN prior_team_context ptc
+LEFT JOIN pt_staging_prior_team_context ptc
     ON ptc.school_id = fit.school_id
    AND ptc.season = %(source_season)s + 1
-LEFT JOIN prior_position_context ppc
+LEFT JOIN pt_staging_prior_position_context ppc
     ON ppc.school_id = fit.school_id
    AND ppc.season = %(source_season)s + 1
    AND ppc.position = p.position
-LEFT JOIN player_history ph
+LEFT JOIN pt_staging_player_history ph
     ON ph.player_id = fit.player_id
    AND ph.season = %(source_season)s
-LEFT JOIN hep_dedup hep
+LEFT JOIN pt_staging_hep_dedup hep
     ON hep.player_id = fit.player_id
    AND hep.season = %(source_season)s
 LEFT JOIN player_archetypes pa
     ON pa.player_id = fit.player_id
    AND pa.season = %(source_season)s
-LEFT JOIN transfer_rows tr
+LEFT JOIN pt_staging_transfer_rows tr
     ON tr.player_id = fit.player_id
-LEFT JOIN latest_snapshots ls
+LEFT JOIN pt_staging_latest_snapshots ls
     ON ls.school_id = fit.school_id
    AND ls.season = %(roster_season)s
 LEFT JOIN roster_baseline_members rbm
@@ -2166,6 +2198,14 @@ def build_playing_time_records(
                 expires,
             )
         )
+    # Sort by (player_id, school_id, season) before upsert — both records' target tables
+    # (playing_time_projections, player_team_fit_scores) are keyed/indexed on this order,
+    # so a sorted batch touches heap pages in a more locality-friendly order than the
+    # scored_df's incidental row order, improving cache reuse within one execute_values
+    # page. Cheap, no schema change; player_team_fit_scores is the ~15GB heap-cache-bound
+    # table from Issue #53's follow-up investigation.
+    projection_records.sort(key=lambda t: (t[0], t[1], t[2]))
+    fit_sync_records.sort(key=lambda t: (t[0], t[1], t[2]))
     return projection_records, fit_sync_records
 
 
