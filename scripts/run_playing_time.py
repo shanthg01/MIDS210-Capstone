@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -797,6 +798,19 @@ def main() -> None:
                 target_season,
             )
             continue
+
+        materialize_start = time.monotonic()
+        pt.materialize_inference_staging(
+            engine,
+            target_season=target_season,
+            source_season=source_season,
+            roster_season=roster_season,
+        )
+        log.info(
+            "season=%s materialized INFERENCE_SQL staging tables in %.1fs",
+            target_season,
+            time.monotonic() - materialize_start,
+        )
 
         for start in range(0, len(school_ids), args.school_chunk_size):
             batch = school_ids[start : start + args.school_chunk_size]
