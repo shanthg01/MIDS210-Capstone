@@ -264,9 +264,77 @@ comparison is itself a useful output, not just "run both and list results."
    No collision risk with production `playing_time_projections`/`role_fit` rows — these calls
    target historical seasons (2022-2026), production inference targets 2027.
 
-## 11. Remaining open question
+## 11. Remaining open question — resolved 2026-07-14
 
-1. Confirm real backtest population size after the games-played floor once §4's query is
-   written — if a given `dest_season` has too few matched, sufficiently-played transfers
-   (small-sample seasons, e.g. 2022 right after the 247Sports matching fix), decide then whether
-   to pool seasons for a given cohort bucket. Not pre-deciding this.
+Real population size (§4's query, run read-only against the live DB): **3,603 matched historical
+transfers** (2022-2026), **3,301** after the games-played floor (`MIN_GAMES=5`, reused from Phase
+0, not reinvented). Per-season: 2022=435, 2023=565, 2024=710, 2025=932, 2026=961 — no season is
+thin enough to need pooling; smallest (2022, right after the 247Sports matching overhaul) still
+clears `min_group_n=10` comfortably for every cohort split tried. No pooling decision needed.
+
+**Superseded by §13 — 2022 dropped from scope entirely** (not a pooling question, a hard
+infeasibility): see §13's real backfill finding.
+
+## 13. Real backfill finding (2026-07-14): 2022 cannot be point-in-time re-scored at all
+
+First real `run_playing_time.py` invocation (`--target-season 2022 --source-season 2021`, scoped
+to 2022's 214 schools/435 players) failed: `RuntimeError: Need at least two train seasons, got
+[2021]`. Root cause: barttorvik data (this project's earliest-ingested source) starts at season
+2021 — there is no season before 2021 to train the Playing Time model's minutes/usage GBT on, so
+scoring target_season=2022 (source_season=2021) can never have the ≥2 historical seasons that
+model hard-requires. This is not a bug — it's the same structural limit
+`destination_projection.run_rolling_origin_cv` already encodes (it never evaluates the first
+available season either, `seasons[1:]`, precisely because there's nothing prior to train on for
+it).
+
+**Decision: drop 2022 from the backtest population — `min_dest_season` moves from 2022 to 2023.**
+`--target-season 2023 --source-season 2022` trains on `[2021, 2022]` (2 seasons), clears the
+check. Real population impact: 3,603 → 3,168 matched transfers (loses 2022's 435 rows, ~12%),
+3,301 → ~2,900 after the games-played floor (exact number pending the 2023-2026 backfill
+completing) — still no thin seasons per §11's per-season breakdown (565/710/932/961). No further
+scope reduction expected; 2023-2026 all have 2+ real prior seasons of barttorvik data to train on.
+
+## 12. Built (2026-07-14) — module + script + notebook skeleton, no historical backfill run yet
+
+Per the "build skeleton first, run the real backfill later" sequencing decision:
+
+- **`src/portalpoint/modeling/destination_backtest.py`** — `load_backtest_population`,
+  `load_actual_outcomes`, `load_projected_outcomes`, `compute_residuals`, `summarize_residuals`,
+  `enrich_with_cohorts` (archetype at source season + tier direction, reusing
+  `destination_projection.assign_competition_tiers` — not a forked tier definition).
+  `BACKTEST_STATS` compares the 6 fields actually present in `projected_box_score`
+  (pts/reb/ast/stl/blk/tov per game) against their `player_season_stats` counterparts — this is a
+  narrower, more direct correction to §10's decision #2 ("use `player_projection.py`'s skill
+  taxonomy"): the 11-skill taxonomy (`shooting_3p`, `passing_creation`, ...) is the Kalman layer's
+  internal skill-percentile vocabulary, not stored per-game production: there's no real "actual"
+  to compare a skill percentile against without a translation step. The box-score fields are
+  already the translated, comparable-to-real-stats output — the right vocabulary was the one
+  already being written to the DB, not a separately-invented one.
+- **`scripts/run_destination_backtest.py`** — checks per-season readiness
+  (`player_projections` destination rows present for that `dest_season`/`model_version`), reports
+  missing seasons with the exact manual commands to fill them, or (`--backfill`) invokes
+  `run_playing_time.py` + `run_destination_projection.py` itself, scoped per §10's
+  `--include-school-ids`/`--include-player-ids`. Logs a **non-promoting** MLflow run (no
+  `maybe_promote` call) — flags in its own docstring and a runtime warning that
+  `run_destination_projection.py`'s non-dry-run path calls `maybe_promote` on its own, using a
+  historical/population-restricted `total_resid_std` that isn't necessarily representative —
+  review any resulting promotion, don't trust it blindly.
+- **`notebooks/models/destination_backtest.ipynb`** — interactive: load/residual cells (§1),
+  §7a cohort splits (position/archetype/tier direction, §2), §7b k-means residual-vector
+  clustering with a K-sweep inertia check (§3), and a cluster-vs-cohort cross-tab (§4) — answers
+  the plan's own closing question (does §7a already explain what §7b finds).
+- **20 new unit tests** (12 `test_destination_backtest.py` covering `compute_residuals`/
+  `summarize_residuals`; matches `test_destination_projection.py`'s own convention of only
+  unit-testing pure transform functions, not the DB-touching `load_*`/`enrich_with_cohorts`
+  functions). 107 tests green across the touched files.
+- **Read-only smoke test against the real DB** (no writes): `load_backtest_population` +
+  `load_actual_outcomes` confirmed working end-to-end with the real row counts in §11.
+  `load_projected_outcomes` correctly returns 0 rows — no historical `player_projections`
+  destination-mode backfill has been run yet, exactly as expected before §5's backfill step
+  happens.
+
+**Not done yet:** the actual historical backfill (§5) — `run_playing_time.py` +
+`run_destination_projection.py` for each of the 5 historical seasons, scoped to that season's
+population. Real compute, explicitly held for a separate go-ahead per the plan's original §10.3
+caution. Once backfilled, rerun `scripts/run_destination_backtest.py` (or the notebook) to get
+real residual/cohort/cluster results.

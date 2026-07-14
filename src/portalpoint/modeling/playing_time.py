@@ -728,6 +728,27 @@ class PlayingTimeModels:
     freshman_usage_by_group: dict[str, float] = field(default_factory=dict)
 
 
+def resolve_promotion_gate_metric(metrics: dict[str, float]) -> float | None:
+    """Real held-out minutes_rmse for maybe_promote gating, or None if unavailable.
+
+    minutes_rmse only exists when rolling_origin_validation had enough seasons to
+    compute real held-out CV folds. A restricted/single-season run (e.g. a
+    historical backtest scoped to one season's transfer population) never gets
+    real folds, so minutes_rmse is absent from metrics.
+
+    Previously (scripts/run_playing_time.py's log_mlflow) a missing minutes_rmse
+    fell back to train_minutes_share_rmse — a completely different metric
+    (in-sample, fractional minutes-SHARE, not per-40-minutes RMSE) — compared
+    under the "minutes_rmse" name in maybe_promote. Confirmed real on 2026-07-14:
+    a historical backfill run logged train_minutes_share_rmse=0.0754 with no
+    minutes_rmse at all; comparing 0.0754 against the real champion's
+    minutes_rmse=5.623 produced a nonsensical Δ=+98.6% "improvement" and a false
+    promotion (manually reverted). Returns None (caller must skip promotion)
+    instead of silently substituting an incompatible metric.
+    """
+    return metrics.get("minutes_rmse")
+
+
 class TreeQuantileRegressor:
     def __init__(self, quantile: float, *, random_state: int):
         self.quantile = quantile
