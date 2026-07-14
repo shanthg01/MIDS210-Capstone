@@ -1,6 +1,6 @@
 # PortalPoint Model Dependency Graph
 
-**Last updated:** June 25, 2026 (Player Projection Phase 2a real-data validated against Issue #37, beats Phase 0 on offense)
+**Last updated:** July 11, 2026 (Recommendation Engine `rec-v1.2` — M6 team-rating macro signal wired in and run for real, 449,315-row join verified; Team Rating Projection PR #49 merged to `main`; Program Fit descoped from active roadmap — see `recommendation_engine_plan.md`)
 **Scope:** Model inputs, outputs, downstream consumers, and execution order.
 
 This document is the dependency contract for PortalPoint's data science stack. It
@@ -22,12 +22,22 @@ Raw data / ingest
   -> Gap Matching
   -> Player Projection
   -> Role Fit / Playing Time
+  -> Destination-Adjusted Player Projection
   -> Team Rating Projection
-  -> Program Fit
+  -> (Program Fit — descoped, see note below)
   -> Fit Score Calibration / Overall Fit
   -> Recommendation Engine
   -> API + Frontend
 ```
+
+> Program Fit is descoped from the active roadmap (product decision, 2026-07-11).
+> It is left in this diagram for architectural completeness — the DAG below
+> still shows where it *would* plug in — but nothing downstream should treat
+> it as a blocker. Recommendation Engine (`rec-v1.2`) now ranks on real
+> scheme/gap/role fit **plus** Team Rating Projection's `delta_adj_em` as a
+> normalized macro signal (`recommendation_engine_plan.md`) — implemented and
+> run for real 2026-07-11, not waiting on Program Fit or full 4-component
+> calibration.
 
 ## Current Dependency DAG
 
@@ -53,7 +63,7 @@ Player Game Logs + Game Context + HE Impact Labels        |
     |                                                     |
     v                                                     |
 Neutral Player Projection <------------------------------+
-    writes: neutral player_projections or prediction artifacts
+    writes: neutral player_projections
     |
     v
 Role Fit / Playing Time <------ Roster Snapshots + Transfers
@@ -63,7 +73,7 @@ Role Fit / Playing Time <------ Roster Snapshots + Transfers
     v
 Destination-Adjusted Player Projection
     consumes: neutral projection + role/minutes
-    writes: destination player projections or predictions
+    writes: destination player_projections
     |
     v
 Team Rating Projection
@@ -99,11 +109,11 @@ API + Frontend
 | Neutral Player Projection | Player game logs, season stats, opponent context, HE impact labels, archetypes | **Real — `player_projections` neutral mode, served by `GET /api/players/{id}/projection`.** Phase 2a next-season forecast (`player-proj-phase2a-fcast-v1`) is the API default by product decision: observed season `S` writes target projected season `S+1`. Phase 0 (`player-projection-shrinkage-v2`) and same-season Phase 2a (`player-projection-phase2a-v2`) remain comparator/diagnostic outputs. Phase 1 (single-season Kalman, 2026 only) is a validation step, not a second production path — see `player_projection_kalman.py` | Role Fit, Transfer Success, Recommendations, destination-adjusted projection |
 | Role Fit / Playing Time | Shared roster baseline, player projections, scheme/gap context, archetypes | `role_fit`, expected minutes, usage role, displaced minutes | Fit Score, Team Rating Projection, Recommendations |
 | Destination-Adjusted Player Projection | Neutral player projection, Role Fit minutes/usage/displacement, team pace, competition context | School-specific projected stats and value | Team Rating Projection, Predictions API, Player Profile, Compare |
-| Team Rating Projection | Shared roster baseline, player projections, role/minutes, team ratings | `team_rating_projections` | Fit page, Compare page, Recommendations |
-| Program Fit | User preferences, school/player metadata, NIL/geography/academic proxies | `player_team_fit_scores.program_fit` | Fit Score, Recommendations |
+| Team Rating Projection | Shared roster baseline, player projections, role/minutes, team ratings | `team_rating_projections` — ✅ merged to `main` (PR #49, 2026-07-11) | Fit page, Compare page, Recommendations |
+| Program Fit | User preferences, school/player metadata, NIL/geography/academic proxies | `player_team_fit_scores.program_fit` | **Descoped (2026-07-11)** — not consumed by anything on the active path |
 | Fit Score Calibration | Scheme, gap, role, program, confidence flags | Calibrated `overall_fit`, component confidence metadata | Recommendations, Fit page, Compare page |
 | Transfer Success / Outcome | Historical transfers, pre/post stats, projections | Prediction/risk outputs | Predictions API, Player profile, Compare, Recommendations risk context |
-| Recommendation Engine | Calibrated fit scores, projections, team-rating deltas, availability, preferences | `recommendations` | Dashboard, Recommendations API |
+| Recommendation Engine | Real `scheme_fit`/`gap_match`/`role_fit`/`team_impact_fit` (M6 `delta_adj_em`, normalized), availability, user preferences (see `recommendation_engine_plan.md`) | `recommendations` — ✅ `rec-v1.2` writes real rows (80 rows, school 301, season 2027, live run 2026-07-11); `/api/recommendations` still serves stub scores | Dashboard, Recommendations API |
 | API + Frontend | Output tables from all model layers | User-facing product | Final app workflow |
 
 ## Hard Dependencies
@@ -121,10 +131,10 @@ Hard dependencies must exist before the downstream model can run meaningfully.
 | Role Fit / Playing Time | Shared roster baseline, player projections (✅ Phase 0 real, see above), roster-state features (optional explanations) |
 | Neutral Player Projection | ✅ Phase 2a next-season forecast real (cross-season Kalman, real-data validated 2026-06-25 against Issue #37), API default by product decision. ✅ Phase 0 real (season-level shrinkage + Ridge), retained as baseline comparator. Phase 2a beats Phase 0 on held-out offense, ties on defense, and writes projected rates/box-score payloads under `player-proj-phase2a-fcast-v1`; same-season `player-projection-phase2a-v2` rows are diagnostic. |
 | Destination-Adjusted Player Projection | Neutral Player Projection plus Role Fit / Playing Time outputs |
-| Team Rating Projection | Shared roster baseline, player projections, expected minutes/displacement from Role Fit |
-| Program Fit | User/program preferences and agreed MVP proxy/manual-input contract |
-| Fit Score Calibration | Real scheme, gap, role, and program component scores |
-| Recommendation Engine | Candidate availability, calibrated fit scores, user preferences |
+| Team Rating Projection | Shared roster baseline, player projections, expected minutes/displacement from Role Fit — ✅ done, merged to `main` |
+| Program Fit | **Descoped (2026-07-11)** — no longer a hard dependency for anything below |
+| Fit Score Calibration | Real scheme, gap, role component scores (program descoped — see note) |
+| Recommendation Engine | Candidate availability, real scheme/gap/role/team_impact_fit scores (✅ all have — `recommendation_engine_plan.md`), user preferences |
 | API / Frontend real-output integration | Real output records from the relevant model tables |
 
 ## Soft Dependencies
@@ -144,8 +154,10 @@ always block an MVP run.
 
 ## Execution Order
 
-Current completed scripts stop at Gap Matching. Planned scripts should extend the
-same local-first pattern.
+Merged scripts now extend through neutral projection, playing time, destination-adjusted
+projection, Team Rating Projection (PR #49 merged to `main`, 2026-07-11), and the
+baseline recommendation engine. Program Fit is descoped from the active roadmap —
+step 15 below is left in the list for completeness but is not on the critical path.
 
 ```text
 1.  Apply migrations
@@ -159,13 +171,13 @@ same local-first pattern.
 8.  Run M2 Team System Clustering
 9.  Run M3 Scheme Fit
 10. Run Gap Matching baseline or v2
-11. Run Neutral Player Projection — ✅ Phase 0 done (`run_player_projection.py`); Phase 1 (Kalman) is notebook-only validation, no script
-12. Run Role Fit / Playing Time
-13. Run Destination-Adjusted Player Projection
-14. Run Team Rating Projection
-15. Run Program Fit
-16. Run Fit Score Calibration / Overall Fit refresh
-17. Run Recommendation Engine
+11. Run Neutral Player Projection — ✅ Phase 2a next-season forecast production path (`run_player_projection.py`)
+12. Run Role Fit / Playing Time — ✅ `playing-time-rotation-v2` full 2027 write completed
+13. Run Destination-Adjusted Player Projection — ✅ `player-destination-proj-v1` baseline completed
+14. Run Team Rating Projection — ✅ `team-roster-proj-v1`, PR #49 merged to `main` (2026-07-11)
+15. Run Program Fit — ✳️ descoped, skip for now
+16. Run Fit Score Calibration / Overall Fit refresh — pending a decision on reweighting to 3 real components
+17. Run Recommendation Engine — ✅ `rec-v1.2`, M6 `delta_adj_em` wired in as a macro signal and run for real (`recommendation_engine_plan.md`); `/api/recommendations` router wiring still pending
 18. Verify API + frontend outputs
 ```
 
@@ -180,14 +192,14 @@ same local-first pattern.
 | `transfers` / `transfer_portal_events` | Real for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped, 0 matched — matcher bug, not a backfill gap | Issue #17 item 3 |
 | `roster_snapshots` / `roster_snapshot_players` | Real, 357 distinct schools (target ~365) | Issue #17 item 4 |
 | `roster_state_features` | Depends on roster_snapshots above — re-run against the full 357-school set if last built against a narrower subset | Issue #17 item 6 |
-| `player_team_fit_scores.role_fit` | Implemented in branch by `playing-time-rotation-v2`; full 2027 all-school write pending | Role Fit |
-| `player_team_fit_scores.program_fit` | Placeholder `50.0` | Program Fit |
-| `player_team_fit_scores.overall_fit` | Partial; compressed until all components are real | Fit Score Calibration |
+| `player_team_fit_scores.role_fit` | Real for 2027 rows written/synced by `playing-time-rotation-v2` | Role Fit |
+| `player_team_fit_scores.program_fit` | Placeholder `50.0` — **descoped (2026-07-11)**, not pending further model work | Program Fit |
+| `player_team_fit_scores.overall_fit` | Partial; compressed until `program_fit` is revisited or the formula is reweighted to 3 real components (decision pending) | Fit Score Calibration |
 | `player_projections` | **Real — multiple neutral `model_version`s coexist.** `player-projection-shrinkage-v2` (Phase 0 baseline), `player-projection-phase2a-v2` (same-season Phase 2a diagnostic), and `player-proj-phase2a-fcast-v1` (production next-season forecast, observed `S` -> target `S+1`) — separate partial-unique-index keys, can't collide. Phase 1 (Kalman) is validation-only, doesn't write here. | Player Projection |
 | `playing_time_projections` | Implemented Role Fit source-of-truth table; live 2026 portal cycle writes target `season=2027` rows with 2026 context in `opportunity_drivers` | Role Fit |
-| `team_rating_projections` | Table exists; no real rows yet | Team Rating Projection |
+| `team_rating_projections` | Real — `team-roster-proj-v1`, 457,345 rows, target_season=2027, **PR #49 merged to `main` (2026-07-11)** | Team Rating Projection |
 | `predictions` | Table/API exists; no real rows yet | Transfer Success |
-| `recommendations` | Table/API exists; no real rows yet | Recommendation Engine |
+| `recommendations` | Real — engine/runner (`rec-v1.2`) writes rows on real scheme/gap/role/team_impact_fit scores (M6 `delta_adj_em` wired in and run for real 2026-07-11 — `recommendation_engine_plan.md`), but `/api/recommendations` still serves stub scores on `main` | Recommendation Engine |
 
 ## Canonical Question Chain
 
@@ -274,10 +286,10 @@ Who is the player?
 |---|---|
 | #17 Remaining Data Loading | Removes source-data blockers for all downstream models. Items 1-2, 3-4, and 6 all done — **items 1-2 (hoopR game logs/context) completed 2026-06-23**, full 2020-2026 backfill, the last open piece. Item 5 (derived `player_team_seasons`) dropped on review — mostly duplicated `player_season_stats`, and its named use cases (inferring transfers/roster history) are now redundant since items 3-4 give real data instead. Items 7-8 (projection tables, Program Fit proxy) reassigned to #18/#25/#20. |
 | #18 Player Projection Model / [#37 Phase 2 follow-up](https://github.com/shanthg01/MIDS210-Capstone/issues/37) | ✅ **Phase 0 done (2026-06-23)** — foundational player-talent model, real output in `player_projections`, retained as baseline comparator. Phase 1 (single-season Kalman) validated. **Phase 2a done + real-data validated (2026-06-25)**, reconciled against Issue #37's 8 scope items as Gaps A-G: A/D/E/G coded+real-data-validated (beats Phase 0 on offense, ties on defense); B (context adjustment) regresses accuracy and is not enabled after root-cause analysis; C (rate projections) and F (real `player_projections` write under a separate `model_version`) both done. Two follow-ons landed after: an 11th skill (`foul_discipline`) and an offense/defense feature-set split for the value model (real, accepted accuracy tradeoff on defense). Script consolidation is done via `scripts/run_player_projection.py --phase {0,2a,both}`; API default now serves Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision. See `docs/models/player_projection_state_space_plan.md` §22 for the full record. |
-| #19 Team Rating Projection Model | Roster counterfactual model |
-| #20 Program Fit Model Decision | Decides MVP program-fit feasibility and proxy contract |
-| #21 Fit Score Calibration | Makes component aggregation useful for ranking |
-| #22 Recommendation Engine | Final program-facing ranking layer |
+| #19 Team Rating Projection Model | ✅ Done — roster counterfactual model, `team-roster-proj-v1`, PR #49 merged to `main` (2026-07-11) |
+| #20 Program Fit Model Decision | **Descoped (2026-07-11)** — product decision to deprioritize; not blocking #21/#22 |
+| #21 Fit Score Calibration | Makes component aggregation useful for ranking — now unblocked on 3 real components (program descoped, not waited on) |
+| #22 Recommendation Engine | Final program-facing ranking layer — `rec-v1.2` real, M6 team-rating delta wired in and run for real (2026-07-11); next: wire `/api/recommendations` router to real rows, see `recommendation_engine_plan.md` |
 | #23 Transfer Success / Outcome Model | Historical outcome/risk model |
 | #24 Standardize Downstream Role And System Labels Around Accepted Clusters | Keeps model/UI language consistent |
 | #25 Role Fit / Playing Time Model | Opportunity model and real `role_fit` |
@@ -294,5 +306,6 @@ Who is the player?
 - Role Fit owns opportunity; Player Projection owns talent.
 - Team Rating Projection should consume underlying minutes/displacement, not only the `role_fit` score.
 - Transfer Success is useful risk context, but should not block the first real recommendation engine.
-- Program Fit should be a deterministic/proxy calculator for MVP unless better data becomes available.
-- Score calibration should happen after all four fit components are real.
+- Program Fit should be a deterministic/proxy calculator for MVP unless better data becomes available — **descoped from the active roadmap as of 2026-07-11**, so this is now a "later, if ever" item rather than a near-term gap.
+- Score calibration should happen once the components actually in scope (scheme, gap, role) are real and stable — no longer gated on all four; program_fit's inclusion is a separate, deferred decision.
+- Team Rating Projection's `delta_adj_em` is now folded into Recommendation Engine as `team_impact_fit` (`rec-v1.2`, real run 2026-07-11) — see `recommendation_engine_plan.md`. Remaining gap is `/api/recommendations` router wiring, not another model dependency.
