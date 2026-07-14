@@ -16,7 +16,27 @@ import pandas as pd
 from portalpoint.modeling.gap_matching import POS_COLS, POS_NAMES, assign_soft_positions
 
 PRODUCTION_COL = "points_per_game"
-IMPACT_COL = "per"
+# player_season_stats.per is never populated (ingest_barttorvik.py hardcodes it to None —
+# no barttorvik source field maps to it, unlike bpm which is real and populated). Use bpm
+# as the impact metric instead; confirmed via live DB check (2026-07-14): per is 0/27,050
+# non-null across every season 2021-2026.
+IMPACT_COL = "bpm"
+
+
+def safe_bigint_series(values) -> pd.Series:
+    """Build a nullable-Int64 pandas Series from raw values that may include None.
+
+    `pd.DataFrame(cur.fetchall(), columns=cols)` silently upcasts an int+None
+    column to float64 (numpy has no native nullable-int type), which loses
+    precision on player_id — a 63-bit BigInteger (see db/player_ids.py) —
+    since float64 only has a 52-bit mantissa. Confirmed live (2026-07-14):
+    this corrupted returning/incoming player_id lookups for 346/357 roster
+    snapshots (any snapshot with >=1 unmatched "new" player, i.e. almost all
+    of them), silently zeroing out returning_minutes/returning_production/
+    team_frontcourt_need. Use this instead of trusting pandas' default
+    per-column dtype inference for any raw-cursor id column that can be null.
+    """
+    return pd.array([None if v is None else int(v) for v in values], dtype="Int64")
 
 
 def weighted_position_sum(df: pd.DataFrame, value_col: str) -> dict[str, float]:

@@ -297,6 +297,24 @@ team_tiers AS (
             ELSE 4
         END AS competition_tier
     FROM team_season_stats
+),
+dest_team_style AS (
+    -- Real, historical per-season team style (unlike roster_state_features below,
+    -- which is a live-only snapshot — see dest_roster_state note).
+    SELECT school_id, season, off_threepr, off_twoprimr,
+           off_style_rim_attack_pct, def_style_rim_attack_pct, def_orb, off_orb
+    FROM hoop_explorer_team_stats
+),
+dest_roster_state AS (
+    -- roster_state_features has no historical archive (scripts/ingest_roster_snapshots.py
+    -- scrapes barttorvik's *live* rostercast page — one snapshot of the current roster
+    -- only). This join will only find rows for whichever season the last snapshot build
+    -- was run against (currently 2026) — every other training season's dest_school gets
+    -- NULL here. That's a real, known data gap, not a query bug: see
+    -- docs/models/destination_projection_backtest_plan.md §3 for the same constraint
+    -- discovered independently while scoping the historical backtest.
+    SELECT school_id, season, open_usage_by_position
+    FROM roster_state_features
 )
 SELECT
     tr.player_id,
@@ -321,7 +339,14 @@ SELECT
     st.competition_tier         AS source_tier,
     dt.adj_em                   AS dest_adj_em,
     dt.competition_tier         AS dest_tier,
-    dt.three_point_rate         AS dest_three_point_rate
+    dt.three_point_rate         AS dest_three_point_rate,
+    dts.off_threepr              AS dest_off_threepr,
+    dts.off_twoprimr             AS dest_off_twoprimr,
+    dts.off_style_rim_attack_pct AS dest_off_style_rim_attack_pct,
+    dts.def_style_rim_attack_pct AS dest_def_style_rim_attack_pct,
+    dts.def_orb                  AS dest_def_orb,
+    dts.off_orb                  AS dest_off_orb,
+    drs.open_usage_by_position   AS dest_open_usage_by_position
 FROM transfer_rows tr
 JOIN dest_stats ds
     ON ds.player_id = tr.player_id
@@ -339,6 +364,12 @@ LEFT JOIN team_tiers st
 LEFT JOIN team_tiers dt
     ON dt.school_id = tr.to_school_id
    AND dt.season = tr.dest_season
+LEFT JOIN dest_team_style dts
+    ON dts.school_id = tr.to_school_id
+   AND dts.season = tr.dest_season
+LEFT JOIN dest_roster_state drs
+    ON drs.school_id = tr.to_school_id
+   AND drs.season = tr.dest_season
 WHERE ds.dest_usage_rate IS NOT NULL
 """
 
@@ -819,11 +850,21 @@ def compute_role_usage_delta(
 # Delta component: Style / Skill Fit
 # ---------------------------------------------------------------------------
 
-def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
+def compute_style_skill_fit_delta(
+    df: pd.DataFrame, weights: dict[str, float] | None = None
+) -> pd.Series:
     """Rule-based style × skill interaction delta.
 
     Six explicit interactions, each bounded by its interaction weight,
     aggregated and bounded by DELTA_CAPS["style_skill_fit_delta"].
+
+    weights: coefficient dict, same keys as STYLE_SKILL_INTERACTION_WEIGHTS
+    (the module default, used when weights is None). 5 of the 6 keys can be
+    empirically fit via fit_style_skill_weights() — def_reb_x_frontcourt_need
+    stays hardcoded regardless, since its input (roster_state_features,
+    a live-only snapshot with no historical archive) has real training-data
+    coverage in only one season (confirmed 2026-07-14: 636/2425 rows, all in
+    dest_season=2026 — not enough for a held-out fit).
 
     Inputs expected in df (all nullable — falls back to 0.0 if missing):
       skill_pctile_shooting_3p, skill_pctile_passing_creation,
@@ -834,6 +875,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     """
     if df.empty:
         return pd.Series(dtype=float)
+    w = weights if weights is not None else STYLE_SKILL_INTERACTION_WEIGHTS
 
     def _col(name: str, default: float = 0.0) -> pd.Series:
         if name in df.columns:
@@ -850,7 +892,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     shooting_score = (
         (_pctile("skill_pctile_shooting_3p") - 50.0) / 50.0  # -1 to +1
         * _col("team_off_threepr", 0.35)                       # team's 3PA rate (0-1)
-        * STYLE_SKILL_INTERACTION_WEIGHTS["shooting_3p_x_team_threepr"]
+        * w["shooting_3p_x_team_threepr"]
     )
 
     # 2. Passing creation × open ball-handler usage
@@ -861,7 +903,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     passing_score = (
         (_pctile("skill_pctile_passing_creation") - 50.0) / 50.0
         * open_usage_signal.clip(0, 1)
-        * STYLE_SKILL_INTERACTION_WEIGHTS["passing_creation_x_open_usage"]
+        * w["passing_creation_x_open_usage"]
     )
 
     # 3. Shot creation × usage crowding (negative: crowded = suppressed creation value)
@@ -869,7 +911,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     creation_crowding_score = (
         (_pctile("skill_pctile_shot_creation_usage") - 50.0) / 50.0
         * usage_crowding.clip(0, 1)
-        * STYLE_SKILL_INTERACTION_WEIGHTS["shot_creation_x_usage_crowding"]  # negative weight
+        * w["shot_creation_x_usage_crowding"]  # negative weight
     )
 
     # 4. Block/rim protection × defensive rim need
@@ -877,7 +919,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     block_score = (
         (_pctile("skill_pctile_block_rim_protection") - 50.0) / 50.0
         * rim_def_need.clip(0, 1)
-        * STYLE_SKILL_INTERACTION_WEIGHTS["block_rim_x_def_rim_need"]
+        * w["block_rim_x_def_rim_need"]
     )
 
     # 5. Offensive rebounding × rim-heavy offensive style
@@ -885,7 +927,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     off_reb_score = (
         (_pctile("skill_pctile_offensive_rebounding") - 50.0) / 50.0
         * (off_rim_style - 0.30).clip(0, 0.4) / 0.4  # above-average rim teams
-        * STYLE_SKILL_INTERACTION_WEIGHTS["off_reb_x_rim_style"]
+        * w["off_reb_x_rim_style"]
     )
 
     # 6. Defensive rebounding × frontcourt need
@@ -893,7 +935,7 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     def_reb_score = (
         (_pctile("skill_pctile_defensive_rebounding") - 50.0) / 50.0
         * frontcourt_need.clip(0, 1)
-        * STYLE_SKILL_INTERACTION_WEIGHTS["def_reb_x_frontcourt_need"]
+        * w["def_reb_x_frontcourt_need"]
     )
 
     total = (
@@ -903,6 +945,155 @@ def compute_style_skill_fit_delta(df: pd.DataFrame) -> pd.Series:
     return total.clip(
         -DELTA_CAPS["style_skill_fit_delta"], DELTA_CAPS["style_skill_fit_delta"]
     )
+
+
+# 5 of style_skill_fit_delta's 6 interaction weights can be empirically fit — see
+# fit_style_skill_weights. def_reb_x_frontcourt_need is excluded (real data check
+# 2026-07-14: its input, roster_state_features, has coverage in only 636/2425
+# training rows, all in dest_season=2026 — a single-season fit isn't generalizable).
+_STYLE_SKILL_TRAINABLE_SKILLS = {
+    "shooting_3p_x_team_threepr": "shooting_3p",
+    "passing_creation_x_open_usage": "passing_creation",
+    "shot_creation_x_usage_crowding": "shot_creation_usage",
+    "block_rim_x_def_rim_need": "block_rim_protection",
+    "off_reb_x_rim_style": "offensive_rebounding",
+}
+MIN_STYLE_SKILL_TRAIN_ROWS = 30
+# Real residual_std reduction required before replacing hardcoded weights with a fit —
+# confirmed necessary on real data (2026-07-14): the full historical panel fit only
+# achieved 0.24% (R²=-0.0228), with one coefficient sign-flipped vs. basketball logic.
+MIN_STYLE_SKILL_IMPROVEMENT = 0.02
+
+
+def _build_style_skill_training_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Raw (unweighted) style x skill interaction terms for empirical fitting.
+
+    Mirrors compute_style_skill_fit_delta's math, but sourced from real
+    historical destination-season data (dest_usage_rate, dest team style)
+    instead of production-time inference columns (expected_usage, team_*)
+    built by _add_style_interaction_features. Training doesn't need a
+    playing_time_projections backfill for this — the *actual* realized
+    usage/team style already exists for these historical rows.
+    """
+    features = pd.DataFrame(index=df.index)
+
+    def _pctile(skill: str) -> pd.Series:
+        return df["skill_percentiles"].apply(lambda v: _skill_pctile_feature(v, skill))
+
+    def _col(name: str, default: float) -> pd.Series:
+        return df[name] if name in df.columns else pd.Series(default, index=df.index)
+
+    dest_usage = _usage_fraction_series(df["dest_usage_rate"], default=0.20)
+    team_threepr = _col("dest_off_threepr", np.nan).fillna(_col("dest_three_point_rate", 0.35)).fillna(0.35)
+    open_usage_signal = ((0.25 - dest_usage.clip(0, 0.35)) / 0.25).clip(0, 1)
+    usage_crowding = ((dest_usage - 0.20) / 0.10).clip(0, 1)
+    rim_def_need = (1.0 - _col("dest_def_orb", 0.27).fillna(0.27).clip(0.15, 0.40) / 0.40).clip(0, 1)
+    off_rim_style = _col("dest_off_style_rim_attack_pct", np.nan).fillna(_col("dest_off_twoprimr", 0.30)).fillna(0.30)
+
+    features["shooting_3p_x_team_threepr"] = (_pctile("shooting_3p") - 50.0) / 50.0 * team_threepr
+    features["passing_creation_x_open_usage"] = (_pctile("passing_creation") - 50.0) / 50.0 * open_usage_signal
+    features["shot_creation_x_usage_crowding"] = (_pctile("shot_creation_usage") - 50.0) / 50.0 * usage_crowding
+    features["block_rim_x_def_rim_need"] = (_pctile("block_rim_protection") - 50.0) / 50.0 * rim_def_need
+    features["off_reb_x_rim_style"] = (
+        (_pctile("offensive_rebounding") - 50.0) / 50.0 * (off_rim_style - 0.30).clip(0, 0.4) / 0.4
+    )
+    return features.fillna(0.0)
+
+
+def fit_style_skill_weights(
+    training_df: pd.DataFrame,
+    role_model: Ridge | None,
+    role_scaler: StandardScaler | None,
+    role_feature_names: list[str],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Empirically fit 5 of style_skill_fit_delta's 6 interaction coefficients.
+
+    Target: value_delta net of competition_level_delta (already computed on
+    training_df, matching role_usage_delta's own target convention — see
+    role_usage_target in run_destination_projection) and net of the
+    already-fit role_usage_delta prediction — isolates the marginal variance
+    attributable to style/skill interactions instead of re-explaining
+    variance the other two deltas already account for.
+
+    def_reb_x_frontcourt_need is excluded — see _STYLE_SKILL_TRAINABLE_SKILLS.
+
+    Returns (weights_dict, metrics_dict). Falls back to the hardcoded
+    STYLE_SKILL_INTERACTION_WEIGHTS defaults (metrics={"fallback": 1.0}) if
+    there's insufficient clean training data.
+    """
+    fallback = dict(STYLE_SKILL_INTERACTION_WEIGHTS)
+    if (
+        training_df.empty
+        or role_model is None
+        or "competition_level_delta" not in training_df.columns
+        or "skill_percentiles" not in training_df.columns
+    ):
+        return fallback, {"fallback": 1.0}
+
+    df = training_df.dropna(subset=["value_delta", "dest_usage_rate", "source_usage_rate"]).copy()
+    if len(df) < MIN_STYLE_SKILL_TRAIN_ROWS:
+        log.warning(
+            "Style/skill fit: only %d clean training rows (need %d) — using hardcoded weights",
+            len(df), MIN_STYLE_SKILL_TRAIN_ROWS,
+        )
+        return fallback, {"fallback": 1.0, "n_rows": float(len(df))}
+
+    df["value_per_100"] = df.get("neutral_value", pd.Series(0.0, index=df.index))
+    role_usage_pred = compute_role_usage_delta(
+        df, role_model, role_scaler, role_feature_names, dest_usage_col="dest_usage_rate",
+    )
+    residual = (
+        df["value_delta"].to_numpy()
+        - df["competition_level_delta"].fillna(0.0).to_numpy()
+        - role_usage_pred.to_numpy()
+    )
+
+    feature_order = list(_STYLE_SKILL_TRAINABLE_SKILLS.keys())
+    X = _build_style_skill_training_features(df)[feature_order].values
+
+    model = Ridge(alpha=5.0, fit_intercept=False)
+    model.fit(X, residual)
+    preds = model.predict(X)
+    residual_std_before = float(np.std(residual))
+    residual_std_after = float(np.std(residual - preds))
+    r2 = float(model.score(X, residual)) if np.var(residual) > 1e-10 else 0.0
+    improvement_frac = (
+        (residual_std_before - residual_std_after) / residual_std_before
+        if residual_std_before > 1e-10 else 0.0
+    )
+
+    metrics = {
+        "n_rows": float(len(df)),
+        "residual_std_before": round(residual_std_before, 4),
+        "residual_std_after": round(residual_std_after, 4),
+        "r2": round(r2, 4),
+        "improvement_frac": round(improvement_frac, 4),
+    }
+
+    # Gate, same discipline as mlflow_helpers.maybe_promote elsewhere in this codebase
+    # (real 5% bar for a full model; this is one secondary delta component, so a
+    # smaller bar is defensible, but the fit must clear *some* real threshold before
+    # replacing small, conservative hand-picked weights with fitted ones — an R² of
+    # -0.0228 and a sign-flipped coefficient on real data (2026-07-14 run) showed why
+    # this matters: without a gate, noise gets shipped into production as if it were
+    # a genuine improvement).
+    if improvement_frac < MIN_STYLE_SKILL_IMPROVEMENT:
+        log.info(
+            "Style/skill fit: n=%d, r2=%.4f, improvement_frac=%.4f below %.2f threshold "
+            "— keeping hardcoded weights, not the fit",
+            len(df), r2, improvement_frac, MIN_STYLE_SKILL_IMPROVEMENT,
+        )
+        metrics["rejected_insufficient_improvement"] = 1.0
+        return fallback, metrics
+
+    weights = dict(fallback)
+    for name, coef in zip(feature_order, model.coef_):
+        weights[name] = round(float(coef), 4)
+    log.info(
+        "Style/skill weights fit: n=%d, r2=%.4f, residual_std %.4f -> %.4f, weights=%s",
+        len(df), r2, residual_std_before, residual_std_after, weights,
+    )
+    return weights, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -1907,6 +2098,10 @@ def run_destination_projection(
             training_df["value_delta"] - training_df["competition_level_delta"]
         )
     role_model, role_scaler, role_feature_names, role_residual_std = fit_role_usage_model(training_df)
+    style_skill_weights, style_skill_fit_metrics = fit_style_skill_weights(
+        training_df, role_model, role_scaler, role_feature_names
+    )
+    log.info("Style/skill weights fit metrics: %s", style_skill_fit_metrics)
 
     # --- 4a. Data-driven usage coefficient + rolling-origin CV ---
     usage_coef = estimate_usage_value_coef(neutral_df, source_stats_df)
@@ -1935,7 +2130,7 @@ def run_destination_projection(
     frame["role_usage_delta"] = compute_role_usage_delta(
         frame, role_model, role_scaler, role_feature_names, linear_coef=usage_coef
     )
-    frame["style_skill_fit_delta"] = compute_style_skill_fit_delta(frame)
+    frame["style_skill_fit_delta"] = compute_style_skill_fit_delta(frame, weights=style_skill_weights)
     frame["roster_context_delta"] = compute_roster_context_delta(frame)
     frame["competition_level_delta"] = compute_competition_level_delta(
         frame, tier_mean_mat, tier_std_mat
@@ -1996,6 +2191,7 @@ def run_destination_projection(
         "destination_value_std": float(frame["destination_value_per_100"].std()),
         **cv_metrics,
         **cohort_metrics,
+        **{f"style_skill_{k}": v for k, v in style_skill_fit_metrics.items()},
     }
     log.info("Destination projection complete: %s", metrics)
     return metrics
