@@ -20,6 +20,7 @@ import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import SettingsIcon from '@mui/icons-material/Settings';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import LogoutIcon from '@mui/icons-material/Logout';
+import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { label: 'Overview',      icon: <InfoOutlinedIcon fontSize="small" />, to: '/overview' },
   { label: 'Dashboard',     icon: <DashboardIcon fontSize="small" />,     to: '/dashboard' },
   { label: 'Player Search', icon: <SearchIcon fontSize="small" />,        to: '/players/search' },
+  { label: 'Roster Impact', icon: <TrendingUpIcon fontSize="small" />,    to: '/roster-impact' },
   { label: 'Pipeline',      icon: <BookmarkIcon fontSize="small" />,      to: '/pipeline' },
   { label: 'Compare',       icon: <CompareArrowsIcon fontSize="small" />, to: '/compare' },
   { label: 'Settings',      icon: <SettingsIcon fontSize="small" />,      to: '/settings' },

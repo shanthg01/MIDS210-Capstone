@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage';
 import PlaceholderPage from './pages/PlaceholderPage';
 import OverviewPage from './pages/OverviewPage';
 import GlossaryPage from './pages/GlossaryPage';
+import RosterImpactPage from './pages/RosterImpactPage';
 
 const theme = createTheme({
   palette: {
@@ -303,6 +304,7 @@ export default function App() {
                   <Route path="/fit/:player_id" element={<FitScorePage />} />
                   <Route path="/compare" element={<ComparePage />} />
                   <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/roster-impact" element={<RosterImpactPage />} />
                 </Route>
               </Route>
 

@@ -326,6 +326,10 @@ class TeamSystemProfile(Base):
     # Replace ARRAY(Float) with Vector(4) from pgvector.sqlalchemy when extension is enabled
     style_vector: Mapped[Optional[list]] = mapped_column(ARRAY(Float))
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Set by the news-monitoring agent's coach_departure tool (PR #50 / migration b1d3f5a7c9e2)
+    # when a coaching change is detected — signals that cached scheme fit scores may be stale.
+    stale_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    stale_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     school: Mapped[School] = relationship(back_populates="team_system_profiles")
