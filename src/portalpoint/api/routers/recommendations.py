@@ -50,7 +50,16 @@ def _check_auth(user_id: int, current_user: int) -> None:
 def _build_reasoning(row: pd.Series) -> str:
     scores = {key: row[key] for key in _COMPONENT_LABELS}
     top_key = max(scores, key=lambda k: scores[k])
-    return f"Strongest in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
+    overall = row["personalized_fit"]
+    if overall >= 75:
+        verdict = "Excellent overall fit"
+    elif overall >= 60:
+        verdict = "Strong fit"
+    elif overall >= 45:
+        verdict = "Solid, worth a look"
+    else:
+        verdict = "Developmental fit"
+    return f"{verdict} — stands out most in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
 
 
 @router.get("", response_model=RecommendationsResponse)

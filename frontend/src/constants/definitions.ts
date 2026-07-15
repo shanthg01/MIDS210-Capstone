@@ -8,6 +8,11 @@ export interface Definition {
   short: string;
 }
 
+// Mirrors modeling/playing_time.py's MODEL_VERSION — a player_team_fit_scores
+// row's role_fit is real (synced by run_playing_time.py) only when the row's
+// model_version matches this; otherwise role_fit is still the 50.0 stub.
+export const ROLE_FIT_LIVE_MODEL_VERSION = 'playing-time-rotation-v2';
+
 export const FIT_COMPONENTS: Record<
   'gap_match' | 'scheme_fit' | 'role_fit' | 'program_fit' | 'team_impact_fit',
   Definition
@@ -18,7 +23,7 @@ export const FIT_COMPONENTS: Record<
   },
   scheme_fit: {
     label: 'Scheme Fit',
-    short: "How closely this player's tendencies (pace, 3PT rate, usage, rim attacks, ball movement) match your program's system.",
+    short: "How closely this player's shot distribution and play-type tendencies match your program's system.",
   },
   role_fit: {
     label: 'Role Fit',
@@ -26,7 +31,7 @@ export const FIT_COMPONENTS: Record<
   },
   program_fit: {
     label: 'Program Fit',
-    short: 'Off-court alignment — NIL budget, geography, academics, and culture.',
+    short: 'Not live yet — intended to capture off-court alignment (NIL budget, geography, academics, culture). Currently a neutral placeholder, not a real signal.',
   },
   team_impact_fit: {
     label: 'Team Impact',
@@ -53,6 +58,11 @@ export const SKILLS: Record<string, Definition> = {
   foul_discipline: { label: 'Foul Discipline', short: 'Percentile for avoiding fouls vs. the season population.' },
 };
 
+// Neutral projection reports pace-neutral per-40 rates. Destination-adjusted
+// projection reports per-game numbers instead, scaled to this player's real
+// expected minutes at this specific program (destination_projection.py's
+// translate_rates_to_destination_stats) — not just a renamed duplicate, a
+// different (more concrete) basis, so both key sets are kept separate here.
 export const BOX_SCORE: Record<string, Definition> = {
   pts_per_40: { label: 'PTS/40', short: 'Projected points per 40 minutes.' },
   reb_per_40: { label: 'REB/40', short: 'Projected rebounds per 40 minutes.' },
@@ -60,6 +70,12 @@ export const BOX_SCORE: Record<string, Definition> = {
   stl_per_40: { label: 'STL/40', short: 'Projected steals per 40 minutes.' },
   blk_per_40: { label: 'BLK/40', short: 'Projected blocks per 40 minutes.' },
   tov_per_40: { label: 'TOV/40', short: 'Projected turnovers per 40 minutes.' },
+  pts_per_game: { label: 'PTS/G', short: 'Projected points per game at this program, scaled to real expected minutes.' },
+  reb_per_game: { label: 'REB/G', short: 'Projected rebounds per game at this program, scaled to real expected minutes.' },
+  ast_per_game: { label: 'AST/G', short: 'Projected assists per game at this program, scaled to real expected minutes.' },
+  stl_per_game: { label: 'STL/G', short: 'Projected steals per game at this program, scaled to real expected minutes.' },
+  blk_per_game: { label: 'BLK/G', short: 'Projected blocks per game at this program, scaled to real expected minutes.' },
+  tov_per_game: { label: 'TOV/G', short: 'Projected turnovers per game at this program, scaled to real expected minutes.' },
 };
 
 export const GAP_FEATURES: Record<string, Definition> = {
@@ -82,9 +98,8 @@ export const GAP_FEATURES: Record<string, Definition> = {
 export const SUB_METRICS: Record<string, Definition> = {
   three_point_match: { label: '3-Point Match', short: "How closely this player's 3PT shot rate matches your program's system." },
   pace_match: { label: 'Pace Match', short: "How closely this player's playing pace matches your program's system." },
-  usage_match: { label: 'Usage Match', short: "How closely this player's usage rate matches the role your system asks of that position." },
   rim_attack_match: { label: 'Rim Attack', short: "How closely this player's rim-attack rate matches your program's system." },
-  ball_movement_match: { label: 'Ball Movement', short: "How closely this player's passing/assist behavior matches your program's ball-movement style." },
+  mid_range_match: { label: 'Mid-Range Match', short: "How closely this player's mid-range shot rate matches your program's system." },
   nil_score: { label: 'NIL Score', short: "Fit between this player's NIL expectations and your program's NIL market." },
   geographic_score: { label: 'Geographic Fit', short: "How close this player's home/current location is to your program, a factor in transfer likelihood." },
   academic_score: { label: 'Academic Fit', short: "Alignment between this player's academic profile and your program." },
@@ -99,6 +114,27 @@ export const SUB_METRICS: Record<string, Definition> = {
   position_depth_score: { label: 'Position Depth Score', short: 'How thin your roster currently is at this position (higher = more open opportunity).' },
   projected_minutes: { label: 'Projected MPG', short: "Projected minutes per game for this player in your program's rotation." },
   starter_probability: { label: 'Starter Probability', short: 'Modeled probability this player starts games in your program.' },
+};
+
+// Mirrors modeling/scheme_fit.py's HE_FEATS — HoopExplorer 6-dim play-type
+// distribution, keyed the same way for the Play Type Match breakdown.
+export const HE_PLAY_TYPES: Record<string, Definition> = {
+  off_style_transition_pct: { label: 'Transition', short: 'Share of possessions in transition.' },
+  off_style_post_up_pct: { label: 'Post-Up', short: 'Share of possessions as a post-up.' },
+  off_style_pick_pop_pct: { label: 'Pick & Pop', short: 'Share of possessions as a pick-and-pop.' },
+  off_style_big_cut_roll_pct: { label: 'Big Cut/Roll', short: 'Share of possessions as a big cutting or rolling to the rim.' },
+  off_style_attack_kick_pct: { label: 'Attack & Kick', short: 'Share of possessions attacking the rim and kicking out.' },
+  off_style_perimeter_cut_pct: { label: 'Perimeter Cut', short: 'Share of possessions as a perimeter cutter.' },
+};
+
+export const SHOT_DISTRIBUTION_MATCH: Definition = {
+  label: 'Shot Distribution Match',
+  short: "Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — this is Scheme Fit's headline score.",
+};
+
+export const PLAY_TYPE_MATCH: Definition = {
+  label: 'Play Type Match',
+  short: 'Cosine similarity of play-type tendencies (transition, post-ups, pick-and-pop, etc.) between player and program, from HoopExplorer data. Only available when both sides have HoopExplorer coverage.',
 };
 
 export const VALUE_PER_100: Definition = {

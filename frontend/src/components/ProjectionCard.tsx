@@ -32,6 +32,10 @@ const SKILL_LABELS: Record<string, string> = {
   foul_discipline: 'Foul Discipline',
 };
 
+// Neutral mode reports pace-neutral per-40 rates; destination mode reports
+// per-game numbers instead, scaled to real expected minutes at that program
+// (destination_projection.py renames pts_per_40 -> pts_per_game etc. when it
+// rescales) — different key set, not just a naming variant.
 const BOX_SCORE_LABELS: Record<string, string> = {
   pts_per_40: 'PTS/40',
   reb_per_40: 'REB/40',
@@ -39,6 +43,15 @@ const BOX_SCORE_LABELS: Record<string, string> = {
   stl_per_40: 'STL/40',
   blk_per_40: 'BLK/40',
   tov_per_40: 'TOV/40',
+};
+
+const BOX_SCORE_LABELS_PER_GAME: Record<string, string> = {
+  pts_per_game: 'PTS/G',
+  reb_per_game: 'REB/G',
+  ast_per_game: 'AST/G',
+  stl_per_game: 'STL/G',
+  blk_per_game: 'BLK/G',
+  tov_per_game: 'TOV/G',
 };
 
 function fmt(n: number, decimals = 1): string {
@@ -54,6 +67,7 @@ interface ValueDriver {
 export default function ProjectionCard({ projection }: { projection: PlayerProjectionResponse }) {
   const { value_per_100, value_ci_lower, value_ci_upper, projected_box_score, skill_percentiles, explanation } =
     projection;
+  const isDestination = projection.projection_mode === 'destination';
 
   const valueDrivers = explanation?.value_drivers as
     | { top_positive?: ValueDriver[]; top_negative?: ValueDriver[] }
@@ -67,10 +81,16 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
             Player Projection
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Context-neutral talent value · {projection.season} season
+            {isDestination ? 'Adjusted for fit at this program' : 'Context-neutral talent value'} · {projection.season} season
           </Typography>
         </Box>
-        <Tooltip title="Backed by a real model — Cross-Season Kalman forecast">
+        <Tooltip
+          title={
+            isDestination
+              ? 'Backed by a real model — Destination Projection (Playing Time + Cross-Season blend)'
+              : 'Backed by a real model — Cross-Season Kalman forecast'
+          }
+        >
           <Chip label="Live" size="small" color="success" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />
         </Tooltip>
       </Box>
@@ -94,14 +114,14 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
         )}
       </Box>
 
-      {/* Projected box score */}
+      {/* Projected box score — key convention differs by mode (see labels maps above) */}
       {projected_box_score && (
         <Box sx={{ mb: 2.5, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
           <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-            Projected Box Score
+            Projected Box Score {isDestination ? '(per game)' : '(per 40 min)'}
           </Typography>
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(72px, 1fr))' }}>
-            {Object.entries(BOX_SCORE_LABELS).map(([key, label]) =>
+            {Object.entries(isDestination ? BOX_SCORE_LABELS_PER_GAME : BOX_SCORE_LABELS).map(([key, label]) =>
               projected_box_score[key] !== undefined ? (
                 <Box key={key} sx={{ textAlign: 'center', p: 1 }}>
                   <Typography variant="body1" fontWeight={700}>

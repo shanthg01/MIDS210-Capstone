@@ -17,11 +17,11 @@ import { useQuery } from '@tanstack/react-query';
 import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
 import { getPlayer, getPlayerProjection } from '../api/players';
 import { useAuth } from '../context/AuthContext';
-import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
+import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
 import ProjectionCard from '../components/ProjectionCard';
 import DefinitionTooltip from '../components/DefinitionTooltip';
-import { FIT_COMPONENTS, SUB_METRICS, GAP_FEATURES } from '../constants/definitions';
+import { FIT_COMPONENTS, SUB_METRICS, GAP_FEATURES, HE_PLAY_TYPES, PLAY_TYPE_MATCH } from '../constants/definitions';
 import { buildFitInsight, buildProjectionInsight } from '../utils/fitInsights';
 
 // Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
@@ -62,11 +62,15 @@ function ScoreHeader({
   score,
   weight,
   component,
+  modelVersion,
+  headlineNote,
 }: {
   label: string;
   score: number;
   weight: string;
   component: string;
+  modelVersion?: string;
+  headlineNote?: string;
 }) {
   const color = scoreColor(score);
   return (
@@ -78,11 +82,16 @@ function ScoreHeader({
               {label}
             </Typography>
           </DefinitionTooltip>
-          <DataStatusChip component={component} />
+          <DataStatusChip component={component} modelVersion={modelVersion} />
         </Box>
         <Typography variant="caption" color="text.secondary">
           {weight} weight
         </Typography>
+        {headlineNote && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {headlineNote}
+          </Typography>
+        )}
       </Box>
       <Typography variant="h4" fontWeight={800} color={`${color}.main`}>
         {fmtScore(score)}
@@ -94,9 +103,19 @@ function ScoreHeader({
   );
 }
 
-function SubBar({ label, value, metricKey }: { label: string; value: number; metricKey?: string }) {
+function SubBar({
+  label,
+  value,
+  metricKey,
+  description: descriptionProp,
+}: {
+  label: string;
+  value: number;
+  metricKey?: string;
+  description?: string;
+}) {
   const color = scoreColor(value);
-  const description = metricKey ? SUB_METRICS[metricKey]?.short : undefined;
+  const description = descriptionProp ?? (metricKey ? SUB_METRICS[metricKey]?.short : undefined);
   return (
     <Box sx={{ mb: 1.5 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
@@ -143,12 +162,14 @@ function OverallPanel({
   scheme,
   role,
   program,
+  modelVersion,
 }: {
   overall: number;
   gap: number;
   scheme: number;
   role: number;
   program: number;
+  modelVersion: string;
 }) {
   const color = scoreColor(overall);
   return (
@@ -176,7 +197,7 @@ function OverallPanel({
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
             const c = scoreColor(value);
-            const isLive = LIVE_COMPONENTS.has(component);
+            const isLive = isComponentLive(component, modelVersion);
             return (
               <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -344,12 +365,12 @@ export default function FitScorePage() {
     enabled: !!playerId && schoolId !== null,
   });
 
-  // Context-neutral — independent of schoolId, unlike everything else on this
-  // page. 404 (no projection row yet) is expected, not retried.
+  // Destination-adjusted — school-specific, unlike PlayerProfilePage's neutral
+  // call. 404 (no destination row yet for this pair) is expected, not retried.
   const playerProjectionQuery = useQuery({
-    queryKey: ['playerProjection', playerId],
-    queryFn: () => getPlayerProjection(playerId),
-    enabled: !!playerId,
+    queryKey: ['playerProjection', playerId, schoolId],
+    queryFn: () => getPlayerProjection(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
     retry: false,
   });
 
@@ -396,6 +417,13 @@ export default function FitScorePage() {
   if (playerProjectionQuery.data) {
     fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
   }
+
+  // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
+  // changes — this average is just how this page's headline is presented.
+  const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
+  const schemeDisplay = hasPlayType
+    ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
+    : fit.scheme_fit;
 
   return (
     <Box maxWidth={720}>
@@ -456,22 +484,69 @@ export default function FitScorePage() {
         scheme={fit.scheme_fit}
         role={fit.role_fit}
         program={fit.program_fit}
+        modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown */}
+      {/* Scheme Fit breakdown — headline is display-only average of Shot Distribution
+          + Play Type match when both exist; fit.scheme_fit itself (used by Overall
+          Fit/ranking elsewhere) is untouched, always just the shot-distribution cosine. */}
       <SectionPaper>
-        <ScoreHeader label="Scheme Fit" score={fit.scheme_fit} weight="30%" component="scheme_fit" />
+        <ScoreHeader
+          label="Scheme Fit"
+          score={schemeDisplay}
+          weight="30%"
+          component="scheme_fit"
+          headlineNote={
+            hasPlayType
+              ? 'Average of Shot Distribution Match and Play Type Match below.'
+              : 'Shot Distribution Match only — no Play Type data available for this pair.'
+          }
+        />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
+
         <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} metricKey="pace_match" />
-        <SubBar label="Usage Match" value={fit.breakdown.scheme.usage_match} metricKey="usage_match" />
+
+        <Divider sx={{ my: 2 }} />
+
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+          Shot Distribution Match — {fmtScore(fit.scheme_fit)}/100
+        </Typography>
+        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
         <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} metricKey="rim_attack_match" />
-        <SubBar label="Ball Movement" value={fit.breakdown.scheme.ball_movement_match} metricKey="ball_movement_match" />
+        <SubBar label="Mid-Range Match" value={fit.breakdown.scheme.mid_range_match} metricKey="mid_range_match" />
+
+        <Divider sx={{ my: 2 }} />
+
+        {hasPlayType ? (
+          <>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+              Play Type Match — {fmtScore(fit.breakdown.scheme.he_scheme_fit!)}/100
+            </Typography>
+            {Object.entries(fit.breakdown.scheme.he_breakdown ?? {}).map(([feat, value]) => (
+              <SubBar
+                key={feat}
+                label={HE_PLAY_TYPES[feat]?.label ?? feat}
+                value={value}
+                description={HE_PLAY_TYPES[feat]?.short}
+              />
+            ))}
+          </>
+        ) : (
+          <Alert severity="info">
+            No play-type data available for this pair — {PLAY_TYPE_MATCH.short}
+          </Alert>
+        )}
       </SectionPaper>
 
       {/* Role Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Role Fit" score={fit.role_fit} weight="25%" component="role_fit" />
+        <ScoreHeader
+          label="Role Fit"
+          score={fit.role_fit}
+          weight="25%"
+          component="role_fit"
+          modelVersion={fit.model_version}
+        />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2 }}>
           <Box>
@@ -572,24 +647,21 @@ export default function FitScorePage() {
         )}
       </SectionPaper>
 
-      {/* Program Fit breakdown */}
+      {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
         <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="NIL Score" value={fit.breakdown.program_fit.nil_score} metricKey="nil_score" />
-        <SubBar label="Geographic Fit" value={fit.breakdown.program_fit.geographic_score} metricKey="geographic_score" />
-        <SubBar label="Academic Fit" value={fit.breakdown.program_fit.academic_score} metricKey="academic_score" />
-        <SubBar label="Cultural Fit" value={fit.breakdown.program_fit.cultural_score} metricKey="cultural_score" />
-        <SubBar label="NIL Budget Alignment" value={fit.breakdown.program_fit.nil_budget_alignment} metricKey="nil_budget_alignment" />
+        <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>
 
-      {/* Player Projection — context-neutral, not part of the 4-component score above */}
+      {/* Player Projection — adjusted for this program, not part of the 4-component score above */}
       {playerProjectionQuery.data && (
         <Box sx={{ mb: 3 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            The projection below is <strong>context-neutral</strong> — this player's intrinsic
-            talent/value, independent of this school's scheme or roster. It is not one of the
-            4 fit components above.
+            The projection below is <strong>adjusted for fit at this program</strong> — this
+            player's projected talent/value here specifically, incorporating role, usage, and
+            roster context. It is a separate signal from the 4 fit components above, not folded
+            into Overall Fit.
           </Alert>
           <ProjectionCard projection={playerProjectionQuery.data} />
         </Box>

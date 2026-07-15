@@ -218,9 +218,12 @@ export interface RosterGapResponse {
 export interface SchemeBreakdown {
   three_point_match: number;
   pace_match: number;
-  usage_match: number;
   rim_attack_match: number;
-  ball_movement_match: number;
+  mid_range_match: number;
+  // Play-type match (HoopExplorer 6-dim cosine) — only present when both
+  // player and team have HE coverage.
+  he_scheme_fit?: number | null;
+  he_breakdown?: Record<string, number> | null;
 }
 
 export interface RoleFitBreakdown {

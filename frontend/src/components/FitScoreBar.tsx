@@ -1,5 +1,5 @@
 import { Box, Chip, LinearProgress, Tooltip, Typography } from '@mui/material';
-import { DATA_STATUS, FIT_COMPONENTS } from '../constants/definitions';
+import { DATA_STATUS, FIT_COMPONENTS, ROLE_FIT_LIVE_MODEL_VERSION } from '../constants/definitions';
 import DefinitionTooltip from './DefinitionTooltip';
 
 const LABEL_MAP: Record<string, string> = {
@@ -16,13 +16,23 @@ export function scoreColor(v: number): 'success' | 'warning' | 'error' {
   return 'error';
 }
 
-// Components backed by a real model (M3 scheme-cos-v2, gap-cos-v1). Everything
-// else (role_fit, program_fit) is a 50.0 stub with a seeded-random breakdown
-// until Model 4 and the Program Fit calculator are built.
+// Components backed by a real model (M3 scheme-cos-v2, gap-cos-v1) for every
+// row. program_fit is always a 50.0 stub until the Program Fit calculator is
+// built. role_fit is NOT in this set — unlike the others, its liveness is
+// per-row (see isComponentLive below), not a fixed property of the component.
 export const LIVE_COMPONENTS = new Set(['scheme_fit', 'gap_match', 'team_impact_fit']);
 
-export function DataStatusChip({ component }: { component: string }) {
-  const isLive = LIVE_COMPONENTS.has(component);
+// role_fit is real only on rows run_playing_time.py has actually synced
+// (model_version === ROLE_FIT_LIVE_MODEL_VERSION); everywhere else it's still
+// the 50.0 stub baked in by gap_matching.py. Every other component's liveness
+// is a fixed property, so it falls back to the static LIVE_COMPONENTS check.
+export function isComponentLive(component: string, modelVersion?: string): boolean {
+  if (component === 'role_fit') return modelVersion === ROLE_FIT_LIVE_MODEL_VERSION;
+  return LIVE_COMPONENTS.has(component);
+}
+
+export function DataStatusChip({ component, modelVersion }: { component: string; modelVersion?: string }) {
+  const isLive = isComponentLive(component, modelVersion);
   return (
     <Tooltip
       title={isLive ? DATA_STATUS.live.short : DATA_STATUS.placeholder.short}
