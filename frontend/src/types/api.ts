@@ -414,6 +414,7 @@ export interface RecommendationItem {
   overall_fit: number;
   components: FitComponents;
   reasoning: string;
+  is_portal_candidate: boolean;
 }
 
 export interface RecommendationsResponse {

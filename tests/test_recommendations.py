@@ -44,8 +44,16 @@ def test_sorted_by_overall_fit_descending(client, H, user_id):
 
 def test_item_schema(client, H, user_id):
     item = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"][0]
-    for field in ("player_id", "player_name", "position", "overall_fit", "components", "reasoning"):
+    for field in ("player_id", "player_name", "position", "overall_fit", "components", "reasoning", "is_portal_candidate"):
         assert field in item
+
+
+def test_is_portal_candidate_always_true(client, H, user_id):
+    # CANDIDATE_SQL already filters WHERE ptf.is_portal_candidate = true, so
+    # every returned item should carry that through as true.
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    for item in items:
+        assert item["is_portal_candidate"] is True
 
 
 def test_component_scores_in_range(client, H, user_id):

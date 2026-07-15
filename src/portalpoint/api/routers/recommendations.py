@@ -123,6 +123,7 @@ async def get_recommendations(
                 team_impact_fit=row["team_impact_fit"],
             ),
             reasoning=_build_reasoning(row),
+            is_portal_candidate=bool(row["is_portal_candidate"]),
         )
         for _, row in top10.iterrows()
     ]

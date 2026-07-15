@@ -54,6 +54,7 @@ SELECT
     ptf.gap_match,
     ptf.role_fit,
     ptf.overall_fit,
+    ptf.is_portal_candidate,
     trp.delta_adj_em
     -- future — uncomment when Model 5 (predictions) is ready:
     -- , pr.predicted_per_change  AS player_projection
