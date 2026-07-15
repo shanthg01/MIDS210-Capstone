@@ -2096,26 +2096,47 @@ def build_cross_season_records(
     computed_at = datetime.now(timezone.utc)
     expires_at = computed_at + timedelta(days=EXPIRES_DAYS)
 
+    # player_id is a 63-bit BigInteger (hash(barttorvik_id)) -- DataFrame.iterrows()
+    # upcasts a whole row to a single dtype, and a *purely numeric* frame (player_id/
+    # season plus only float columns, no string/object column to force `object` dtype)
+    # upcasts to float64, silently losing precision on ids >= 2^53 (~9e15) -- ~99.9%
+    # of real ids, since they're ~uniform over 63 bits. Confirmed real (2026-07-15):
+    # this was the root cause of near-empty projected_box_score for every
+    # player-proj-phase2a-fcast-v1 row in every season, including live production --
+    # projected_rates_df (player_id/season + only float rate_ columns) hit this on
+    # every row; projected_df/archetypes_df happened to survive by accident (each
+    # carries a string column -- position, archetype_label -- that forces the row to
+    # `object` dtype instead, which preserves the original Python int exactly). Fixed
+    # everywhere here by reading player_id/season from the typed columns directly
+    # instead of trusting whatever dtype iterrows() lands the row on.
     rates_lookup: dict[tuple[int, int], dict] = {}
     if projected_rates_df is not None:
         rate_cols = [c for c in projected_rates_df.columns if c not in ("player_id", "season")]
-        for _, rr in projected_rates_df.iterrows():
-            rates_lookup[(int(rr["player_id"]), int(rr["season"]))] = {
+        rp_ids = projected_rates_df["player_id"].to_numpy(dtype=np.int64)
+        rp_seasons = projected_rates_df["season"].to_numpy(dtype=np.int64)
+        for i, (_, rr) in enumerate(projected_rates_df.iterrows()):
+            rates_lookup[(int(rp_ids[i]), int(rp_seasons[i]))] = {
                 c: round(float(rr[c]), 3) for c in rate_cols
             }
 
     archetype_lookup: dict[tuple[int, int], dict] = {}
     if archetypes_df is not None:
-        for _, ar in archetypes_df.iterrows():
+        ar_ids = archetypes_df["player_id"].to_numpy(dtype=np.int64)
+        ar_seasons = archetypes_df["season"].to_numpy(dtype=np.int64)
+        for i, (_, ar) in enumerate(archetypes_df.iterrows()):
             if pd.isna(ar.get("archetype_label")):
                 continue
-            archetype_lookup[(int(ar["player_id"]), int(ar["season"]))] = {
+            archetype_lookup[(int(ar_ids[i]), int(ar_seasons[i]))] = {
                 "archetype_label": ar["archetype_label"],
                 "archetype_confidence": float(ar["confidence"]) if pd.notna(ar.get("confidence")) else None,
             }
 
     records: list[tuple] = []
-    for _, r in projected_df.iterrows():
+    pd_ids = projected_df["player_id"].to_numpy(dtype=np.int64)
+    pd_seasons = projected_df["season"].to_numpy(dtype=np.int64)
+    for i, (_, r) in enumerate(projected_df.iterrows()):
+        pid = int(pd_ids[i])
+        season = int(pd_seasons[i])
         skill_states = {
             s: round(float(-r[f"skill_{s}"] if s in INVERTED_SKILLS else r[f"skill_{s}"]), 4)
             for s in SKILLS
@@ -2139,12 +2160,12 @@ def build_cross_season_records(
                 s: "higher_is_better" if s not in INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
                 for s in SKILLS
             },
-            **archetype_lookup.get((int(r["player_id"]), int(r["season"])), {}),
+            **archetype_lookup.get((pid, season), {}),
         }
         if "source_observed_season" in r.index and pd.notna(r["source_observed_season"]):
             explanation["source_observed_season"] = int(r["source_observed_season"])
-            explanation["target_projected_season"] = int(r["season"])
-            explanation["forecast_horizon_seasons"] = int(r["season"] - r["source_observed_season"])
+            explanation["target_projected_season"] = season
+            explanation["forecast_horizon_seasons"] = season - int(r["source_observed_season"])
         source_value_fields = [
             "source_value_per_100", "source_off_value_per_100", "source_def_value_per_100",
         ]
@@ -2163,7 +2184,7 @@ def build_cross_season_records(
             }
             explanation["value_drivers"] = r["_value_drivers"]
 
-        rates = rates_lookup.get((int(r["player_id"]), int(r["season"])), {})
+        rates = rates_lookup.get((pid, season), {})
         box_score: dict = {}
         if rates:
             ft_makes_per_40 = rates.get("rate_ft_trip", 0.0) * float(r.get("skill_free_throw_touch", 0.0))
@@ -2179,7 +2200,7 @@ def build_cross_season_records(
             }
 
         records.append((
-            int(r["player_id"]), None, int(r["season"]), "neutral",
+            pid, None, season, "neutral",
             round(float(r["value_per_100"]), 3),
             round(float(r["value_ci_lower"]), 3),
             round(float(r["value_ci_upper"]), 3),

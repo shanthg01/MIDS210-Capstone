@@ -312,8 +312,15 @@ def enrich_with_cohorts(engine: Engine, population_df: pd.DataFrame) -> pd.DataF
         df = df.merge(source_tiers, on=["source_school_id", "source_season"], how="left")
         df = df.merge(dest_tiers, on=["dest_school_id", "dest_season"], how="left")
         tier_delta = df["source_tier"].astype("Float64") - df["dest_tier"].astype("Float64")
+        # np.select requires plain bool ndarrays — a nullable Float64 comparison yields a
+        # pandas BooleanArray (with pd.NA for missing tiers), which np.select rejects outright.
+        # NA rows correctly fall through to every condition being False -> default=None.
         df["tier_direction"] = np.select(
-            [tier_delta > 0, tier_delta < 0, tier_delta == 0],
+            [
+                (tier_delta > 0).to_numpy(dtype=bool, na_value=False),
+                (tier_delta < 0).to_numpy(dtype=bool, na_value=False),
+                (tier_delta == 0).to_numpy(dtype=bool, na_value=False),
+            ],
             ["up", "down", "same"],
             default=None,
         )
