@@ -142,6 +142,11 @@ export const VALUE_PER_100: Definition = {
   short: "This player's context-neutral talent value, independent of any specific program's scheme or roster — not one of the 4 fit components.",
 };
 
+export const DESTINATION_VALUE_PER_100: Definition = {
+  label: 'Value per 100 possessions',
+  short: "This player's talent value adjusted for expected role, style/skill fit, roster context, and competition tier at this specific program — not the same as their context-neutral value, and not one of the 4 fit components.",
+};
+
 export const CONFIDENCE_INTERVAL: Definition = {
   label: 'Confidence Interval',
   short: 'The range this estimate is expected to fall within, given modeling uncertainty.',

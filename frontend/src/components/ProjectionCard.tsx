@@ -13,7 +13,7 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PlayerProjectionResponse } from '../types/api';
 import { scoreColor } from './FitScoreBar';
-import { BOX_SCORE, SKILLS, VALUE_PER_100 } from '../constants/definitions';
+import { BOX_SCORE, SKILLS, VALUE_PER_100, DESTINATION_VALUE_PER_100 } from '../constants/definitions';
 import DefinitionTooltip from './DefinitionTooltip';
 
 // Mirrors modeling/player_projection.py SKILLS (master 11-skill list) — kept in
@@ -99,7 +99,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
 
       {/* Headline value + CI — always visible, the "so what" of this card */}
       <Box sx={{ mb: 2.5 }}>
-        <DefinitionTooltip title={VALUE_PER_100.short} placement="bottom">
+        <DefinitionTooltip title={isDestination ? DESTINATION_VALUE_PER_100.short : VALUE_PER_100.short} placement="bottom">
           <Typography variant="caption" color="text.secondary">
             Value per 100 possessions
           </Typography>

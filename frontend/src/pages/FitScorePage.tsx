@@ -491,17 +491,20 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
-  const fitInsight = buildFitInsight(fit);
-  if (playerProjectionQuery.data) {
-    fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
-  }
-
   // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
   // changes — this average is just how this page's headline is presented.
   const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
   const schemeDisplay = hasPlayType
     ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
     : fit.scheme_fit;
+
+  // buildFitInsight's strongest/weakest narrative sits right next to the Overall
+  // panel, which already shows schemeDisplay for Scheme — pass the same blended
+  // value in so the two don't disagree on the page (overall_fit itself is untouched).
+  const fitInsight = buildFitInsight({ ...fit, scheme_fit: schemeDisplay });
+  if (playerProjectionQuery.data) {
+    fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
+  }
 
   return (
     <Box maxWidth={720}>

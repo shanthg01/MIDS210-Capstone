@@ -155,7 +155,7 @@ export default function RosterImpactPage() {
           size="small"
           placeholder="e.g. 0.5"
           sx={{ width: 130 }}
-          inputProps={{ inputMode: 'decimal' }}
+          slotProps={{ htmlInput: { inputMode: 'decimal' } }}
         />
         {(posFilter !== 'All' || minDelta !== '') && (
           <Button
