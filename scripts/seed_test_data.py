@@ -23,11 +23,18 @@ test_update_school_succeeds_and_restores has a second real school to swap to
 without depending on locally-ingested data either.
 
 Players 4-8 exist solely so GET /api/recommendations (recommendations.py,
-which now pulls its 10 stub-score "recommendations" from real Player rows
-ORDER BY id LIMIT 10, not fabricated ids — see PR comment history) has 10
-real players to draw from in CI; locally this was always masked by ~13k
-real ingested players, so the test only failed in CI (real regression,
-2026-06-26, found right after the school_id one above).
+which pulls its candidate pool from player_team_fit_scores, not fabricated
+ids) has 10 real players to draw from in CI; locally this was always masked
+by ~13k real ingested players, so the test only failed in CI (real
+regression, 2026-06-26, found right after the school_id one above).
+
+The player_team_fit_scores rows below (players 1,2,3,4,5,6,7,8,42,101 at
+school_id=9900301, season=2026, is_portal_candidate=true) give the real
+2-stage recommendation engine (modeling/recommendations.py) a candidate pool
+to rank — without them the engine's CANDIDATE_SQL returns zero rows and
+GET /api/recommendations legitimately returns an empty list. Season 2026
+matches the team_rating_projections row already seeded below for
+(101, 9900301, 2026, ...) and player_season_stats' season.
 
 Usage:
   uv run python scripts/seed_test_data.py
@@ -186,6 +193,22 @@ ON CONFLICT ON CONSTRAINT uq_team_rating_projection DO UPDATE SET
     minutes_distribution = EXCLUDED.minutes_distribution,
     expires_at = EXCLUDED.expires_at,
     computed_at = now();
+
+INSERT INTO player_team_fit_scores
+    (player_id, school_id, season, overall_fit, gap_match, scheme_fit, role_fit, program_fit,
+     weight_gap, weight_scheme, weight_role, weight_program, is_portal_candidate, model_version, computed_at, expires_at)
+VALUES
+    (1,   9900301, 2026, 88.0, 85.0, 90.0, 88.0, 82.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (2,   9900301, 2026, 84.5, 88.0, 82.0, 80.0, 78.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (3,   9900301, 2026, 81.0, 75.0, 85.0, 79.0, 80.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (4,   9900301, 2026, 78.5, 80.0, 74.0, 76.0, 77.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (5,   9900301, 2026, 76.0, 70.0, 78.0, 74.0, 75.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (6,   9900301, 2026, 73.5, 72.0, 68.0, 77.0, 73.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (7,   9900301, 2026, 71.0, 65.0, 74.0, 70.0, 71.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (8,   9900301, 2026, 68.5, 66.0, 70.0, 66.0, 69.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (42,  9900301, 2026, 65.0, 60.0, 68.0, 64.0, 66.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days'),
+    (101, 9900301, 2026, 62.5, 58.0, 65.0, 61.0, 63.0, 0.30, 0.25, 0.25, 0.20, true, 'seed-test-v1', now(), now() + interval '7 days')
+ON CONFLICT (player_id, school_id, season) DO NOTHING;
 
 INSERT INTO users (email, hashed_password, full_name, school_id, is_active, is_verified)
 VALUES (:test_email, :test_password_hash, :test_name, 9900301, true, false)

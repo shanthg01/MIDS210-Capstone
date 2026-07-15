@@ -55,7 +55,7 @@ def test_default_weights_sum_to_one(client, H):
 
 def test_scheme_breakdown_fields_in_range(client, H):
     scheme = client.get(f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H).json()["breakdown"]["scheme"]
-    for field in ("three_point_match", "pace_match", "usage_match", "rim_attack_match", "ball_movement_match"):
+    for field in ("three_point_match", "pace_match", "rim_attack_match", "mid_range_match"):
         assert 0 <= scheme[field] <= 100, f"scheme.{field} out of range"
 
 

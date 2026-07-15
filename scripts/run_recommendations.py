@@ -56,7 +56,9 @@ from portalpoint.modeling.db_writers import upsert_with_season_replace
 from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import maybe_promote, setup_mlflow
 from portalpoint.modeling.recommendations import (
+    CANDIDATE_SQL,
     DEFAULT_FIT_WEIGHTS,
+    MODEL_VERSION,
     TEAM_IMPACT_FIT_NEUTRAL,
     fixed_team_impact_preferences,
     generate_top_50_candidates,
@@ -72,7 +74,6 @@ if hasattr(sys.stderr, "reconfigure"):
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-MODEL_VERSION = "rec-v1.2"
 EXPIRES_DAYS = 7
 
 # ── SQL: users + their saved weights ────────────────────────────────────────
@@ -89,51 +90,6 @@ FROM users u
 LEFT JOIN user_preferences up ON up.user_id = u.id
 WHERE u.school_id = :school_id
   AND u.is_active  = true
-"""
-
-# ── SQL: candidate pool ───────────────────────────────────────────────────────
-# Availability filtering (is_portal_candidate) is handled here in SQL; ranking
-# is Stage 1's job now (generate_top_50_candidates(), in Python — see module
-# docstring).
-#
-# Season semantics (verified against the live DB 2026-07-11, corrects the
-# original plan's assumption): player_team_fit_scores.season now carries real
-# scheme_fit/gap_match/role_fit together at season=2027 (role_fit's
-# sync_role_fit_scores() upserted directly into the same season Scheme
-# Fit/Gap Matching already cover, it didn't create a separate "observed"
-# season) — MAX(player_team_fit_scores.season) is 2027, not 2026. That's the
-# same season team_rating_projections already uses. The join below matches
-# season directly; a `ptf.season + 1` offset (destination_projection.py's
-# convention, for a *different* pair of tables) returns zero rows here.
-
-CANDIDATE_SQL = """
-SELECT
-    ptf.player_id,
-    ptf.school_id,
-    p.full_name     AS player_name,
-    p.position,
-    ptf.scheme_fit,
-    ptf.gap_match,
-    ptf.role_fit,
-    ptf.overall_fit,
-    trp.delta_adj_em
-    -- future — uncomment when Model 5 (predictions) is ready:
-    -- , pr.predicted_per_change  AS player_projection
-    -- , pr.confidence            AS data_confidence
-FROM player_team_fit_scores ptf
-JOIN players p
-    ON p.id = ptf.player_id
-LEFT JOIN team_rating_projections trp
-    ON trp.player_id  = ptf.player_id
-   AND trp.school_id  = ptf.school_id
-   AND trp.season     = ptf.season
-   AND trp.expires_at > now()
--- future — uncomment when Model 5 ready:
--- LEFT JOIN predictions pr
---     ON pr.player_id = ptf.player_id AND pr.school_id = ptf.school_id
-WHERE ptf.school_id          = :school_id
-  AND ptf.season             = :season
-  AND ptf.is_portal_candidate = true
 """
 
 # ── SQL: role_fit freshness check ────────────────────────────────────────────

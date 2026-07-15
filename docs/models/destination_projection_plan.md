@@ -659,7 +659,7 @@ In priority order (see CLAUDE.md Process Improvement TODO #10 for full detail):
 (a) Completed P0: per-game box-score translation now uses `projected_box_score` per-40 fields with `expected_minutes / 40`; remaining follow-up is only to add coverage if a future `projected_rates` per-100 translation path is introduced.
 (b) Inspect Playing Time usage-budget compression for destination one-player counterfactuals — keep raw vs. constrained usage in the adapter, and avoid treating every portal candidate as if they all join the roster simultaneously.
 (c) Add named-player projection sanity checks — start with Dunkley-like double-digit low/mid-major scorers, high-rebound bigs, and high-assist guards; compare source per-40, neutral per-40, destination minutes, usage, and displayed per-game box output.
-(d) Fit style/skill delta empirically — biggest R² gain potential; currently 6 hardcoded rules.
+(d) ~~Fit style/skill delta empirically~~ — **attempted 2026-07-14, gated off real data**: infrastructure built (`fit_style_skill_weights`), but the real fit showed no genuine signal (R²=-0.0228, one coefficient sign-flipped) — see the 2026-07-14 finding below. Not closed; revisit only if the underlying feature set changes (e.g. the roster_state_features player_id fix, or resolving the upstream double-counting with the Playing Time model noted in the same finding) — refitting on the same features would just rediscover the same result.
 (e) Fix `estimate_usage_value_coef` zero-overlap bug — OLS coefficient always falls back to 1.5.
 (f) Position-specific competition tier effects — extend 4×4 matrix to 4×4×5 (tier×tier×position).
 (g) Re-run roster context with real incoming/outgoing minutes (done for this run).
@@ -668,3 +668,54 @@ In priority order (see CLAUDE.md Process Improvement TODO #10 for full detail):
 (j) Position-specific Ridge model — one per position or position dummies.
 (k) Serial transfer handling — multi-transfer players currently counted once per transfer event.
 (l) Use barttorvik stats as secondary RAPM label — expands training from ~14K HE rows to ~70K.
+
+### Finding (2026-07-14): `roster_state_features` is mostly unwired in `style_skill_fit_delta`, not by necessity
+
+Surfaced while scoping `docs/models/destination_projection_backtest_plan.md` (checking whether
+the 4-delta pipeline can be re-scored point-in-time for historical seasons). `roster_state_features`
+is joined into `build_destination_inference_frame` (destination_projection.py:1371, 6 columns:
+`returning_minutes_by_position`, `departing_minutes_by_position`,
+`incoming_transfer_minutes_by_position`, `open_minutes_by_position`, `returning_production`,
+`returning_player_impact`, `open_usage_by_position`), but only one of those seven columns —
+`open_usage_by_position` — is ever read downstream, feeding a single interaction term
+(`team_frontcourt_need`, `_add_style_interaction_features` line 1458-1464) inside
+`compute_style_skill_fit_delta`'s 6 rule-based interactions. The other 6 are dead weight in the
+frame.
+
+This isn't the deliberate "only bigs get a roster-based need signal" design it might look like —
+this doc's own §5.2 table specifies two more roster-based interactions that were never wired that
+way: `passing_creation` was meant to pair with "open ball-handler minutes (few returning primary
+creators)" and `shot_creation_usage` with "crowded creation (strong returning guards)" — both
+worded as roster-composition signals, i.e. a backcourt-need analog of `team_frontcourt_need`
+sourced from `returning_minutes_by_position`/`departing_minutes_by_position`. The actual code
+substitutes `expected_usage`-derived proxies instead (`open_usage_signal`, `team_usage_crowding`,
+both sourced from `playing_time_projections`, not `roster_state_features`) — plausibly a
+reasonable simplification (per-player expected usage may be a richer signal than a coarse
+team-level backcourt aggregate), but never reconciled against the original spec, leaving
+`team_frontcourt_need` as an asymmetric one-off instead of a completed pattern.
+
+Also relevant to roadmap item (d): if `passing_creation`/`shot_creation_usage`'s interaction terms
+get empirically fit rather than hardcoded, decide then whether to keep the usage-based proxies or
+switch to the originally-specified roster-composition signals — don't carry the asymmetry forward
+unexamined. Not fixed here — this is a finding, not a change; either delete the 6 dead columns'
+join or complete the backcourt-need interaction terms is a decision for whoever picks up (d).
+
+### Finding (2026-07-14): the `roster_state_features` bug above was a real player_id corruption, and the empirical fit for (d) was attempted, found no signal, and is now gated off
+
+Two follow-ups to the finding above, same day.
+
+**1. `roster_state_features` wasn't just under-wired — the player_id join feeding it was silently corrupted.** Root cause: `scripts/build_roster_state_features.py`'s `SNAPSHOT_PLAYERS_SQL` result went through `pd.DataFrame(cur.fetchall(), columns=cols)`; any snapshot with ≥1 unmatched "new" player (a true freshman, `player_id IS NULL` — true for 346/357 snapshots, i.e. almost every school) forces pandas to upcast the whole `player_id` column to `float64` (numpy has no native nullable-int type). `player_id` is a 63-bit `BigInteger` (`hash(barttorvik_id)`); `float64`'s 52-bit mantissa silently loses precision the instant this happens, so the later `pss.player_id = ANY(%s)` lookup against `player_season_stats` matched nothing for 346/357 schools. Confirmed: `returning_minutes_by_position` was 0 for every position at 346 schools (not because nobody returned — because the lookup silently failed), which also explained why `open_minutes_by_position` ≈ `departing_minutes_by_position` — both degenerate to ≈`prior_total` when `returning`/`current_matched_ids` are corrupted to non-matching floats, so *every* prior-roster player reads as departed. Concrete production impact: `team_frontcourt_need` for a sample school (id=1) was **79.3** (as if 0% of bigs returned) vs. a real value of **46.22** once fixed. Fixed via `roster_state_features.safe_bigint_series()` (nullable-`Int64` construction from raw cursor rows, before pandas can upcast) + rerun (`scripts/build_roster_state_features.py`) — all 357 rows corrected in production. Second, independent, smaller bug found in the same investigation: `player_season_stats.per` (meant to feed `returning_player_impact`) is **100% NULL across all 6 seasons** — `ingest_barttorvik.py` hardcodes it to `None`, no source field maps to it. Switched `IMPACT_COL` to `bpm` (real, populated). Regression tests: `tests/test_roster_state_features.py` (3 tests, including a test that proves the naive pandas upcast really does corrupt these values, so the fix can't silently regress into a no-op).
+
+**2. Roadmap item (d) (fit style/skill delta empirically) was attempted on the now-correct data, and rejected by a real held-out check — this is a genuine, useful negative result, not a failure to execute.** Built `fit_style_skill_weights()`: extends `_TRANSFER_TRAINING_SQL` with real historical team-style (`hoop_explorer_team_stats`) and roster-state (`roster_state_features`) joins at the destination school/season, fits a no-intercept Ridge on the residual of `value_delta` net of `competition_level_delta` and the already-fit `role_usage_delta` prediction (isolating the marginal variance actually attributable to style/skill interactions), for 5 of the 6 interaction terms. `def_reb_x_frontcourt_need` is deliberately excluded from the fit — checked real coverage first: `roster_state_features`-derived training features have real values in only 636/2425 rows, **100% concentrated in a single season** (2026) — a fit here would just be memorizing one season's noise, not a generalizable coefficient (the same live-only-snapshot constraint independently found while scoping `destination_projection_backtest_plan.md` §3, now confirmed to block this too).
+
+**Real result on the other 5 terms: no real signal.** Full historical panel (n=2,425): in-sample R²=-0.0228 (residual_std 2.9195→2.9125, a 0.24% reduction — negative R² means the fit is worse than predicting zero). Held-out (train seasons <2026, eval on 2026, n=655): RMSE with no style adjustment 3.1792 → 3.1692 with fitted weights (0.31% better) vs. 3.1786 with the hardcoded weights (0.02% better) — technically better, but nowhere near this repo's own 5% auto-promote bar used everywhere else (Phase 2a, this same model's own Δ=+2.5%-stays-in-Staging call). Worse: `shot_creation_x_usage_crowding` fitted to **+0.7595** vs. the hardcoded **-0.10** — a sign flip that contradicts the stated basketball logic ("crowded = suppressed creation value"), consistent with overfitting on collinear features (`usage_crowding` and `open_usage_signal` are both derived from the same `dest_usage_rate` that also drives `role_usage_delta`'s own primary feature).
+
+**Decision: don't ship the fitted weights.** Added `MIN_STYLE_SKILL_IMPROVEMENT` (2%) as a real gate inside `fit_style_skill_weights` itself — same discipline as `mlflow_helpers.maybe_promote`, applied to a delta component instead of a full model. Confirmed on real data: the gate correctly rejects this fit (`improvement_frac=0.0024`) and `run_destination_projection` keeps the hardcoded `STYLE_SKILL_INTERACTION_WEIGHTS` in production automatically — no manual intervention needed, and no future rerun can silently ship an unvalidated fit either. `compute_style_skill_fit_delta` now takes an optional `weights` param (defaults to the hardcoded dict) so the gate's fallback and the hardcoded default are the same code path. 6 new tests in `tests/test_destination_projection.py` (92 total, all green), including a regression test built directly from this real finding (rejects a pure-noise fit rather than shipping it).
+
+**Net conclusion on (d):** the hardcoded weights aren't provably wrong — there currently isn't a real, robust empirical alternative to replace them with, given the available features. The infrastructure to re-attempt this (real training joins, residual-netting, the gate) is now in place; revisiting only makes sense if the underlying feature set changes materially (e.g. a `roster_state_features` historical archive existing, or resolving the double-counting against the Playing Time model's own use of the same roster features — see the "already fitted upstream" concern raised the same day and left as a separate open question, not resolved by this fit).
+
+**3. Re-validated via existing CV/cohort infra, and ran the `team_frontcourt_need` ablation the "already fitted upstream" concern called for — real evidence found, question not fully closed.** `run_rolling_origin_cv`/`compute_cohort_validation` re-run against the (unchanged, gate-rejected) production pipeline match the pre-session P0-P3 baseline almost exactly (fold RMSEs 2.72/2.90/2.84/3.12 vs. the documented 2.70/2.91/2.84/3.12) — confirms this session's SQL/fit-infrastructure changes are provably inert on real production output, as expected since the gate keeps the hardcoded weights.
+
+Ablation (restricted to the 636 rows with real `roster_state_features` coverage — the single season, 2026, this term can ever be tested on; 70/30 held-out split): a 5-term model (the same trainable set, excluding `team_frontcourt_need`) got RMSE=3.1904; adding `team_frontcourt_need` as a 6th term dropped it to RMSE=3.1568 (**1.05% better**), with a fitted coefficient of **+0.59** — same sign as the hardcoded +0.07, larger magnitude. Since this test uses real historical `dest_usage_rate` (not the Playing Time model's predicted `expected_usage`), it shows `team_frontcourt_need` carries real marginal signal beyond the 5 usage/style terms *in training* — evidence against the redundancy worry, not for it.
+
+This doesn't fully close the original concern, which was specifically about *inference time*: whether the Playing Time GBT model's `expected_usage` output (fit using `open_usage_by_position` among its own features) already encodes this signal by the time `style_skill_fit_delta` reuses it raw. Testing that directly would need a real historical `expected_usage` prediction to compare against (i.e. a `playing_time_projections` backfill for a past season) — real added cost, not done here. **Decision: keep `team_frontcourt_need` as-is** — the available evidence supports keeping it, not removing it, even though the sample (n=636, one season, no cross-season validation possible) is thinner than every other term in this delta.

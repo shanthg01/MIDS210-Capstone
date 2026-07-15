@@ -6,6 +6,8 @@
 **Date:** 2026-07-11
 **Status:** ✅ Implemented and run for real against the live DB. `rec-v1.2`, `tests/test_recommendation_engine.py` extended to 46 tests (pure-unit, no DB; targeted suite green), with the original 236-test pure-unit suite green before the review follow-up. Real run: school_id=301 (Lehigh), season=2027, 8 active users, 80 rows written to `recommendations`. MLflow `recommendation-engine` v1 registered, `@champion` alias set (first production run, no prior baseline to gate against).
 
+**2026-07-15 update — `/api/recommendations` router wired to this engine.** §5's "explicitly out of scope" item below is done — see §8. The router does **not** read the `recommendations` table this plan's batch script writes; it computes live per request instead, since no scheduler exists to keep that table fresh (checked `.github/workflows/`, `docker-compose.yml`, both confirmed empty of a cron trigger). `CANDIDATE_SQL`/`MODEL_VERSION` moved from `scripts/run_recommendations.py` into `modeling/recommendations.py` as part of this — `scripts/` has no `__init__.py` and isn't in `pyproject.toml`'s `packages = ["src/portalpoint"]`, so the API can't import from it in a real deployment.
+
 **One more real bug found and fixed during the live run (not in the original plan):** `maybe_promote()` was called with `artifact_path=""` and no model had ever been logged to the run — `register_model` failed with `Unable to find a logged_model with artifact_path None`. This script had apparently never completed a real (non-dry-run) run before; the failure mode was always latent, just never exercised. Fixed the same way `destination_projection.py` already had to (`DestProjectionPyfunc` precedent) — added a trivial `RecEnginePyfunc` marker model (the engine is a weighted-sum formula, not a serializable sklearn model) and log it via `mlflow.pyfunc.log_model(artifact_path="rec_engine_model", ...)` before calling `maybe_promote(..., "rec_engine_model", ...)`.
 
 **Season-semantics correction found during the live run (see §2):** the original draft assumed `team_rating_projections.season = player_team_fit_scores.season + 1`. Verified against the live DB and that was wrong — `sync_role_fit_scores()` had already upserted real `role_fit` directly into the same `season=2027` rows Scheme Fit/Gap Matching cover there, so `player_team_fit_scores`'s current season is 2027, matching `team_rating_projections` directly. Confirmed empirically before shipping: `trp.season = ptf.season` → 449,315 joined rows; `trp.season = ptf.season + 1` → 0.
@@ -227,10 +229,11 @@ repo's convention of version-bumping on formula changes (`scheme-cos-v3`,
   could feed the existing `_RISK_CONFIG` confidence-penalty mechanism (already
   built for a future `data_confidence` column) — worth doing, but a separate
   follow-up, not required to get a real signal wired in.
-- **`/api/recommendations` router wiring.** The router is still a hardcoded
-  stub list (`_STUB_SCORES` in `src/portalpoint/api/routers/recommendations.py`)
-  regardless of this change — reading real `recommendations` rows is a
-  separate, already-tracked gap (see `docs/status/MODEL_STATUS.md` M7 row).
+- **`/api/recommendations` router wiring.** Was out of scope for this plan (§1-7)
+  — the router was still a hardcoded stub list (`_STUB_SCORES` in
+  `src/portalpoint/api/routers/recommendations.py`) regardless of the engine
+  changes above. **Done 2026-07-15, see §8** — it computes live per request
+  rather than reading the `recommendations` table.
 
 ---
 
@@ -276,3 +279,37 @@ tests repo-wide:
   remaining 3 columns) when the column is absent entirely.
 - Fixed 2 pre-existing stale assertions in the file that hardcoded the old
   3-component `DEFAULT_FIT_WEIGHTS` values/ranking.
+
+---
+
+## 8. API Wiring (2026-07-15) — `/api/recommendations` computes live, doesn't read the batch table
+
+**Why not just read the `recommendations` table this plan's script writes?** No scheduler runs
+`scripts/run_recommendations.py` (checked `.github/workflows/`, `docker-compose.yml` — neither
+has a cron trigger), and rows expire after `EXPIRES_DAYS=7`. Reading that table would leave the
+endpoint serving stale-or-empty data indefinitely unless a human remembers to re-run the script.
+Computing live per request always reflects current `player_team_fit_scores`/`team_rating_projections`.
+
+**Changes:**
+- `CANDIDATE_SQL` and `MODEL_VERSION` moved from `scripts/run_recommendations.py` into
+  `modeling/recommendations.py` (the script now imports them back) — `scripts/` has no
+  `__init__.py` and isn't in `pyproject.toml`'s `packages = ["src/portalpoint"]`, so importing
+  from it inside the API would crash in a real deployment.
+- Router resolves the caller's `school_id` + saved `weight_scheme`/`weight_gap`/`weight_role`
+  (single-user variant of this plan's `USERS_SQL`, same `COALESCE` defaults), builds the pool via
+  `CANDIDATE_SQL`, runs `team_impact_fit()` → `generate_top_50_candidates()` → `refine_to_top_10()`
+  in-process, and maps the result into `RecommendationItem`s with a deterministic tiered-verdict
+  `reasoning` string (no LLM, no randomness).
+- Added an ownership check (`user_id` query param must match the authenticated caller) — the
+  stub never had one.
+- Empty candidate pool (no `is_portal_candidate` rows for that school/season) returns a
+  legitimate empty list (`total=0`), not fake filler — matches this whole effort's "honest empty
+  state beats fabricated data" principle.
+- **Schema change:** `FitComponents.program_fit` → `team_impact_fit` in `RecommendationItem`'s
+  response only (`FitScoreResponse` for `/fit/:player_id` is untouched, keeps `program_fit`) —
+  the engine has no program_fit signal, per this plan's own §1/§5.
+- `scripts/seed_test_data.py` gained `player_team_fit_scores` rows for the test school;
+  `tests/test_recommendations.py` now uses the real `user_id` fixture (was hardcoded `1001`) and
+  pins `season` explicitly in every request rather than relying on `get_current_season()`'s
+  global `MAX(season)` — the same season-semantics fragility this plan's §2 already documents,
+  now also a real test-isolation risk in a shared dev DB with real ingested data at a later season.
