@@ -1,6 +1,20 @@
-import { Box, Chip, LinearProgress, Paper, Tooltip, Typography, Divider } from '@mui/material';
+import {
+  Box,
+  Chip,
+  LinearProgress,
+  Paper,
+  Tooltip,
+  Typography,
+  Divider,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+} from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PlayerProjectionResponse } from '../types/api';
 import { scoreColor } from './FitScoreBar';
+import { BOX_SCORE, SKILLS, VALUE_PER_100 } from '../constants/definitions';
+import DefinitionTooltip from './DefinitionTooltip';
 
 // Mirrors modeling/player_projection.py SKILLS (master 11-skill list) — kept in
 // sync manually, same convention as SettingsPage's ARCHETYPES/FitScoreBar's LABEL_MAP.
@@ -63,11 +77,13 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
 
       <Divider sx={{ mb: 2 }} />
 
-      {/* Headline value + CI */}
+      {/* Headline value + CI — always visible, the "so what" of this card */}
       <Box sx={{ mb: 2.5 }}>
-        <Typography variant="caption" color="text.secondary">
-          Value per 100 possessions
-        </Typography>
+        <DefinitionTooltip title={VALUE_PER_100.short} placement="bottom">
+          <Typography variant="caption" color="text.secondary">
+            Value per 100 possessions
+          </Typography>
+        </DefinitionTooltip>
         <Typography variant="h4" fontWeight={800}>
           {value_per_100 >= 0 ? '+' : ''}{fmt(value_per_100)}
         </Typography>
@@ -80,7 +96,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
 
       {/* Projected box score */}
       {projected_box_score && (
-        <Box sx={{ mb: 2.5 }}>
+        <Box sx={{ mb: 2.5, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
           <Typography variant="subtitle2" color="text.secondary" gutterBottom>
             Projected Box Score
           </Typography>
@@ -91,9 +107,11 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
                   <Typography variant="body1" fontWeight={700}>
                     {fmt(projected_box_score[key])}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {label}
-                  </Typography>
+                  <DefinitionTooltip title={BOX_SCORE[key]?.short ?? ''} placement="top">
+                    <Typography variant="caption" color="text.secondary">
+                      {label}
+                    </Typography>
+                  </DefinitionTooltip>
                 </Box>
               ) : null,
             )}
@@ -101,60 +119,78 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
         </Box>
       )}
 
-      {/* Skill percentiles */}
+      {/* Skill percentiles — the longest section, collapsed behind an accordion */}
       {skill_percentiles && (
-        <Box sx={{ mb: valueDrivers ? 2.5 : 0 }}>
-          <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-            Skill Percentiles (vs. season population)
-          </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-            {Object.entries(skill_percentiles).map(([key, pct]) => (
-              <Box key={key}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {SKILL_LABELS[key] ?? key}
-                  </Typography>
-                  <Typography variant="caption" fontWeight={700}>
-                    {Math.round(pct)}
-                  </Typography>
+        <Accordion
+          variant="outlined"
+          disableGutters
+          sx={{ mb: valueDrivers ? 2.5 : 0, '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Skill Percentiles (vs. season population)
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+              {Object.entries(skill_percentiles).map(([key, pct]) => (
+                <Box key={key}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                    <DefinitionTooltip title={SKILLS[key]?.short ?? ''} placement="top">
+                      <Typography variant="caption" color="text.secondary">
+                        {SKILL_LABELS[key] ?? key}
+                      </Typography>
+                    </DefinitionTooltip>
+                    <Typography variant="caption" fontWeight={700}>
+                      {Math.round(pct)}
+                    </Typography>
+                  </Box>
+                  <LinearProgress
+                    variant="determinate"
+                    value={pct}
+                    color={scoreColor(pct)}
+                    sx={{ height: 6, borderRadius: 1 }}
+                  />
                 </Box>
-                <LinearProgress
-                  variant="determinate"
-                  value={pct}
-                  color={scoreColor(pct)}
-                  sx={{ height: 6, borderRadius: 1 }}
-                />
-              </Box>
-            ))}
-          </Box>
-        </Box>
+              ))}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
       )}
 
       {/* Top value drivers */}
       {valueDrivers && (valueDrivers.top_positive?.length || valueDrivers.top_negative?.length) ? (
-        <Box>
+        <Box sx={{ p: 1.5, border: 1, borderColor: 'divider', borderRadius: 1 }}>
           <Typography variant="subtitle2" color="text.secondary" gutterBottom>
             Top Value Drivers
           </Typography>
           <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-            {valueDrivers.top_positive?.map((d) => (
-              <Chip
-                key={d.feature}
-                size="small"
-                color="success"
-                variant="outlined"
-                label={`${SKILL_LABELS[d.feature.replace('skill_', '')] ?? d.feature} +${fmt(d.total_value_contribution, 2)}`}
-              />
-            ))}
-            {valueDrivers.top_negative?.map((d) => (
-              <Chip
-                key={d.feature}
-                size="small"
-                color="error"
-                variant="outlined"
-                label={`${SKILL_LABELS[d.feature.replace('skill_', '')] ?? d.feature} ${fmt(d.total_value_contribution, 2)}`}
-              />
-            ))}
+            {valueDrivers.top_positive?.map((d) => {
+              const skillKey = d.feature.replace('skill_', '');
+              return (
+                <Tooltip key={d.feature} title={SKILLS[skillKey]?.short ?? ''}>
+                  <Chip
+                    size="small"
+                    color="success"
+                    variant="outlined"
+                    label={`${SKILL_LABELS[skillKey] ?? d.feature} +${fmt(d.total_value_contribution, 2)}`}
+                  />
+                </Tooltip>
+              );
+            })}
+            {valueDrivers.top_negative?.map((d) => {
+              const skillKey = d.feature.replace('skill_', '');
+              return (
+                <Tooltip key={d.feature} title={SKILLS[skillKey]?.short ?? ''}>
+                  <Chip
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                    label={`${SKILL_LABELS[skillKey] ?? d.feature} ${fmt(d.total_value_contribution, 2)}`}
+                  />
+                </Tooltip>
+              );
+            })}
           </Box>
         </Box>
       ) : null}

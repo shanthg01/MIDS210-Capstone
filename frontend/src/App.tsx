@@ -15,6 +15,8 @@ import FitScorePage from './pages/FitScorePage';
 import ComparePage from './pages/ComparePage';
 import SettingsPage from './pages/SettingsPage';
 import PlaceholderPage from './pages/PlaceholderPage';
+import OverviewPage from './pages/OverviewPage';
+import GlossaryPage from './pages/GlossaryPage';
 
 const theme = createTheme({
   palette: {
@@ -292,6 +294,8 @@ export default function App() {
               {/* Protected — share AppLayout shell */}
               <Route element={<ProtectedRoute />}>
                 <Route element={<AppLayout />}>
+                  <Route path="/overview" element={<OverviewPage />} />
+                  <Route path="/glossary" element={<GlossaryPage />} />
                   <Route path="/dashboard" element={<DashboardPage />} />
                   <Route path="/players/search" element={<PlayerSearchPage />} />
                   <Route path="/players/:id" element={<PlayerProfilePage />} />

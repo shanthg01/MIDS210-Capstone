@@ -8,6 +8,7 @@ import {
   Typography,
   Box,
   Chip,
+  Link,
 } from '@mui/material';
 import TuneIcon from '@mui/icons-material/Tune';
 import FilterAltIcon from '@mui/icons-material/FilterAlt';
@@ -56,8 +57,9 @@ export default function OnboardingWizard() {
       <DialogTitle sx={{ fontWeight: 700 }}>Welcome to PortalPoint</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
-          Fit scores are computed using two independent mechanisms. We've started you on sensible
-          defaults — you can fine-tune both anytime from Settings.
+          PortalPoint scores transfer-portal players against your program using two things you
+          control: what to prioritize, and what to rule out entirely. We've started you on
+          sensible defaults — fine-tune both anytime from Settings.
         </Typography>
 
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
@@ -81,18 +83,23 @@ export default function OnboardingWizard() {
               Eliminate
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Hard filters (region, conference, position, archetype, NIL budget) that remove
-              candidates before scoring runs. None set yet — every candidate is in scope by default.
+              Hard filters (region, conference, position, archetype, NIL budget). None set yet —
+              every candidate is in scope by default.
             </Typography>
           </Box>
         </Box>
 
-        <Chip
-          label="You can change any of this later in Settings"
-          size="small"
-          variant="outlined"
-          sx={{ fontSize: '0.7rem' }}
-        />
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Chip
+            label="You can change any of this later in Settings"
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: '0.7rem' }}
+          />
+          <Link component="button" variant="caption" onClick={() => navigate('/glossary')}>
+            See how fit scoring works →
+          </Link>
+        </Box>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
         <Button onClick={dismiss}>Looks good — get started</Button>

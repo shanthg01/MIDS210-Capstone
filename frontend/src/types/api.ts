@@ -365,7 +365,7 @@ export interface FitComponents {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
-  program_fit: number;
+  team_impact_fit: number;
 }
 
 export interface RecommendationItem {

@@ -9,7 +9,7 @@ class FitComponents(BaseModel):
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
-    program_fit: float = Field(..., ge=0, le=100)
+    team_impact_fit: float = Field(..., ge=0, le=100)
 
 
 class RecommendationItem(BaseModel):

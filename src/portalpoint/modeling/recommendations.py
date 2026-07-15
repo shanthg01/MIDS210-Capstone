@@ -22,12 +22,57 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CANDIDATE_SQL",
+    "MODEL_VERSION",
     "calculate_overall_fit",
     "fixed_team_impact_preferences",
     "generate_top_50_candidates",
     "refine_to_top_10",
     "team_impact_fit",
 ]
+
+MODEL_VERSION = "rec-v1.2"
+
+# ── SQL: candidate pool ───────────────────────────────────────────────────────
+# Availability filtering (is_portal_candidate) is handled here in SQL; ranking
+# is Stage 1's job (generate_top_50_candidates(), below).
+#
+# Season semantics (verified against the live DB 2026-07-11): player_team_fit_scores.season
+# carries real scheme_fit/gap_match/role_fit together at season=2027 (role_fit's
+# sync_role_fit_scores() upserted directly into the same season Scheme
+# Fit/Gap Matching already cover) — same season team_rating_projections uses.
+# The join below matches season directly; a `ptf.season + 1` offset
+# (destination_projection.py's convention, a *different* pair of tables)
+# returns zero rows here.
+CANDIDATE_SQL = """
+SELECT
+    ptf.player_id,
+    ptf.school_id,
+    p.full_name     AS player_name,
+    p.position,
+    ptf.scheme_fit,
+    ptf.gap_match,
+    ptf.role_fit,
+    ptf.overall_fit,
+    trp.delta_adj_em
+    -- future — uncomment when Model 5 (predictions) is ready:
+    -- , pr.predicted_per_change  AS player_projection
+    -- , pr.confidence            AS data_confidence
+FROM player_team_fit_scores ptf
+JOIN players p
+    ON p.id = ptf.player_id
+LEFT JOIN team_rating_projections trp
+    ON trp.player_id  = ptf.player_id
+   AND trp.school_id  = ptf.school_id
+   AND trp.season     = ptf.season
+   AND trp.expires_at > now()
+-- future — uncomment when Model 5 ready:
+-- LEFT JOIN predictions pr
+--     ON pr.player_id = ptf.player_id AND pr.school_id = ptf.school_id
+WHERE ptf.school_id          = :school_id
+  AND ptf.season             = :season
+  AND ptf.is_portal_candidate = true
+"""
 
 # AdjEM points; ~2.5x Team Rating Projection's fold em_rmse of ~1.8-2.0 —
 # clip range wide enough that only genuinely extreme deltas saturate 0/100.

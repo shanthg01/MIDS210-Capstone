@@ -12,11 +12,13 @@ import {
   Tooltip,
   Divider,
 } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import SearchIcon from '@mui/icons-material/Search';
 import BookmarkIcon from '@mui/icons-material/Bookmark';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import SettingsIcon from '@mui/icons-material/Settings';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -26,11 +28,13 @@ import OnboardingWizard from './OnboardingWizard';
 const DRAWER_WIDTH = 228;
 
 const NAV_ITEMS = [
+  { label: 'Overview',      icon: <InfoOutlinedIcon fontSize="small" />, to: '/overview' },
   { label: 'Dashboard',     icon: <DashboardIcon fontSize="small" />,     to: '/dashboard' },
   { label: 'Player Search', icon: <SearchIcon fontSize="small" />,        to: '/players/search' },
   { label: 'Pipeline',      icon: <BookmarkIcon fontSize="small" />,      to: '/pipeline' },
   { label: 'Compare',       icon: <CompareArrowsIcon fontSize="small" />, to: '/compare' },
   { label: 'Settings',      icon: <SettingsIcon fontSize="small" />,      to: '/settings' },
+  { label: 'Glossary',      icon: <MenuBookIcon fontSize="small" />,      to: '/glossary' },
 ];
 
 export default function AppLayout() {

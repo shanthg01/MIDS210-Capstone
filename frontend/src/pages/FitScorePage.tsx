@@ -20,6 +20,9 @@ import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
 import ProjectionCard from '../components/ProjectionCard';
+import DefinitionTooltip from '../components/DefinitionTooltip';
+import { FIT_COMPONENTS, SUB_METRICS, GAP_FEATURES } from '../constants/definitions';
+import { buildFitInsight, buildProjectionInsight } from '../utils/fitInsights';
 
 // Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
 // convention as SettingsPage's STAT_LABELS / ProjectionCard's SKILL_LABELS.
@@ -70,9 +73,11 @@ function ScoreHeader({
     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1.5 }}>
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="h6" fontWeight={700}>
-            {label}
-          </Typography>
+          <DefinitionTooltip title={FIT_COMPONENTS[component as keyof typeof FIT_COMPONENTS]?.short ?? ''}>
+            <Typography variant="h6" fontWeight={700}>
+              {label}
+            </Typography>
+          </DefinitionTooltip>
           <DataStatusChip component={component} />
         </Box>
         <Typography variant="caption" color="text.secondary">
@@ -89,12 +94,19 @@ function ScoreHeader({
   );
 }
 
-function SubBar({ label, value }: { label: string; value: number }) {
+function SubBar({ label, value, metricKey }: { label: string; value: number; metricKey?: string }) {
   const color = scoreColor(value);
+  const description = metricKey ? SUB_METRICS[metricKey]?.short : undefined;
   return (
     <Box sx={{ mb: 1.5 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-        <Typography variant="body2">{label}</Typography>
+        {description ? (
+          <DefinitionTooltip title={description}>
+            <Typography variant="body2">{label}</Typography>
+          </DefinitionTooltip>
+        ) : (
+          <Typography variant="body2">{label}</Typography>
+        )}
         <Typography variant="body2" fontWeight={600}>
           {fmtScore(value)}
         </Typography>
@@ -380,6 +392,11 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
+  const fitInsight = buildFitInsight(fit);
+  if (playerProjectionQuery.data) {
+    fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
+  }
+
   return (
     <Box maxWidth={720}>
       <Breadcrumbs sx={{ mb: 2 }}>
@@ -420,6 +437,18 @@ export default function FitScorePage() {
         </Box>
       </Box>
 
+      {/* Key insight — plain-language takeaway ahead of the detailed breakdowns */}
+      <Alert severity="info" sx={{ mb: 2 }}>
+        <Typography variant="body2" fontWeight={700}>
+          {fitInsight.headline}
+        </Typography>
+        {fitInsight.bullets.map((b) => (
+          <Typography key={b} variant="body2">
+            • {b}
+          </Typography>
+        ))}
+      </Alert>
+
       {/* Overall */}
       <OverallPanel
         overall={fit.overall_fit}
@@ -433,11 +462,11 @@ export default function FitScorePage() {
       <SectionPaper>
         <ScoreHeader label="Scheme Fit" score={fit.scheme_fit} weight="30%" component="scheme_fit" />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} />
-        <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} />
-        <SubBar label="Usage Match" value={fit.breakdown.scheme.usage_match} />
-        <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} />
-        <SubBar label="Ball Movement" value={fit.breakdown.scheme.ball_movement_match} />
+        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
+        <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} metricKey="pace_match" />
+        <SubBar label="Usage Match" value={fit.breakdown.scheme.usage_match} metricKey="usage_match" />
+        <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} metricKey="rim_attack_match" />
+        <SubBar label="Ball Movement" value={fit.breakdown.scheme.ball_movement_match} metricKey="ball_movement_match" />
       </SectionPaper>
 
       {/* Role Fit breakdown */}
@@ -446,9 +475,11 @@ export default function FitScorePage() {
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2 }}>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Projected MPG
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.projected_minutes.short}>
+              <Typography variant="caption" color="text.secondary">
+                Projected MPG
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {fmt1(fit.breakdown.role_fit.projected_minutes)}
             </Typography>
@@ -458,14 +489,16 @@ export default function FitScorePage() {
             </Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Starter Probability
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.starter_probability.short}>
+              <Typography variant="caption" color="text.secondary">
+                Starter Probability
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {(fit.breakdown.role_fit.starter_probability * 100).toFixed(0)}%
             </Typography>
           </Box>
-          <Tooltip title="Lower number = higher on depth chart" placement="top">
+          <Tooltip title={SUB_METRICS.depth_chart_position.short} placement="top">
             <Box sx={{ cursor: 'help' }}>
               <Typography variant="caption" color="text.secondary">
                 Depth Chart Position
@@ -484,9 +517,11 @@ export default function FitScorePage() {
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Archetype Needed
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.archetype_needed.short}>
+              <Typography variant="caption" color="text.secondary">
+                Archetype Needed
+              </Typography>
+            </DefinitionTooltip>
             <Chip
               label={fit.breakdown.gap.archetype_needed ? 'Yes' : 'No'}
               color={fit.breakdown.gap.archetype_needed ? 'success' : 'default'}
@@ -495,14 +530,16 @@ export default function FitScorePage() {
             />
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Position Depth Score
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.position_depth_score.short}>
+              <Typography variant="caption" color="text.secondary">
+                Position Depth Score
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {fmtScore(fit.breakdown.gap.position_depth_score)}
             </Typography>
           </Box>
-          <Tooltip title="Confidence in the gap score itself — blends how reliable this player's position assignment, sample size, and stat features are" placement="top">
+          <Tooltip title={SUB_METRICS.gap_reliability.short} placement="top">
             <Box sx={{ cursor: 'help' }}>
               <Typography variant="caption" color="text.secondary">
                 Gap Confidence
@@ -521,13 +558,14 @@ export default function FitScorePage() {
             </Typography>
             <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
               {fit.breakdown.gap.top_gap_features.map((f) => (
-                <Chip
-                  key={f.feature}
-                  size="small"
-                  variant="outlined"
-                  color="success"
-                  label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
-                />
+                <Tooltip key={f.feature} title={GAP_FEATURES[f.feature]?.short ?? ''}>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color="success"
+                    label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
+                  />
+                </Tooltip>
               ))}
             </Box>
           </Box>
@@ -538,11 +576,11 @@ export default function FitScorePage() {
       <SectionPaper>
         <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="NIL Score" value={fit.breakdown.program_fit.nil_score} />
-        <SubBar label="Geographic Fit" value={fit.breakdown.program_fit.geographic_score} />
-        <SubBar label="Academic Fit" value={fit.breakdown.program_fit.academic_score} />
-        <SubBar label="Cultural Fit" value={fit.breakdown.program_fit.cultural_score} />
-        <SubBar label="NIL Budget Alignment" value={fit.breakdown.program_fit.nil_budget_alignment} />
+        <SubBar label="NIL Score" value={fit.breakdown.program_fit.nil_score} metricKey="nil_score" />
+        <SubBar label="Geographic Fit" value={fit.breakdown.program_fit.geographic_score} metricKey="geographic_score" />
+        <SubBar label="Academic Fit" value={fit.breakdown.program_fit.academic_score} metricKey="academic_score" />
+        <SubBar label="Cultural Fit" value={fit.breakdown.program_fit.cultural_score} metricKey="cultural_score" />
+        <SubBar label="NIL Budget Alignment" value={fit.breakdown.program_fit.nil_budget_alignment} metricKey="nil_budget_alignment" />
       </SectionPaper>
 
       {/* Player Projection — context-neutral, not part of the 4-component score above */}
