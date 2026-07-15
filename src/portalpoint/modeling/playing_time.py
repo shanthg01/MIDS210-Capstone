@@ -22,6 +22,7 @@ from sklearn.ensemble import (
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import minutes_per_game_from_min_pct, minutes_share_from_min_pct
 
 try:
@@ -220,6 +221,7 @@ transfer_pairs AS (
     FROM transfer_portal_events
     WHERE player_id IS NOT NULL
       AND match_status = 'matched'
+      AND status = ANY(%(available_statuses)s)
 ),
 hep_dedup AS (
     SELECT DISTINCT ON (player_id, season)
@@ -440,6 +442,7 @@ PT_STAGING_TABLES: list[tuple[str, str]] = [
         WHERE season = %(source_season)s
           AND player_id IS NOT NULL
           AND match_status = 'matched'
+          AND status = ANY(%(available_statuses)s)
         ORDER BY player_id, updated_at DESC NULLS LAST, id DESC
     """),
     ("pt_staging_hep_dedup", """
@@ -485,6 +488,7 @@ def materialize_inference_staging(
         "source_season": source_season,
         "roster_season": roster_season,
         "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
+        "available_statuses": list(AVAILABLE_STATUSES),
     }
     raw_conn = _raw_connection_with_timeout(engine)
     try:
@@ -1377,6 +1381,7 @@ def build_training_examples(engine, seasons: Sequence[int]) -> pd.DataFrame:
         "min_games": MIN_TRAIN_GAMES,
         "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
         "synthetic_school_id_floor": SYNTHETIC_SCHOOL_ID_FLOOR,
+        "available_statuses": list(AVAILABLE_STATUSES),
     }
     raw = read_sql_frame(engine, TRAINING_SQL, params)
     raw = null_leaking_neutral_projection_features(raw)
