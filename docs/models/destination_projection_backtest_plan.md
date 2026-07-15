@@ -338,3 +338,145 @@ Per the "build skeleton first, run the real backfill later" sequencing decision:
 population. Real compute, explicitly held for a separate go-ahead per the plan's original §10.3
 caution. Once backfilled, rerun `scripts/run_destination_backtest.py` (or the notebook) to get
 real residual/cohort/cluster results.
+
+## 14. Real backtest results (2026-07-15)
+
+Historical backfill (§5) completed for all 4 feasible seasons (2023-2026, `--backfill`, no CV/no
+`maybe_promote` — see the false/spurious-promotion fixes in `destination_projection_plan.md` §20/21
+this same investigation triggered) after two more real, unrelated production bugs were found and
+fixed along the way:
+
+1. **`roster_state_features`/`player_projection.py` `player_id` BigInteger corruption** —
+   `.iterrows()` over a mixed-dtype or purely-numeric DataFrame silently upcasts 63-bit hashed
+   `player_id` values to float64 (52-bit mantissa), corrupting the join key. Found while chasing
+   why `build_cross_season_records`' box scores were ~99% missing/wrong in production (including
+   live 2027). Fixed in `player_projection.py` (`build_cross_season_records`) and
+   `roster_state_features.py` (`safe_bigint_series`). Full root-cause writeup:
+   `player_projection_state_space_plan.md`'s 2026-07-15 dated section.
+2. **`load_projected_outcomes` query overfetch** — `_PROJECTED_OUTCOMES_SQL` filtered only
+   `player_id = ANY(...)` + `season = ANY(...)`, no `school_id`. Destination-mode
+   `player_projections` is one row per (player, school) — every portal candidate x every D1 school
+   (~300-365 schools) — so this pulled back ~950K rows (2 JSONB blobs each) over the SSH tunnel for
+   a ~3,168-row population, confirmed live via `pg_stat_activity` (one backend stuck 12+ minutes,
+   `active`/`ClientWrite`). Fixed by joining against the exact `(player_id, school_id, season)`
+   triples via `unnest()` instead of relying on a post-hoc pandas inner-merge to discard the other
+   ~99.7% of rows. `destination_backtest.py:81-108`.
+
+### 14.1 Population and coverage
+
+3,168 matched historical transfers (2023=565, 2024=710, 2025=932, 2026=961; 2022 excluded per §13).
+2,895 actual outcomes survived the games-played floor; 3,043 destination-mode projections found;
+**2,782 rows have both** (the real n for every result below).
+
+### 14.2 Overall residual summary (residual = actual - projected)
+
+| stat | mean | median | RMSE | MAE |
+|---|---|---|---|---|
+| pts | +1.216 | +0.903 | 5.293 | 4.135 |
+| reb | +0.442 | +0.107 | 2.225 | 1.710 |
+| ast | +1.293 | +1.100 | 1.988 | 1.534 |
+| stl | +0.363 | +0.220 | 0.902 | 0.674 |
+| blk | +0.033 | -0.048 | 0.357 | 0.248 |
+| tov | +0.404 | +0.148 | 1.266 | 0.897 |
+
+Small positive mean bias across the board (model slightly underprojects on average) with `pts`/
+`ast` carrying the largest absolute misses — consistent with real transfer outcomes being harder to
+call than same-team development.
+
+### 14.3 Finding 1 — competition-tier bias: right-signed, ~30x undersized
+
+| tier_direction | n | pts residual mean | pts residual median | model's own `competition_level_delta` mean |
+|---|---|---|---|---|
+| down | 776 | +4.093 | +3.501 | +0.131 |
+| same | 1018 | +1.356 | +1.070 | +0.002 |
+| up | 988 | -1.188 | -1.363 | -0.244 |
+
+`corr(residual_pts, competition_level_delta) = +0.363`. Positive, not negative — the model's tier
+adjustment moves in the *correct* direction (bigger downward bump for tier-down moves, bigger
+discount for tier-up moves) but the magnitude is far too small: players moving down in competition
+tier score ~4.1 more points/game than projected while the model's own tier bump for that group
+averages only +0.131 — roughly a 30x undershoot. Players moving up show the same undershoot in the
+opposite direction (real residual -1.19 vs. discount of only -0.244). **Actionable: the competition
+tier matrix (`destination_projection.py`'s `_COMPETITION_TIER_MATRIX`, currently
+`{1: {2: 0.221-0.36, ...}, ...}`-scale values) needs materially larger magnitudes, not a sign fix.**
+Maps to TODO #10(c) (position-specific tier effects) as a natural next step once the base magnitude
+is corrected.
+
+### 14.4 Finding 2 — PG turnovers: usage-scaling hypothesis refuted, refined to a flat position bias
+
+Original hypothesis (pre-backtest): bigger destination role -> bigger turnover under-projection for
+guards. Real data does not support that shape. Binning PG rows by the model's own
+`dest_expected_usage` into quartiles:
+
+| usage bucket | n | mean `dest_expected_usage` | residual_tov mean | residual_tov median |
+|---|---|---|---|---|
+| 13.0-19.4 | 99 | 17.21 | +2.119 | +2.197 |
+| 19.4-21.7 | 98 | 20.64 | +1.967 | +1.880 |
+| 21.7-23.2 | 98 | 22.38 | +2.131 | +2.151 |
+| 23.2-29.6 | 99 | 25.62 | +1.847 | +1.910 |
+
+`corr(residual_tov, dest_expected_usage) = -0.071`, `corr(residual_tov, role_usage_delta) = -0.027`
+— both effectively zero. The turnover miss is **flat at ~+2.0/game across the entire usage range**,
+not scaling with role growth. This is a structural PG-position miscalibration (position-level
+turnover-rate baseline or translation is off), not a "doesn't account for bigger role" problem —
+by-position summary confirms the same number in aggregate (PG `tov_mean_residual = +2.016`, next
+highest position SG at only +0.347). **Actionable: recalibrate the per-40 turnover-rate baseline or
+its translation specifically for the PG position, not the usage-scaling term.**
+
+### 14.5 New finding (unprompted) — assists systematically underprojected, worst for bigs
+
+Not one of the two flagged findings going in; surfaced directly in the §7a by-position/by-archetype
+tables:
+
+| position | n | ast residual mean | ast residual median |
+|---|---|---|---|
+| C | 670 | +1.972 | +1.680 |
+| PF | 249 | +1.878 | +1.635 |
+| SF | 332 | +2.004 | +1.932 |
+| SG | 1137 | +0.968 | +0.833 |
+| PG | 394 | +0.104 | -0.039 |
+
+Bigs (C/PF/SF) underproject assists by ~2x the guard rate. By archetype, "Post Scoring Big"
+(+2.016) and "Interior Star Big" (+1.918) show the same pattern regardless of scoring role. Likely
+cause: the assist-rate translation/shrinkage treats playmaking as guard-dominant and doesn't
+separately calibrate for skilled-passing bigs. Not investigated further here — flagging for
+TODO #10(a) (empirical style/skill fit) or a position-specific assist-rate recalibration.
+
+### 14.6 Clustering (§7b/§4) — two real interaction effects neither cohort split alone shows
+
+K-sweep inertia (k=2..8) showed no sharp elbow (steady diminishing returns); `K_FINAL=4` used.
+Cross-tabbing the 4 discovered clusters against position/archetype/tier_direction:
+
+- **Cluster 0** (n=877) and **cluster 1** (n=893) mostly re-derive existing cohorts — cluster 1
+  skews heavily tier="up" (494/893) with negative pts/reb residual, i.e. it's largely restating
+  §14.3's tier-up overprojection. Not new information.
+- **Cluster 2** (n=510, the biggest-miss cluster: pts +6.88, reb +3.82, ast +3.48) skews
+  C/PF (303/510, "Interior Star Big"/"Post Scoring Big" top archetypes) **and** tier="down"
+  (271/510) simultaneously. **Real interaction effect: bigs moving down in competition tier get
+  hit by both the tier-undersizing (§14.3) and the big-man-assist-underprojection (§14.5) biases
+  stacked together** — worse than either factor predicts alone. Neither the position cohort nor the
+  tier cohort in isolation surfaces this combination.
+- **Cluster 3** (n=502) is almost entirely PG/SG (493/502, "Lead Scoring Playmaker"/"Pressure
+  Connector Guard" top archetypes) with **both** an elevated pts residual (+3.85, ~3x the raw PG
+  position average of +1.17) **and** the turnover miss (+2.09, matching §14.4). **Real interaction
+  effect: high-usage lead-guards specifically (not "PG" broadly) carry a materially worse combined
+  scoring+turnover miss than the position-level cohort split shows** — a sharper, more useful
+  targeting slice than "position=PG" for any follow-up fix.
+
+### 14.7 Summary — 3 real model gaps, 2 real interaction effects, ranked by actionability
+
+1. **Competition tier delta undersized ~30x** (§14.3) — clearest, most mechanical fix (scale up the
+   tier matrix constants), highest confidence.
+2. **PG turnover baseline miscalibrated, flat not usage-scaling** (§14.4) — refutes the original
+   hypothesis; fix target is the position-level rate baseline, not a usage-interaction term.
+3. **Assist translation underprojects for bigs** (§14.5) — new, unprompted; likely needs a
+   position-aware term in the assist-rate model, not just a global adjustment.
+4. **Big + tier-down stacking** (§14.6, cluster 2) — confirms #1 and #3 compound rather than
+   cancel; worth checking the fix for #1 doesn't overcorrect for this subgroup.
+5. **Lead-guard scoring+turnover stacking** (§14.6, cluster 3) — confirms #2 is worse for
+   high-usage lead guards specifically than the blunt PG average suggests; useful for prioritizing
+   #2's fix.
+
+None of these findings required retraining or a new `model_version` — this was a read-only
+diagnostic pass per §9's non-goals. Deciding which of TODO #10(a)-(h) to act on based on this is a
+separate follow-up decision, per §9.

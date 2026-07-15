@@ -80,16 +80,22 @@ WHERE player_id = ANY(:player_ids)
 
 _PROJECTED_OUTCOMES_SQL = """
 SELECT
-    player_id,
-    school_id AS dest_school_id,
-    season    AS dest_season,
-    projected_box_score,
-    explanation
-FROM player_projections
-WHERE projection_mode = 'destination'
-  AND model_version = :model_version
-  AND player_id = ANY(:player_ids)
-  AND season = ANY(:seasons)
+    pp.player_id,
+    pp.school_id AS dest_school_id,
+    pp.season    AS dest_season,
+    pp.projected_box_score,
+    pp.explanation
+FROM player_projections pp
+JOIN (
+    SELECT unnest(:player_ids) AS player_id,
+           unnest(:school_ids) AS school_id,
+           unnest(:seasons) AS season
+) keys
+  ON pp.player_id = keys.player_id
+ AND pp.school_id = keys.school_id
+ AND pp.season = keys.season
+WHERE pp.projection_mode = 'destination'
+  AND pp.model_version = :model_version
 """
 
 _ARCHETYPE_SQL = """
@@ -169,13 +175,23 @@ def load_projected_outcomes(
     """
     if population_df.empty:
         return pd.DataFrame()
-    player_ids = population_df["player_id"].unique().tolist()
-    seasons = population_df["dest_season"].unique().tolist()
+    # Scope to the exact (player_id, school_id, season) triples in the population — not
+    # independent ANY() arrays on player_id/season alone. Destination-mode player_projections
+    # is one row per (player, school) pair (every portal candidate x every D1 school), so a
+    # player_id/season-only filter cross-products in ~300 school rows per real match (~950K
+    # rows fetched over the SSH tunnel for a ~3,168-row population) before the later pandas
+    # inner-merge throws away everything but the real destination-school row.
+    keys = population_df[["player_id", "dest_school_id", "dest_season"]].drop_duplicates()
     with engine.connect() as conn:
         df = pd.read_sql(
             text(_PROJECTED_OUTCOMES_SQL),
             conn,
-            params={"player_ids": player_ids, "seasons": seasons, "model_version": model_version},
+            params={
+                "player_ids": keys["player_id"].tolist(),
+                "school_ids": keys["dest_school_id"].tolist(),
+                "seasons": keys["dest_season"].tolist(),
+                "model_version": model_version,
+            },
         )
     if df.empty:
         return df
