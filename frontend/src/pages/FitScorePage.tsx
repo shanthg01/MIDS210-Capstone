@@ -141,6 +141,25 @@ function SubBar({
   );
 }
 
+// Category header for Scheme Fit's 3-way hierarchy (Pace / Shot Distribution /
+// Play Type). `note` is only passed for categories whose score is a cosine
+// similarity of multiple sub-dimensions — it explains, right next to the
+// number it's about, why that score doesn't average the bars below it.
+function SchemeCategoryHeader({ label, score, note }: { label: string; score: number; note?: string }) {
+  return (
+    <Box sx={{ mb: 1 }}>
+      <Typography variant="subtitle2" fontWeight={700}>
+        {label} — {fmtScore(score)}/100
+      </Typography>
+      {note && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          {note}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 function SectionPaper({ children }: { children: React.ReactNode }) {
   return (
     <Paper variant="outlined" sx={{ p: 2.5, mb: 2 }}>
@@ -559,7 +578,7 @@ export default function FitScorePage() {
       <OverallPanel
         overall={fit.overall_fit}
         gap={fit.gap_match}
-        scheme={fit.scheme_fit}
+        scheme={schemeDisplay}
         role={fit.role_fit}
         program={fit.program_fit}
         modelVersion={fit.model_version}
@@ -582,13 +601,15 @@ export default function FitScorePage() {
         />
         <Divider sx={{ mb: 2 }} />
 
-        <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} metricKey="pace_match" />
+        <SchemeCategoryHeader label="Pace Match" score={fit.breakdown.scheme.pace_match} />
 
         <Divider sx={{ my: 2 }} />
 
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-          Shot Distribution Match — {fmtScore(fit.scheme_fit)}/100
-        </Typography>
+        <SchemeCategoryHeader
+          label="Shot Distribution Match"
+          score={fit.scheme_fit}
+          note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
+        />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
         <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} metricKey="rim_attack_match" />
         <SubBar label="Mid-Range Match" value={fit.breakdown.scheme.mid_range_match} metricKey="mid_range_match" />
@@ -597,9 +618,11 @@ export default function FitScorePage() {
 
         {hasPlayType ? (
           <>
-            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-              Play Type Match — {fmtScore(fit.breakdown.scheme.he_scheme_fit!)}/100
-            </Typography>
+            <SchemeCategoryHeader
+              label="Play Type Match"
+              score={fit.breakdown.scheme.he_scheme_fit!}
+              note="Cosine similarity of overall play-type style — the bars below show closeness on each play type individually; they don't average to this number."
+            />
             {Object.entries(fit.breakdown.scheme.he_breakdown ?? {}).map(([feat, value]) => (
               <SubBar
                 key={feat}

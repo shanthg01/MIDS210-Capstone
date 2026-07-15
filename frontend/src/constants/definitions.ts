@@ -129,7 +129,7 @@ export const HE_PLAY_TYPES: Record<string, Definition> = {
 
 export const SHOT_DISTRIBUTION_MATCH: Definition = {
   label: 'Shot Distribution Match',
-  short: "Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — this is Scheme Fit's headline score.",
+  short: 'Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — one of two categories averaged into Scheme Fit\'s headline score (with Play Type Match).',
 };
 
 export const PLAY_TYPE_MATCH: Definition = {
