@@ -21,7 +21,7 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
-from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember
+from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember, TeamSystemProfile
 from portalpoint.modeling.gap_matching import GAP_FEATURES
 
 
@@ -108,6 +108,8 @@ def stub_fit_score(
     school_id: int,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
+    scheme_fit_stale: bool = False,
+    scheme_fit_stale_reason: str | None = None,
 ) -> FitScoreResponse:
     rng = random.Random(player_id * 1000 + school_id)
     gap = round(rng.uniform(55.0, 95.0), 1)
@@ -131,9 +133,10 @@ def stub_fit_score(
             scheme=SchemeBreakdown(
                 three_point_match=round(rng.uniform(60.0, 98.0), 1),
                 pace_match=round(rng.uniform(60.0, 98.0), 1),
-                usage_match=round(rng.uniform(60.0, 98.0), 1),
                 rim_attack_match=round(rng.uniform(60.0, 98.0), 1),
-                ball_movement_match=round(rng.uniform(60.0, 98.0), 1),
+                mid_range_match=round(rng.uniform(60.0, 98.0), 1),
+                # he_scheme_fit/he_breakdown left None — no real row for this
+                # pair at all, don't fabricate a signal that doesn't exist.
             ),
             role_fit=stub_role_fit_breakdown(rng),
             gap=stub_gap_breakdown(rng),
@@ -146,6 +149,8 @@ def stub_fit_score(
         is_portal_candidate=False,  # no real row to check — pair is outside model scope
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 
@@ -153,6 +158,8 @@ def real_fit_score(
     row: PlayerTeamFitScore,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
+    scheme_fit_stale: bool = False,
+    scheme_fit_stale_reason: str | None = None,
 ) -> FitScoreResponse:
     # role_fit is model-written where playing-time rows have been synced.
     # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
@@ -174,9 +181,10 @@ def real_fit_score(
             scheme=SchemeBreakdown(
                 three_point_match=scheme_bd.get("three_point_match", 50.0),
                 pace_match=scheme_bd.get("pace_match", 50.0),
-                usage_match=scheme_bd.get("usage_match", 50.0),
                 rim_attack_match=scheme_bd.get("rim_attack_match", 50.0),
-                ball_movement_match=scheme_bd.get("ball_movement_match", 50.0),
+                mid_range_match=scheme_bd.get("mid_range_match", scheme_bd.get("ball_movement_match", 50.0)),
+                he_scheme_fit=scheme_bd.get("he_scheme_fit"),
+                he_breakdown=scheme_bd.get("he_breakdown"),
             ),
             role_fit=role_fit_breakdown_from_model(role_bd, rng),
             gap=GapMatchBreakdown(
@@ -202,6 +210,8 @@ def real_fit_score(
         is_portal_candidate=row.is_portal_candidate,
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 
@@ -267,17 +277,31 @@ async def get_fit_score(
         db, player_id, school_id, season
     )
 
+    stale_result = await db.execute(
+        select(TeamSystemProfile.stale_flag, TeamSystemProfile.stale_reason).where(
+            TeamSystemProfile.school_id == school_id,
+            TeamSystemProfile.season == season,
+        )
+    )
+    stale_row = stale_result.first()
+    scheme_fit_stale = bool(stale_row and stale_row.stale_flag)
+    scheme_fit_stale_reason = stale_row.stale_reason if stale_row else None
+
     if row is not None:
         return real_fit_score(
             row,
             is_current_school=is_current_school,
             is_roster_baseline_member=is_roster_baseline_member,
+            scheme_fit_stale=scheme_fit_stale,
+            scheme_fit_stale_reason=scheme_fit_stale_reason,
         )
     return stub_fit_score(
         player_id,
         school_id,
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
+        scheme_fit_stale=scheme_fit_stale,
+        scheme_fit_stale_reason=scheme_fit_stale_reason,
     )
 
 

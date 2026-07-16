@@ -959,6 +959,9 @@ _STYLE_SKILL_TRAINABLE_SKILLS = {
     "off_reb_x_rim_style": "offensive_rebounding",
 }
 MIN_STYLE_SKILL_TRAIN_ROWS = 30
+# Held-out eval fold (last dest_season) needs enough rows for residual_std to be
+# meaningful, not just MIN_STYLE_SKILL_TRAIN_ROWS worth of train-side data.
+MIN_STYLE_SKILL_EVAL_ROWS = 10
 # Real residual_std reduction required before replacing hardcoded weights with a fit —
 # confirmed necessary on real data (2026-07-14): the full historical panel fit only
 # achieved 0.24% (R²=-0.0228), with one coefficient sign-flipped vs. basketball logic.
@@ -1017,20 +1020,16 @@ def fit_style_skill_weights(
 
     def_reb_x_frontcourt_need is excluded — see _STYLE_SKILL_TRAINABLE_SKILLS.
 
-    Gate uses held-out rolling-origin evaluation (fit on strictly-prior dest_seasons,
-    score on the next), the same fold structure as run_rolling_origin_cv — real bug
-    found in PR #60 review (ajaypatel-8): the original version fit Ridge on X and
-    scored residual-std improvement on that same X, so with a 30-row minimum and 5
-    coefficients, noise could clear the 2% gate and replace the production weights.
-    Requires >=2 distinct dest_seasons to hold anything out; with fewer, falls back
-    (same conservative call already made for def_reb_x_frontcourt_need's single-season
-    coverage). Once the held-out gate passes, the shipped weights are refit on the
-    full historical panel (not just the fold training slices) so real data already
-    validated isn't thrown away.
-
     Returns (weights_dict, metrics_dict). Falls back to the hardcoded
     STYLE_SKILL_INTERACTION_WEIGHTS defaults (metrics={"fallback": 1.0}) if
-    there's insufficient clean training data or seasons to hold out.
+    there's insufficient clean training data.
+
+    The gate is evaluated out-of-sample (held-out last dest_season, same
+    rolling-origin-style split as run_rolling_origin_cv) — 30 rows / 5
+    predictors can clear an in-sample improvement_frac threshold on noise
+    alone, which is exactly what MIN_STYLE_SKILL_IMPROVEMENT exists to
+    prevent. Only after the held-out fold clears the bar is a final model
+    refit on all rows (train+holdout) to produce the production weights.
     """
     fallback = dict(STYLE_SKILL_INTERACTION_WEIGHTS)
     if (
@@ -1038,13 +1037,10 @@ def fit_style_skill_weights(
         or role_model is None
         or "competition_level_delta" not in training_df.columns
         or "skill_percentiles" not in training_df.columns
-        or "dest_season" not in training_df.columns
     ):
         return fallback, {"fallback": 1.0}
 
-    df = training_df.dropna(
-        subset=["value_delta", "dest_usage_rate", "source_usage_rate", "dest_season"]
-    ).copy()
+    df = training_df.dropna(subset=["value_delta", "dest_usage_rate", "source_usage_rate"]).copy()
     if len(df) < MIN_STYLE_SKILL_TRAIN_ROWS:
         log.warning(
             "Style/skill fit: only %d clean training rows (need %d) — using hardcoded weights",
@@ -1052,54 +1048,74 @@ def fit_style_skill_weights(
         )
         return fallback, {"fallback": 1.0, "n_rows": float(len(df))}
 
+    if "dest_season" not in df.columns or df["dest_season"].nunique() < 2:
+        log.warning(
+            "Style/skill fit: only %d distinct dest_season(s) — can't hold out a season, "
+            "using hardcoded weights (no way to validate out-of-sample)",
+            df["dest_season"].nunique() if "dest_season" in df.columns else 0,
+        )
+        return fallback, {"fallback": 1.0, "n_rows": float(len(df)), "no_holdout_season": 1.0}
+
     df["value_per_100"] = df.get("neutral_value", pd.Series(0.0, index=df.index))
-    role_usage_pred = compute_role_usage_delta(
-        df, role_model, role_scaler, role_feature_names, dest_usage_col="dest_usage_rate",
-    )
-    residual = (
-        df["value_delta"].to_numpy()
-        - df["competition_level_delta"].fillna(0.0).to_numpy()
-        - role_usage_pred.to_numpy()
-    )
-
     feature_order = list(_STYLE_SKILL_TRAINABLE_SKILLS.keys())
-    X = _build_style_skill_training_features(df)[feature_order].values
 
+    def _residual(frame: pd.DataFrame) -> np.ndarray:
+        role_usage_pred = compute_role_usage_delta(
+            frame, role_model, role_scaler, role_feature_names, dest_usage_col="dest_usage_rate",
+        )
+        return (
+            frame["value_delta"].to_numpy()
+            - frame["competition_level_delta"].fillna(0.0).to_numpy()
+            - role_usage_pred.to_numpy()
+        )
+
+    # Held-out evaluation fold: last dest_season vs. everything before it —
+    # same split convention as run_rolling_origin_cv, just a single fold since
+    # 5 predictors need every prior season's rows to fit at all reliably.
     seasons = sorted(df["dest_season"].unique())
-    fold_improvements: list[float] = []
-    fold_metrics: dict[str, float] = {}
-    for fold_idx, eval_season in enumerate(seasons[1:], 1):
-        train_mask = df["dest_season"].isin([s for s in seasons if s < eval_season]).to_numpy()
-        eval_mask = (df["dest_season"] == eval_season).to_numpy()
-        if train_mask.sum() < MIN_STYLE_SKILL_TRAIN_ROWS or eval_mask.sum() < 3:
-            continue
-        fold_model = Ridge(alpha=5.0, fit_intercept=False)
-        fold_model.fit(X[train_mask], residual[train_mask])
-        eval_resid = residual[eval_mask]
-        eval_preds = fold_model.predict(X[eval_mask])
-        std_before = float(np.std(eval_resid))
-        std_after = float(np.std(eval_resid - eval_preds))
-        fold_improve = (std_before - std_after) / std_before if std_before > 1e-10 else 0.0
-        fold_improvements.append(fold_improve)
-        fold_metrics[f"fold{fold_idx}_eval_season"] = float(eval_season)
-        fold_metrics[f"fold{fold_idx}_n_eval"] = float(eval_mask.sum())
-        fold_metrics[f"fold{fold_idx}_improvement_frac"] = round(fold_improve, 4)
+    eval_season = seasons[-1]
+    train_mask = df["dest_season"] < eval_season
+    train_df, eval_df = df[train_mask], df[~train_mask]
 
-    if not fold_improvements:
-        log.info(
-            "Style/skill fit: %d distinct dest_season(s) in training data — can't hold "
-            "out a season, using hardcoded weights", len(seasons),
+    if len(eval_df) < MIN_STYLE_SKILL_EVAL_ROWS or len(train_df) < MIN_STYLE_SKILL_TRAIN_ROWS:
+        log.warning(
+            "Style/skill fit: holdout split too small (train=%d, eval=%d, need eval>=%d) "
+            "— using hardcoded weights",
+            len(train_df), len(eval_df), MIN_STYLE_SKILL_EVAL_ROWS,
         )
         return fallback, {
-            "fallback": 1.0, "n_rows": float(len(df)), "n_seasons": float(len(seasons)),
+            "fallback": 1.0, "n_rows": float(len(df)),
+            "n_train": float(len(train_df)), "n_eval": float(len(eval_df)),
         }
 
-    improvement_frac = float(np.mean(fold_improvements))
+    train_residual = _residual(train_df)
+    eval_residual = _residual(eval_df)
+    X_train = _build_style_skill_training_features(train_df)[feature_order].values
+    X_eval = _build_style_skill_training_features(eval_df)[feature_order].values
+
+    holdout_model = Ridge(alpha=5.0, fit_intercept=False)
+    holdout_model.fit(X_train, train_residual)
+    eval_preds = holdout_model.predict(X_eval)
+
+    residual_std_before = float(np.std(eval_residual))
+    residual_std_after = float(np.std(eval_residual - eval_preds))
+    ss_res = float(np.sum((eval_residual - eval_preds) ** 2))
+    ss_tot = float(np.sum((eval_residual - eval_residual.mean()) ** 2))
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-10 else 0.0
+    improvement_frac = (
+        (residual_std_before - residual_std_after) / residual_std_before
+        if residual_std_before > 1e-10 else 0.0
+    )
+
     metrics = {
         "n_rows": float(len(df)),
-        "n_seasons": float(len(seasons)),
+        "n_train": float(len(train_df)),
+        "n_eval": float(len(eval_df)),
+        "eval_season": float(eval_season),
+        "residual_std_before": round(residual_std_before, 4),
+        "residual_std_after": round(residual_std_after, 4),
+        "r2": round(r2, 4),
         "improvement_frac": round(improvement_frac, 4),
-        **fold_metrics,
     }
 
     # Gate, same discipline as mlflow_helpers.maybe_promote elsewhere in this codebase
@@ -1108,37 +1124,32 @@ def fit_style_skill_weights(
     # replacing small, conservative hand-picked weights with fitted ones — an R² of
     # -0.0228 and a sign-flipped coefficient on real data (2026-07-14 run) showed why
     # this matters: without a gate, noise gets shipped into production as if it were
-    # a genuine improvement).
+    # a genuine improvement). Evaluated out-of-sample (held-out eval_season) —
+    # an in-sample gate on ~30 rows/5 predictors can pass on noise alone.
     if improvement_frac < MIN_STYLE_SKILL_IMPROVEMENT:
         log.info(
-            "Style/skill fit: n=%d, held-out improvement_frac=%.4f below %.2f threshold "
-            "— keeping hardcoded weights, not the fit",
-            len(df), improvement_frac, MIN_STYLE_SKILL_IMPROVEMENT,
+            "Style/skill fit: held-out eval_season=%d, n_eval=%d, r2=%.4f, "
+            "improvement_frac=%.4f below %.2f threshold — keeping hardcoded weights",
+            eval_season, len(eval_df), r2, improvement_frac, MIN_STYLE_SKILL_IMPROVEMENT,
         )
         metrics["rejected_insufficient_improvement"] = 1.0
         return fallback, metrics
 
-    # Held-out gate passed — refit on the full historical panel (not just each fold's
-    # training slice) so the shipped weights use all available real data, not a subset.
+    # Gate passed out-of-sample — refit on all rows (train+holdout) for the
+    # final production weights, same convention as fitting the production
+    # role_usage model on the full training_df after CV validates the approach.
+    residual = _residual(df)
+    X = _build_style_skill_training_features(df)[feature_order].values
     final_model = Ridge(alpha=5.0, fit_intercept=False)
     final_model.fit(X, residual)
-    final_preds = final_model.predict(X)
-    residual_std_before = float(np.std(residual))
-    residual_std_after = float(np.std(residual - final_preds))
-    r2 = float(final_model.score(X, residual)) if np.var(residual) > 1e-10 else 0.0
-    metrics.update({
-        "residual_std_before": round(residual_std_before, 4),
-        "residual_std_after": round(residual_std_after, 4),
-        "r2": round(r2, 4),
-    })
 
     weights = dict(fallback)
     for name, coef in zip(feature_order, final_model.coef_):
         weights[name] = round(float(coef), 4)
     log.info(
-        "Style/skill weights fit: n=%d, held-out improvement_frac=%.4f, final r2=%.4f, "
-        "residual_std %.4f -> %.4f, weights=%s",
-        len(df), improvement_frac, r2, residual_std_before, residual_std_after, weights,
+        "Style/skill weights fit: held-out eval_season=%d passed (improvement_frac=%.4f), "
+        "refit on n=%d rows, weights=%s",
+        eval_season, improvement_frac, len(df), weights,
     )
     return weights, metrics
 

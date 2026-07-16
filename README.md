@@ -16,10 +16,9 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 | Ingest pipeline | barttorvik ✅, Hoop Explorer ✅, hoopR ESPN PBP + game logs ✅, 247Sports transfer portal ✅, barttorvik roster snapshots ✅ (raw/local cache + S3 upload where configured) |
 | Feature + model pipeline | Script-backed reruns for M1, M2, M3, and Gap Matching; feature parquet/model artifacts are gitignored and regenerated locally |
 | MLflow + S3 artifacts | Wired — local `mlruns.db`, S3 model uploads, and script/notebook MLflow runs |
-| Fit components | ✅ Player clustering, team clustering, scheme fit, and gap matching complete; API serves real `scheme_fit` + `gap_match` |
-| Role Fit, Program Fit | ❌ Not started — API keeps deterministic 50.0 stubs for these components |
-| Recommendation Engine (Model 7) | ❌ Blocked on Role Fit + Program Fit |
-| Frontend (React + Vite) | 8 pages implemented against live API |
+| Fit components | ✅ Scheme Fit, Gap Match real for all pairs; Role Fit real for rows `run_playing_time.py` has synced (frontend now shows Live/Placeholder per-row, not a blanket flag). Program Fit is **descoped** — always a `50.0` placeholder; frontend now says so everywhere it appears instead of showing fabricated sub-metrics |
+| Recommendation Engine (Model 7) | ✅ `/api/recommendations` now serves the real 2-stage engine (was a hardcoded stub since the original scaffold) — real candidate pool, real per-user weights, real reasoning text |
+| Frontend (React + Vite) | 10 pages implemented against live API — includes new Overview/Glossary explainability pages this pass |
 
 See [`docs/status/STATUS.md`](docs/status/STATUS.md) for the status index, or jump directly to
 [`docs/status/MODEL_STATUS.md`](docs/status/MODEL_STATUS.md),

@@ -1,6 +1,19 @@
 # Program Fit Model Plan
 ## Manual-Input + Proxy-Based Recruiting Alignment Calculator
 
+**Status (2026-07-15):** Still descoped (product decision, 2026-07-11) — nothing in this plan has been
+started. Confirmed via direct DB query that `player_team_fit_scores.program_fit` is a hardcoded `50.0`
+on every real row (8.2M + 3.9M rows, zero variation) — not a placeholder with partial signal, a pure
+constant, baked in at write time by `gap_matching.py`'s `overall_fit` formula. A UI-only honesty pass
+landed this date: the frontend previously rendered 5 fabricated sub-metric bars (NIL/Geographic/
+Academic/Cultural/NIL Budget — `stub_program_fit_breakdown()`'s per-request random numbers) under a
+correctly-labeled "Placeholder" chip, which read as real data with an asterisk rather than "we don't
+have this." Removed those bars; every surface where Program Fit appears (`FitScorePage`, `ComparePage`
+tooltip, `SettingsPage` weight-slider caption) now shows one shared "not live yet, here's what it's
+meant to represent" string instead. No backend/scoring change — `gap_matching.py`/`playing_time.py`'s
+`overall_fit` formula still bakes in `W_PROG*50.0`, explicitly deferred pending a separate decision on
+whether to reweight to 3 real components (see `docs/status/MODEL_STATUS.md`'s Program Fit row).
+
 **Planned notebook:** `notebooks/models/program_fit_model.ipynb`  
 **Planned script:** `scripts/run_program_fit.py`  
 **Primary module:** `src/portalpoint/modeling/program_fit.py`  

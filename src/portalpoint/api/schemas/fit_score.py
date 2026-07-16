@@ -19,9 +19,12 @@ class FitWeights(BaseModel):
 class SchemeBreakdown(BaseModel):
     three_point_match: float = Field(..., ge=0, le=100)
     pace_match: float = Field(..., ge=0, le=100)
-    usage_match: float = Field(..., ge=0, le=100)
     rim_attack_match: float = Field(..., ge=0, le=100)
-    ball_movement_match: float = Field(..., ge=0, le=100)
+    mid_range_match: float = Field(..., ge=0, le=100)
+    # Play-type match (HoopExplorer 6-dim cosine) — only present when both
+    # player and team have HE coverage; None otherwise, never fabricated.
+    he_scheme_fit: float | None = None
+    he_breakdown: dict[str, float] | None = None
 
 
 class RoleFitBreakdown(BaseModel):
@@ -97,3 +100,8 @@ class FitScoreResponse(BaseModel):
     # player has a stale player_season_stats row but is absent from the latest
     # roster outlook.
     is_roster_baseline_member: bool = False
+    # Gate 7 (PR #50 / migration b1d3f5a7c9e2): set when the news-monitoring
+    # agent detects a coaching change at this school — signals cached scheme
+    # fit scores may no longer reflect the current system.
+    scheme_fit_stale: bool = False
+    scheme_fit_stale_reason: str | None = None

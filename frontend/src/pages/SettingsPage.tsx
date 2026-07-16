@@ -39,6 +39,7 @@ import { getRosterGap, getSystemProfile, listSchools } from '../api/schools';
 import { updateSchool } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import type { FitWeights, ImportanceWeights, SchoolListItem, StatKey, StatThreshold, UserFilters } from '../types/api';
+import { FIT_COMPONENTS } from '../constants/definitions';
 
 // Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
 const STAT_OPTIONS: Array<{ key: StatKey; label: string }> = [
@@ -96,18 +97,18 @@ interface FitWeightsPct {
   program_fit: number;
 }
 
-const FIT_WEIGHT_FIELDS: Array<{ key: keyof FitWeightsPct; label: string }> = [
+const FIT_WEIGHT_FIELDS: Array<{ key: keyof FitWeightsPct; label: string; description?: string }> = [
   { key: 'gap', label: 'Gap Match' },
   { key: 'scheme', label: 'Scheme Fit' },
   { key: 'role_fit', label: 'Role Fit' },
-  { key: 'program_fit', label: 'Program Fit' },
+  { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
 ];
 
 const IMPORTANCE_FIELDS: Array<{ key: keyof ImportanceWeights; label: string; description: string }> = [
   { key: 'scheme_fit', label: 'Scheme Fit', description: 'How much player style must match your system' },
   { key: 'role_fit', label: 'Role Fit', description: 'Importance of minutes availability' },
   { key: 'gap_match', label: 'Gap Match', description: 'Priority of filling roster archetype holes' },
-  { key: 'program_fit', label: 'Program Fit', description: 'NIL, geography, and academic alignment' },
+  { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
 ];
 
 const DEFAULT_FIT: FitWeightsPct = { gap: 20, scheme: 30, role_fit: 25, program_fit: 25 };
@@ -561,10 +562,11 @@ export default function SettingsPage() {
 
         <Divider sx={{ mb: 2 }} />
 
-        {FIT_WEIGHT_FIELDS.map(({ key, label }) => (
+        {FIT_WEIGHT_FIELDS.map(({ key, label, description }) => (
           <SliderRow
             key={key}
             label={label}
+            description={description}
             value={fitWeights[key]}
             min={0}
             max={60}

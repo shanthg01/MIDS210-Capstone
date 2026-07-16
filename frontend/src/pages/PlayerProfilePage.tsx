@@ -23,6 +23,7 @@ import { addToShortlist } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import type { PlayerStats } from '../types/api';
 import ProjectionCard from '../components/ProjectionCard';
+import { buildProjectionInsight } from '../utils/fitInsights';
 
 function StatCell({ label, value }: { label: string; value: string | number }) {
   return (
@@ -264,7 +265,24 @@ export default function PlayerProfilePage() {
       {projectionLoading ? (
         <Skeleton variant="rectangular" height={220} sx={{ mb: 3, borderRadius: 1 }} />
       ) : projection ? (
-        <ProjectionCard projection={projection} />
+        <>
+          {(() => {
+            const insight = buildProjectionInsight(projection);
+            return (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                <Typography variant="body2" fontWeight={700}>
+                  {insight.headline}
+                </Typography>
+                {insight.bullets.map((b) => (
+                  <Typography key={b} variant="body2">
+                    • {b}
+                  </Typography>
+                ))}
+              </Alert>
+            );
+          })()}
+          <ProjectionCard projection={projection} />
+        </>
       ) : null}
 
       {player.current_season_stats ? (

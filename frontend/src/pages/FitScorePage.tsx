@@ -16,10 +16,14 @@ import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
 import { getPlayer, getPlayerProjection } from '../api/players';
+import type { TeamRatingProjectionResponse } from '../types/api';
 import { useAuth } from '../context/AuthContext';
-import { scoreColor, DataStatusChip, LIVE_COMPONENTS } from '../components/FitScoreBar';
+import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
 import ProjectionCard from '../components/ProjectionCard';
+import DefinitionTooltip from '../components/DefinitionTooltip';
+import { FIT_COMPONENTS, SUB_METRICS, GAP_FEATURES, HE_PLAY_TYPES, PLAY_TYPE_MATCH } from '../constants/definitions';
+import { buildFitInsight, buildProjectionInsight } from '../utils/fitInsights';
 
 // Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
 // convention as SettingsPage's STAT_LABELS / ProjectionCard's SKILL_LABELS.
@@ -59,25 +63,36 @@ function ScoreHeader({
   score,
   weight,
   component,
+  modelVersion,
+  headlineNote,
 }: {
   label: string;
   score: number;
   weight: string;
   component: string;
+  modelVersion?: string;
+  headlineNote?: string;
 }) {
   const color = scoreColor(score);
   return (
     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', mb: 1.5 }}>
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Typography variant="h6" fontWeight={700}>
-            {label}
-          </Typography>
-          <DataStatusChip component={component} />
+          <DefinitionTooltip title={FIT_COMPONENTS[component as keyof typeof FIT_COMPONENTS]?.short ?? ''}>
+            <Typography variant="h6" fontWeight={700}>
+              {label}
+            </Typography>
+          </DefinitionTooltip>
+          <DataStatusChip component={component} modelVersion={modelVersion} />
         </Box>
         <Typography variant="caption" color="text.secondary">
           {weight} weight
         </Typography>
+        {headlineNote && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {headlineNote}
+          </Typography>
+        )}
       </Box>
       <Typography variant="h4" fontWeight={800} color={`${color}.main`}>
         {fmtScore(score)}
@@ -89,12 +104,29 @@ function ScoreHeader({
   );
 }
 
-function SubBar({ label, value }: { label: string; value: number }) {
+function SubBar({
+  label,
+  value,
+  metricKey,
+  description: descriptionProp,
+}: {
+  label: string;
+  value: number;
+  metricKey?: string;
+  description?: string;
+}) {
   const color = scoreColor(value);
+  const description = descriptionProp ?? (metricKey ? SUB_METRICS[metricKey]?.short : undefined);
   return (
     <Box sx={{ mb: 1.5 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-        <Typography variant="body2">{label}</Typography>
+        {description ? (
+          <DefinitionTooltip title={description}>
+            <Typography variant="body2">{label}</Typography>
+          </DefinitionTooltip>
+        ) : (
+          <Typography variant="body2">{label}</Typography>
+        )}
         <Typography variant="body2" fontWeight={600}>
           {fmtScore(value)}
         </Typography>
@@ -105,6 +137,25 @@ function SubBar({ label, value }: { label: string; value: number }) {
         color={color}
         sx={{ height: 6, borderRadius: 3 }}
       />
+    </Box>
+  );
+}
+
+// Category header for Scheme Fit's 3-way hierarchy (Pace / Shot Distribution /
+// Play Type). `note` is only passed for categories whose score is a cosine
+// similarity of multiple sub-dimensions — it explains, right next to the
+// number it's about, why that score doesn't average the bars below it.
+function SchemeCategoryHeader({ label, score, note }: { label: string; score: number; note?: string }) {
+  return (
+    <Box sx={{ mb: 1 }}>
+      <Typography variant="subtitle2" fontWeight={700}>
+        {label} — {fmtScore(score)}/100
+      </Typography>
+      {note && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          {note}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -131,12 +182,14 @@ function OverallPanel({
   scheme,
   role,
   program,
+  modelVersion,
 }: {
   overall: number;
   gap: number;
   scheme: number;
   role: number;
   program: number;
+  modelVersion: string;
 }) {
   const color = scoreColor(overall);
   return (
@@ -164,7 +217,7 @@ function OverallPanel({
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
             const c = scoreColor(value);
-            const isLive = LIVE_COMPONENTS.has(component);
+            const isLive = isComponentLive(component, modelVersion);
             return (
               <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -207,40 +260,52 @@ function OverallPanel({
 
 // ── Projection panel ──────────────────────────────────────────────────────────
 
-function ProjectionPanel({
-  data,
-}: {
-  data: {
-    current_adjEM: number;
-    projected_adjEM: number;
-    delta_adjEM: number;
-    confidence_interval: [number, number];
-    national_percentile: number;
-    conference_rank: number;
-    context: string;
-    expected_minutes_input: number;
-  };
-}) {
+// Keys present in the M6 explanation JSONB payload and their display labels.
+const EXPLANATION_LABELS: Record<string, string> = {
+  candidate_off_contribution: 'Offense talent',
+  candidate_def_contribution: 'Defense talent',
+  spacing_delta:              '3PT / spacing',
+  rim_protection_delta:       'Rim protection',
+  rebounding_delta:           'Rebounding',
+  bench_depth_delta:          'Bench depth',
+  continuity_delta:           'Roster continuity',
+};
+
+function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
   const deltaPos = data.delta_adjEM >= 0;
+
+  // Top 3 explanation drivers by absolute magnitude.
+  const drivers: { label: string; value: number }[] = [];
+  if (data.explanation) {
+    for (const [key, label] of Object.entries(EXPLANATION_LABELS)) {
+      const v = data.explanation[key];
+      if (typeof v === 'number' && Math.abs(v) > 0.001) {
+        drivers.push({ label, value: v });
+      }
+    }
+    drivers.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+    drivers.splice(3); // keep top 3
+  }
+
   return (
     <SectionPaper>
       <Typography variant="h6" fontWeight={700} gutterBottom>
         Team Rating Projection
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-        Expected impact on program AdjEM if player joins and plays {fmt1(data.expected_minutes_input)} MPG
+        Expected AdjEM impact if player joins and plays {fmt1(data.expected_minutes_input)} MPG
+        {data.candidate_usage_role && (
+          <Chip
+            label={data.candidate_usage_role}
+            size="small"
+            variant="outlined"
+            sx={{ ml: 1, height: 18, fontSize: '0.65rem' }}
+          />
+        )}
       </Typography>
 
       {/* AdjEM delta */}
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-          mb: 2,
-          flexWrap: 'wrap',
-        }}
-      >
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <Box sx={{ textAlign: 'center' }}>
           <Typography variant="caption" color="text.secondary">
             Current AdjEM
@@ -268,12 +333,38 @@ function ProjectionPanel({
         />
       </Box>
 
+      {/* Offense / Defense split when available */}
+      {(data.baseline_adj_o != null || data.baseline_adj_d != null) && (
+        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
+          {data.baseline_adj_o != null && data.projected_adj_o != null && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Offense (AdjO)
+              </Typography>
+              <Typography variant="body2" fontWeight={600}>
+                {fmtAdjEM(data.baseline_adj_o)} → {fmtAdjEM(data.projected_adj_o)}
+              </Typography>
+            </Box>
+          )}
+          {data.baseline_adj_d != null && data.projected_adj_d != null && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Defense (AdjD) ↓ better
+              </Typography>
+              <Typography variant="body2" fontWeight={600}>
+                {fmtAdjEM(data.baseline_adj_d)} → {fmtAdjEM(data.projected_adj_d)}
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      )}
+
       <Divider sx={{ my: 1.5 }} />
 
       <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 2, mb: 2 }}>
         <Box>
           <Typography variant="caption" color="text.secondary">
-            80% Confidence Interval
+            80% CI
           </Typography>
           <Typography variant="body2" fontWeight={600}>
             {fmtAdjEM(data.confidence_interval[0])} to {fmtAdjEM(data.confidence_interval[1])}
@@ -296,6 +387,26 @@ function ProjectionPanel({
           </Typography>
         </Box>
       </Box>
+
+      {/* Explanation driver chips */}
+      {drivers.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.75 }}>
+            Top impact drivers
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+            {drivers.map((d) => (
+              <Chip
+                key={d.label}
+                size="small"
+                variant="outlined"
+                color={d.value >= 0 ? 'success' : 'error'}
+                label={`${d.value >= 0 ? '+' : ''}${d.value.toFixed(2)} ${d.label}`}
+              />
+            ))}
+          </Box>
+        </Box>
+      )}
 
       <Alert severity="info" sx={{ py: 0.5 }}>
         {data.context}
@@ -332,12 +443,12 @@ export default function FitScorePage() {
     enabled: !!playerId && schoolId !== null,
   });
 
-  // Context-neutral — independent of schoolId, unlike everything else on this
-  // page. 404 (no projection row yet) is expected, not retried.
+  // Destination-adjusted — school-specific, unlike PlayerProfilePage's neutral
+  // call. 404 (no destination row yet for this pair) is expected, not retried.
   const playerProjectionQuery = useQuery({
-    queryKey: ['playerProjection', playerId],
-    queryFn: () => getPlayerProjection(playerId),
-    enabled: !!playerId,
+    queryKey: ['playerProjection', playerId, schoolId],
+    queryFn: () => getPlayerProjection(playerId, schoolId!),
+    enabled: !!playerId && schoolId !== null,
     retry: false,
   });
 
@@ -380,6 +491,21 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
+  // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
+  // changes — this average is just how this page's headline is presented.
+  const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
+  const schemeDisplay = hasPlayType
+    ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
+    : fit.scheme_fit;
+
+  // buildFitInsight's strongest/weakest narrative sits right next to the Overall
+  // panel, which already shows schemeDisplay for Scheme — pass the same blended
+  // value in so the two don't disagree on the page (overall_fit itself is untouched).
+  const fitInsight = buildFitInsight({ ...fit, scheme_fit: schemeDisplay });
+  if (playerProjectionQuery.data) {
+    fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
+  }
+
   return (
     <Box maxWidth={720}>
       <Breadcrumbs sx={{ mb: 2 }}>
@@ -407,48 +533,132 @@ export default function FitScorePage() {
       </Breadcrumbs>
 
       {/* Player name */}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 3, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <Box>
           <Typography variant="h4" fontWeight={800}>
             {playerName}
           </Typography>
-          <Box sx={{ display: 'flex', gap: 1, mt: 0.5 }}>
+          <Box sx={{ display: 'flex', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
             {position && <Chip label={position} color="primary" size="small" />}
+            {fit.is_portal_candidate && (
+              <Chip label="In Portal" color="success" size="small" />
+            )}
+            {fit.is_current_school && (
+              <Chip label="Current Roster" color="warning" size="small" />
+            )}
             <Chip label={`Model ${fit.model_version}`} size="small" variant="outlined" />
             {fit.cache_hit && <Chip label="Cached" size="small" variant="outlined" />}
           </Box>
         </Box>
       </Box>
 
+      {fit.is_current_school && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          This player is already on your roster — scores reflect current fit, not a recruit evaluation.
+        </Alert>
+      )}
+
+      {fit.scheme_fit_stale && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Coaching change detected — scheme fit scores may not reflect the current system.
+          {fit.scheme_fit_stale_reason && ` (${fit.scheme_fit_stale_reason})`}
+        </Alert>
+      )}
+
+      {/* Key insight — plain-language takeaway ahead of the detailed breakdowns */}
+      <Alert severity="info" sx={{ mb: 2 }}>
+        <Typography variant="body2" fontWeight={700}>
+          {fitInsight.headline}
+        </Typography>
+        {fitInsight.bullets.map((b) => (
+          <Typography key={b} variant="body2">
+            • {b}
+          </Typography>
+        ))}
+      </Alert>
+
       {/* Overall */}
       <OverallPanel
         overall={fit.overall_fit}
         gap={fit.gap_match}
-        scheme={fit.scheme_fit}
+        scheme={schemeDisplay}
         role={fit.role_fit}
         program={fit.program_fit}
+        modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown */}
+      {/* Scheme Fit breakdown — headline is display-only average of Shot Distribution
+          + Play Type match when both exist; fit.scheme_fit itself (used by Overall
+          Fit/ranking elsewhere) is untouched, always just the shot-distribution cosine. */}
       <SectionPaper>
-        <ScoreHeader label="Scheme Fit" score={fit.scheme_fit} weight="30%" component="scheme_fit" />
+        <ScoreHeader
+          label="Scheme Fit"
+          score={schemeDisplay}
+          weight="30%"
+          component="scheme_fit"
+          headlineNote={
+            hasPlayType
+              ? 'Average of Shot Distribution Match and Play Type Match below.'
+              : 'Shot Distribution Match only — no Play Type data available for this pair.'
+          }
+        />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} />
-        <SubBar label="Pace Match" value={fit.breakdown.scheme.pace_match} />
-        <SubBar label="Usage Match" value={fit.breakdown.scheme.usage_match} />
-        <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} />
-        <SubBar label="Ball Movement" value={fit.breakdown.scheme.ball_movement_match} />
+
+        <SchemeCategoryHeader label="Pace Match" score={fit.breakdown.scheme.pace_match} />
+
+        <Divider sx={{ my: 2 }} />
+
+        <SchemeCategoryHeader
+          label="Shot Distribution Match"
+          score={fit.scheme_fit}
+          note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
+        />
+        <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
+        <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} metricKey="rim_attack_match" />
+        <SubBar label="Mid-Range Match" value={fit.breakdown.scheme.mid_range_match} metricKey="mid_range_match" />
+
+        <Divider sx={{ my: 2 }} />
+
+        {hasPlayType ? (
+          <>
+            <SchemeCategoryHeader
+              label="Play Type Match"
+              score={fit.breakdown.scheme.he_scheme_fit!}
+              note="Cosine similarity of overall play-type style — the bars below show closeness on each play type individually; they don't average to this number."
+            />
+            {Object.entries(fit.breakdown.scheme.he_breakdown ?? {}).map(([feat, value]) => (
+              <SubBar
+                key={feat}
+                label={HE_PLAY_TYPES[feat]?.label ?? feat}
+                value={value}
+                description={HE_PLAY_TYPES[feat]?.short}
+              />
+            ))}
+          </>
+        ) : (
+          <Alert severity="info">
+            No play-type data available for this pair — {PLAY_TYPE_MATCH.short}
+          </Alert>
+        )}
       </SectionPaper>
 
       {/* Role Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Role Fit" score={fit.role_fit} weight="25%" component="role_fit" />
+        <ScoreHeader
+          label="Role Fit"
+          score={fit.role_fit}
+          weight="25%"
+          component="role_fit"
+          modelVersion={fit.model_version}
+        />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2 }}>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Projected MPG
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.projected_minutes.short}>
+              <Typography variant="caption" color="text.secondary">
+                Projected MPG
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {fmt1(fit.breakdown.role_fit.projected_minutes)}
             </Typography>
@@ -458,14 +668,16 @@ export default function FitScorePage() {
             </Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Starter Probability
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.starter_probability.short}>
+              <Typography variant="caption" color="text.secondary">
+                Starter Probability
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {(fit.breakdown.role_fit.starter_probability * 100).toFixed(0)}%
             </Typography>
           </Box>
-          <Tooltip title="Lower number = higher on depth chart" placement="top">
+          <Tooltip title={SUB_METRICS.depth_chart_position.short} placement="top">
             <Box sx={{ cursor: 'help' }}>
               <Typography variant="caption" color="text.secondary">
                 Depth Chart Position
@@ -484,9 +696,11 @@ export default function FitScorePage() {
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Archetype Needed
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.archetype_needed.short}>
+              <Typography variant="caption" color="text.secondary">
+                Archetype Needed
+              </Typography>
+            </DefinitionTooltip>
             <Chip
               label={fit.breakdown.gap.archetype_needed ? 'Yes' : 'No'}
               color={fit.breakdown.gap.archetype_needed ? 'success' : 'default'}
@@ -495,14 +709,16 @@ export default function FitScorePage() {
             />
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
-              Position Depth Score
-            </Typography>
+            <DefinitionTooltip title={SUB_METRICS.position_depth_score.short}>
+              <Typography variant="caption" color="text.secondary">
+                Position Depth Score
+              </Typography>
+            </DefinitionTooltip>
             <Typography variant="h6" fontWeight={700}>
               {fmtScore(fit.breakdown.gap.position_depth_score)}
             </Typography>
           </Box>
-          <Tooltip title="Confidence in the gap score itself — blends how reliable this player's position assignment, sample size, and stat features are" placement="top">
+          <Tooltip title={SUB_METRICS.gap_reliability.short} placement="top">
             <Box sx={{ cursor: 'help' }}>
               <Typography variant="caption" color="text.secondary">
                 Gap Confidence
@@ -521,37 +737,35 @@ export default function FitScorePage() {
             </Typography>
             <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
               {fit.breakdown.gap.top_gap_features.map((f) => (
-                <Chip
-                  key={f.feature}
-                  size="small"
-                  variant="outlined"
-                  color="success"
-                  label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
-                />
+                <Tooltip key={f.feature} title={GAP_FEATURES[f.feature]?.short ?? ''}>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    color="success"
+                    label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
+                  />
+                </Tooltip>
               ))}
             </Box>
           </Box>
         )}
       </SectionPaper>
 
-      {/* Program Fit breakdown */}
+      {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
         <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
-        <SubBar label="NIL Score" value={fit.breakdown.program_fit.nil_score} />
-        <SubBar label="Geographic Fit" value={fit.breakdown.program_fit.geographic_score} />
-        <SubBar label="Academic Fit" value={fit.breakdown.program_fit.academic_score} />
-        <SubBar label="Cultural Fit" value={fit.breakdown.program_fit.cultural_score} />
-        <SubBar label="NIL Budget Alignment" value={fit.breakdown.program_fit.nil_budget_alignment} />
+        <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>
 
-      {/* Player Projection — context-neutral, not part of the 4-component score above */}
+      {/* Player Projection — adjusted for this program, not part of the 4-component score above */}
       {playerProjectionQuery.data && (
         <Box sx={{ mb: 3 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            The projection below is <strong>context-neutral</strong> — this player's intrinsic
-            talent/value, independent of this school's scheme or roster. It is not one of the
-            4 fit components above.
+            The projection below is <strong>adjusted for fit at this program</strong> — this
+            player's projected talent/value here specifically, incorporating role, usage, and
+            roster context. It is a separate signal from the 4 fit components above, not folded
+            into Overall Fit.
           </Alert>
           <ProjectionCard projection={playerProjectionQuery.data} />
         </Box>

@@ -83,6 +83,27 @@ def feature_ranges(player_df: pd.DataFrame, team_df: pd.DataFrame) -> dict[str, 
     return ranges
 
 
+def he_scheme_breakdown(p_vec: np.ndarray, t_vec: np.ndarray, feat_ranges: dict) -> dict:
+    """Per-play-type match scores (0-100) for the Play Type Match UI breakdown —
+    same range-normalized-difference formula as scheme_breakdown(), just over
+    HE_FEATS instead of PLAYER_SHOT_FEATS."""
+    return {
+        feat: float(max(0.0, (1.0 - abs(p_vec[i] - t_vec[i]) / feat_ranges[feat]) * 100))
+        for i, feat in enumerate(HE_FEATS)
+    }
+
+
+def he_feature_ranges(player_df: pd.DataFrame, team_df: pd.DataFrame) -> dict[str, float]:
+    """Same shape as feature_ranges(), for HE_FEATS — both frames use the same
+    column names (team's play-type distribution, not a separate team_* name)."""
+    ranges = {}
+    for feat in HE_FEATS:
+        lo = min(player_df[feat].min(), team_df[feat].min())
+        hi = max(player_df[feat].max(), team_df[feat].max())
+        ranges[feat] = max(hi - lo, 0.10)
+    return ranges
+
+
 def compute_scheme_fit_ondemand(
     player_three: float,
     player_rim: float,
@@ -96,13 +117,21 @@ def compute_scheme_fit_ondemand(
     team_tempo: float | None = None,
     player_he: list | None = None,
     team_he: list | None = None,
+    he_feat_ranges: dict[str, float] | None = None,
 ) -> dict:
     """Compute scheme fit for a single player-team pair not in pre-computed cache.
 
+    NOTE: currently dead code — no import/call site found anywhere in
+    src/portalpoint/api/ despite this module's original docstring claiming
+    fit_scores.py consumes it (it doesn't; fit_score_service.py's stub_fit_score
+    is the actual fallback). Kept in sync with score_all_seasons anyway to avoid
+    drift if this is ever wired up.
+
     Used by fit_scores.py router. Base: 3-dim shot distribution cosine (always
     computed). pace_match: tempo delta, computed when both player_tempo and
-    team_tempo provided. he_scheme_fit: 6-dim HE play-type cosine, added to
-    breakdown when both player_he and team_he provided (6 floats, HE_FEATS order).
+    team_tempo provided. he_scheme_fit/he_breakdown: 6-dim HE play-type cosine +
+    per-play-type breakdown, added when both player_he and team_he provided
+    (6 floats, HE_FEATS order) and he_feat_ranges is supplied.
 
     feat_ranges/tempo_range come from feature_ranges()/the team population's
     adj_tempo spread — caller supplies the current population context.
@@ -124,16 +153,19 @@ def compute_scheme_fit_ondemand(
             "three_point_match": round(sub["three_point_rate"], 1),
             "rim_attack_match": round(sub["rim_rate"], 1),
             "pace_match": round(pm, 1),
-            "usage_match": 50.0,
-            "ball_movement_match": round(sub.get("mid_range_rate", 50.0), 1),
+            "mid_range_match": round(sub.get("mid_range_rate", 50.0), 1),
         },
     }
 
     if (player_he is not None and team_he is not None
-            and len(player_he) == len(team_he) == len(HE_FEATS)):
+            and len(player_he) == len(team_he) == len(HE_FEATS)
+            and he_feat_ranges is not None):
         ph = np.array(player_he, dtype=np.float64)
         th = np.array(team_he, dtype=np.float64)
         result["breakdown"]["he_scheme_fit"] = round(scheme_fit_score(ph, th), 1)
+        result["breakdown"]["he_breakdown"] = {
+            feat: round(v, 1) for feat, v in he_scheme_breakdown(ph, th, he_feat_ranges).items()
+        }
 
     return result
 
@@ -208,8 +240,24 @@ def score_all_seasons(
             he_p_idx_s[he_p_mask_s] = np.arange(n_he_p_s)
             he_t_idx_s = np.full(len(t_s), -1, dtype=int)
             he_t_idx_s[he_t_mask_s] = np.arange(n_he_t_s)
+            HE_RANGE_s = {
+                feat: max(
+                    float(
+                        max(p_s[feat].max(), t_s[feat].max())
+                        - min(p_s[feat].min(), t_s[feat].min())
+                    ),
+                    0.10,
+                )
+                for feat in HE_FEATS
+            }
+            HE_RANGE_arr = np.array([HE_RANGE_s[f] for f in HE_FEATS])
+            P_HE_s = p_s[HE_FEATS].values[he_p_mask_s].astype(np.float64)
+            T_HE_s = t_s[HE_FEATS].values[he_t_mask_s].astype(np.float64)
+            he_diff = np.abs(P_HE_s[:, None, :] - T_HE_s[None, :, :])  # (n_he_p, n_he_t, 6)
+            HE_MATCH_s = np.round(np.maximum(0.0, (1.0 - he_diff / HE_RANGE_arr[None, None, :]) * 100.0), 1)
         else:
             HE_SIM_s = np.empty((0, 0))
+            HE_MATCH_s = np.empty((0, 0, 0))
             he_p_idx_s = np.full(len(p_s), -1, dtype=int)
             he_t_idx_s = np.full(len(t_s), -1, dtype=int)
 
@@ -240,11 +288,13 @@ def score_all_seasons(
                     "three_point_match": float(MATCH[i, j, 0]),
                     "rim_attack_match": float(MATCH[i, j, 1]),
                     "pace_match": float(PACE_r[i, j]),
-                    "usage_match": 50.0,
-                    "ball_movement_match": float(MATCH[i, j, 2]),
+                    "mid_range_match": float(MATCH[i, j, 2]),
                 }
                 if he_p >= 0 and he_t >= 0 and HE_SIM_s.size > 0:
                     bd["he_scheme_fit"] = float(round(HE_SIM_s[he_p, he_t], 1))
+                    bd["he_breakdown"] = {
+                        feat: float(HE_MATCH_s[he_p, he_t, k]) for k, feat in enumerate(HE_FEATS)
+                    }
                     n_he_s += 1
 
                 records.append((
