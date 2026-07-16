@@ -1017,9 +1017,20 @@ def fit_style_skill_weights(
 
     def_reb_x_frontcourt_need is excluded — see _STYLE_SKILL_TRAINABLE_SKILLS.
 
+    Gate uses held-out rolling-origin evaluation (fit on strictly-prior dest_seasons,
+    score on the next), the same fold structure as run_rolling_origin_cv — real bug
+    found in PR #60 review (ajaypatel-8): the original version fit Ridge on X and
+    scored residual-std improvement on that same X, so with a 30-row minimum and 5
+    coefficients, noise could clear the 2% gate and replace the production weights.
+    Requires >=2 distinct dest_seasons to hold anything out; with fewer, falls back
+    (same conservative call already made for def_reb_x_frontcourt_need's single-season
+    coverage). Once the held-out gate passes, the shipped weights are refit on the
+    full historical panel (not just the fold training slices) so real data already
+    validated isn't thrown away.
+
     Returns (weights_dict, metrics_dict). Falls back to the hardcoded
     STYLE_SKILL_INTERACTION_WEIGHTS defaults (metrics={"fallback": 1.0}) if
-    there's insufficient clean training data.
+    there's insufficient clean training data or seasons to hold out.
     """
     fallback = dict(STYLE_SKILL_INTERACTION_WEIGHTS)
     if (
@@ -1027,10 +1038,13 @@ def fit_style_skill_weights(
         or role_model is None
         or "competition_level_delta" not in training_df.columns
         or "skill_percentiles" not in training_df.columns
+        or "dest_season" not in training_df.columns
     ):
         return fallback, {"fallback": 1.0}
 
-    df = training_df.dropna(subset=["value_delta", "dest_usage_rate", "source_usage_rate"]).copy()
+    df = training_df.dropna(
+        subset=["value_delta", "dest_usage_rate", "source_usage_rate", "dest_season"]
+    ).copy()
     if len(df) < MIN_STYLE_SKILL_TRAIN_ROWS:
         log.warning(
             "Style/skill fit: only %d clean training rows (need %d) — using hardcoded weights",
@@ -1051,23 +1065,41 @@ def fit_style_skill_weights(
     feature_order = list(_STYLE_SKILL_TRAINABLE_SKILLS.keys())
     X = _build_style_skill_training_features(df)[feature_order].values
 
-    model = Ridge(alpha=5.0, fit_intercept=False)
-    model.fit(X, residual)
-    preds = model.predict(X)
-    residual_std_before = float(np.std(residual))
-    residual_std_after = float(np.std(residual - preds))
-    r2 = float(model.score(X, residual)) if np.var(residual) > 1e-10 else 0.0
-    improvement_frac = (
-        (residual_std_before - residual_std_after) / residual_std_before
-        if residual_std_before > 1e-10 else 0.0
-    )
+    seasons = sorted(df["dest_season"].unique())
+    fold_improvements: list[float] = []
+    fold_metrics: dict[str, float] = {}
+    for fold_idx, eval_season in enumerate(seasons[1:], 1):
+        train_mask = df["dest_season"].isin([s for s in seasons if s < eval_season]).to_numpy()
+        eval_mask = (df["dest_season"] == eval_season).to_numpy()
+        if train_mask.sum() < MIN_STYLE_SKILL_TRAIN_ROWS or eval_mask.sum() < 3:
+            continue
+        fold_model = Ridge(alpha=5.0, fit_intercept=False)
+        fold_model.fit(X[train_mask], residual[train_mask])
+        eval_resid = residual[eval_mask]
+        eval_preds = fold_model.predict(X[eval_mask])
+        std_before = float(np.std(eval_resid))
+        std_after = float(np.std(eval_resid - eval_preds))
+        fold_improve = (std_before - std_after) / std_before if std_before > 1e-10 else 0.0
+        fold_improvements.append(fold_improve)
+        fold_metrics[f"fold{fold_idx}_eval_season"] = float(eval_season)
+        fold_metrics[f"fold{fold_idx}_n_eval"] = float(eval_mask.sum())
+        fold_metrics[f"fold{fold_idx}_improvement_frac"] = round(fold_improve, 4)
 
+    if not fold_improvements:
+        log.info(
+            "Style/skill fit: %d distinct dest_season(s) in training data — can't hold "
+            "out a season, using hardcoded weights", len(seasons),
+        )
+        return fallback, {
+            "fallback": 1.0, "n_rows": float(len(df)), "n_seasons": float(len(seasons)),
+        }
+
+    improvement_frac = float(np.mean(fold_improvements))
     metrics = {
         "n_rows": float(len(df)),
-        "residual_std_before": round(residual_std_before, 4),
-        "residual_std_after": round(residual_std_after, 4),
-        "r2": round(r2, 4),
+        "n_seasons": float(len(seasons)),
         "improvement_frac": round(improvement_frac, 4),
+        **fold_metrics,
     }
 
     # Gate, same discipline as mlflow_helpers.maybe_promote elsewhere in this codebase
@@ -1079,19 +1111,34 @@ def fit_style_skill_weights(
     # a genuine improvement).
     if improvement_frac < MIN_STYLE_SKILL_IMPROVEMENT:
         log.info(
-            "Style/skill fit: n=%d, r2=%.4f, improvement_frac=%.4f below %.2f threshold "
+            "Style/skill fit: n=%d, held-out improvement_frac=%.4f below %.2f threshold "
             "— keeping hardcoded weights, not the fit",
-            len(df), r2, improvement_frac, MIN_STYLE_SKILL_IMPROVEMENT,
+            len(df), improvement_frac, MIN_STYLE_SKILL_IMPROVEMENT,
         )
         metrics["rejected_insufficient_improvement"] = 1.0
         return fallback, metrics
 
+    # Held-out gate passed — refit on the full historical panel (not just each fold's
+    # training slice) so the shipped weights use all available real data, not a subset.
+    final_model = Ridge(alpha=5.0, fit_intercept=False)
+    final_model.fit(X, residual)
+    final_preds = final_model.predict(X)
+    residual_std_before = float(np.std(residual))
+    residual_std_after = float(np.std(residual - final_preds))
+    r2 = float(final_model.score(X, residual)) if np.var(residual) > 1e-10 else 0.0
+    metrics.update({
+        "residual_std_before": round(residual_std_before, 4),
+        "residual_std_after": round(residual_std_after, 4),
+        "r2": round(r2, 4),
+    })
+
     weights = dict(fallback)
-    for name, coef in zip(feature_order, model.coef_):
+    for name, coef in zip(feature_order, final_model.coef_):
         weights[name] = round(float(coef), 4)
     log.info(
-        "Style/skill weights fit: n=%d, r2=%.4f, residual_std %.4f -> %.4f, weights=%s",
-        len(df), r2, residual_std_before, residual_std_after, weights,
+        "Style/skill weights fit: n=%d, held-out improvement_frac=%.4f, final r2=%.4f, "
+        "residual_std %.4f -> %.4f, weights=%s",
+        len(df), improvement_frac, r2, residual_std_before, residual_std_after, weights,
     )
     return weights, metrics
 

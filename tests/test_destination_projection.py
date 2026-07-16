@@ -352,6 +352,10 @@ class TestFitStyleSkillWeights:
             "source_usage_rate": np.full(n, 0.22),
             "neutral_value": np.zeros(n),
             "competition_level_delta": np.zeros(n),
+            # 2 seasons (evenly split) so the held-out rolling-origin gate (fit on 2025,
+            # score on 2026) has a fold to evaluate — a single-season frame can't hold
+            # anything out and would fall back by design (see fit_style_skill_weights).
+            "dest_season": np.concatenate([np.full(n // 2, 2025), np.full(n - n // 2, 2026)]),
             "position": ["SG"] * n,
             "skill_states": [{}] * n,
             "skill_percentiles": [
@@ -407,6 +411,7 @@ class TestFitStyleSkillWeights:
             "source_usage_rate": np.full(n, 0.22),
             "neutral_value": np.zeros(n),
             "competition_level_delta": np.zeros(n),
+            "dest_season": np.concatenate([np.full(n // 2, 2025), np.full(n - n // 2, 2026)]),
             "position": ["SG"] * n,
             "skill_states": [{}] * n,
             "skill_percentiles": [

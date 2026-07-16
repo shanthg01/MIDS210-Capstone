@@ -42,12 +42,18 @@ import subprocess
 import sys
 from datetime import datetime
 
+import pandas as pd
 from sqlalchemy import text
 
 from portalpoint.modeling import destination_backtest as db
 from portalpoint.modeling.destination_projection import MODEL_VERSION
 from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.mlflow_helpers import setup_mlflow
+
+# Mirrors run_destination_projection.py's DEFAULT_TRAIN_SEASONS. Duplicated (not imported) because
+# _backfill_season below must filter it per dest_season -- importing the name would invite someone
+# to bump one copy and not the other, so keep them next to their own real bug/fix history instead.
+_ALL_TRAIN_SEASONS = [2022, 2023, 2024, 2025, 2026]
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -58,20 +64,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 
-def _seasons_missing_destination_rows(engine, seasons: list[int], model_version: str) -> list[int]:
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT DISTINCT season FROM player_projections
-                WHERE projection_mode = 'destination' AND model_version = :model_version
-                  AND season = ANY(:seasons)
-                """
-            ),
-            {"model_version": model_version, "seasons": seasons},
-        ).fetchall()
-    present = {int(r[0]) for r in rows}
-    return sorted(s for s in seasons if s not in present)
+_COVERAGE_SQL = """
+SELECT pp.player_id, pp.school_id
+FROM player_projections pp
+JOIN (
+    SELECT unnest(:player_ids) AS player_id, unnest(:school_ids) AS school_id
+) keys
+  ON pp.player_id = keys.player_id
+ AND pp.school_id = keys.school_id
+WHERE pp.projection_mode = 'destination'
+  AND pp.model_version = :model_version
+  AND pp.season = :season
+"""
+
+
+def _season_coverage_gaps(engine, population_df: pd.DataFrame, model_version: str) -> dict[int, int]:
+    """Real (player_id, school_id) coverage per season vs. the exact backtest population keys.
+
+    Real bug (PR #60 review, ajaypatel-8): the old check only asked "does any destination row
+    exist for this season" -- a season interrupted 1 row into a 900-row backfill read as "ready,"
+    and load_projected_outcomes' inner join then silently dropped the other 899, biasing the
+    sample with no visible warning. Returns {season: n_missing_keys} for every season with less
+    than full coverage (0 rows = fully missing, same as before; partial coverage now surfaces too).
+    """
+    gaps: dict[int, int] = {}
+    for season, group in population_df.groupby("dest_season"):
+        keys = group[["player_id", "dest_school_id"]].drop_duplicates()
+        with engine.connect() as conn:
+            covered = pd.read_sql(
+                text(_COVERAGE_SQL),
+                conn,
+                params={
+                    "player_ids": keys["player_id"].tolist(),
+                    "school_ids": keys["dest_school_id"].tolist(),
+                    "model_version": model_version,
+                    "season": int(season),
+                },
+            )
+        n_covered = len(covered.drop_duplicates())
+        n_expected = len(keys)
+        if n_covered < n_expected:
+            gaps[int(season)] = n_expected - n_covered
+    return gaps
 
 
 def _season_ids(population_df, season: int) -> tuple[list[int], list[int]]:
@@ -83,9 +117,19 @@ def _season_ids(population_df, season: int) -> tuple[list[int], list[int]]:
 
 def _backfill_season(dest_season: int, school_ids: list[int], player_ids: list[int]) -> None:
     source_season = dest_season - 1
+    # Point-in-time discipline (plan doc §5 step 1): train only on destination seasons strictly
+    # before the one being scored. Real bug (found in PR #60 review, ajaypatel-8): this used to
+    # omit --train-seasons entirely, so run_destination_projection.py fell back to its own
+    # DEFAULT_TRAIN_SEASONS (2022-2026 — the *evaluated* season plus future seasons), training the
+    # delta models on the very outcomes being backtested. That's label leakage, not just a noisy
+    # sample -- it inflates every reported residual and invalidates the cohort/cluster findings in
+    # destination_projection_backtest_plan.md §14. Mirrors run_rolling_origin_cv's own walk-forward
+    # fold structure (destination_projection.py) so this backtest's discipline matches the model's
+    # own internal validation instead of a different, leakier one.
+    train_seasons = [s for s in _ALL_TRAIN_SEASONS if s < dest_season]
     log.info(
-        "Backfilling season=%d: %d schools, %d players (real DB writes)",
-        dest_season, len(school_ids), len(player_ids),
+        "Backfilling season=%d: %d schools, %d players, train_seasons=%s (real DB writes)",
+        dest_season, len(school_ids), len(player_ids), train_seasons,
     )
     pt_cmd = [
         sys.executable, "scripts/run_playing_time.py",
@@ -100,6 +144,7 @@ def _backfill_season(dest_season: int, school_ids: list[int], player_ids: list[i
     dp_cmd = [
         sys.executable, "scripts/run_destination_projection.py",
         "--target-season", str(dest_season), "--source-season", str(source_season),
+        "--train-seasons", *[str(s) for s in train_seasons],
         "--no-portal-only",
         "--player-ids", *[str(p) for p in player_ids],
         "--school-ids", *[str(s) for s in school_ids],
@@ -144,8 +189,15 @@ def main() -> None:
         log.warning("No backtest population found — aborting")
         return
 
-    seasons = sorted(population_df["dest_season"].unique().tolist())
-    missing = _seasons_missing_destination_rows(engine, seasons, MODEL_VERSION)
+    coverage_gaps = _season_coverage_gaps(engine, population_df, MODEL_VERSION)
+    missing = sorted(coverage_gaps.keys())
+    if missing:
+        for season in missing:
+            log.info(
+                "Season %d: %d/%d population keys missing a destination projection row",
+                season, coverage_gaps[season],
+                len(population_df.loc[population_df["dest_season"] == season, ["player_id", "dest_school_id"]].drop_duplicates()),
+            )
 
     if missing and args.backfill:
         for season in missing:
@@ -153,8 +205,9 @@ def main() -> None:
             _backfill_season(season, school_ids, player_ids)
     elif missing:
         log.warning(
-            "Missing destination-mode player_projections for seasons %s — these will be "
-            "skipped. Re-run with --backfill to fill them, or run manually:", missing,
+            "Incomplete destination-mode player_projections coverage for seasons %s — the "
+            "affected rows will be silently dropped by the later inner join, biasing the sample. "
+            "Re-run with --backfill to fill them, or run manually:", missing,
         )
         for season in missing:
             school_ids, player_ids = _season_ids(population_df, season)
