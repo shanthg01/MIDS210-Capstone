@@ -22,7 +22,7 @@ Each model narrows a different dimension of uncertainty. This is the through-lin
 
 ## Persona: Gonzaga Bulldogs
 
-**System:** Motion offense, high 3PT volume, elite assisted-shot rate, up-tempo pace, multi-skill bigs. High-major (WCC). Heavy portal recruiter.
+**System:** Rim-pressure offense, strong assisted-shot rate, up-tempo pace, and a jump-shot funnel defensive profile. High-major (WCC). Heavy portal recruiter.
 
 **Roster situation:** Significant minutes departing across all five positions (SG: 143 min/g, SF: 111, PG: 101, PF: 76, C: 69). Primary needs: backcourt depth and a rim-running center.
 
@@ -70,29 +70,29 @@ GET /api/players/search?available_only=true&position=PG,C
 
 **K selection:** Silhouette score sweep across k=4–16 + elbow inspection of inertia. Final K chosen per-group (offense K and defense K may differ). Run interactively in `notebooks/models/team_clustering.ipynb`; fixed params used by `scripts/run_team_clustering.py`.
 
-**Label assignment:** Manual, after centroid inspection. Coaching-vocabulary names (e.g., "High-Efficiency Motion", "Pack-Line Halfcourt", "Fast-Break Transition"). Labels stored in `team_system_profiles.system_label`.
+**Label assignment:** Manual, after centroid inspection. Coaching-vocabulary names (e.g., "Rim Pressure Offense", "Pack-Line Halfcourt", "Fast-Break Transition"). Labels stored in `team_system_profiles.system_label`.
 
 **Output:** `team_system_profiles` — one row per school×season, with offense cluster, defense cluster, and composite label. MLflow artifact: `team-k{K}-v2-2026` in `s3://portalpoint-data/models/`.
 
 ### Gonzaga Profile
 
-- **Label:** "High-Efficiency Motion"
-- **Offense centroid features:** 3PT rate 41.2%, assisted% 68.3%, rim% 34.1%, pace 71.4 pos/40, transition PPP 1.14
-- **Defense centroid features:** moderate transition defense, low scramble allowed
-- **Peer programs in same cluster:** Virginia Tech, Creighton, Purdue (motion-offense, high assisted%)
+- **Label:** "Rim Pressure Offense / Jump-Shot Funnel Defense"
+- **Gonzaga offensive feature values:** 3PT rate 30.8%, assisted% 57.5%, rim rate 38.4%, pace 69.5 pos/40, transition frequency 23.8%
+- **Defense centroid features:** funnels opponents into jump-shot volume while protecting the rim and transition floor balance
+- **Peer programs in same cluster:** visible in the team cluster scatter and centroid heatmap generated from `team_system_profiles`
 
 ### Visual Callouts
 
 - **VISUAL 1a:** Elbow + silhouette curves showing K selection for offense and defense groups
 - **VISUAL 1b:** 2D PCA/UMAP scatter of all team-season vectors, colored by cluster label — Gonzaga highlighted, peer cluster members labeled
-- **VISUAL 1c:** Centroid feature heatmap across all clusters — shows what makes "High-Efficiency Motion" distinct from neighbors (e.g., vs. "Transition-Heavy" cluster)
+- **VISUAL 1c:** Centroid feature heatmap across all clusters — shows what makes "Rim Pressure Offense / Jump-Shot Funnel Defense" distinct from neighbors
 - **VISUAL 1d:** Table of 5–8 peer programs in Gonzaga's cluster with their key feature values
 
 ---
 
 ## Step 2 — Who Are These Players? Player Clustering (M1)
 
-**Question:** What archetype is each target, and does that archetype family belong in a "High-Efficiency Motion" system?
+**Question:** What archetype is each target, and does that archetype family belong in Gonzaga's rim-pressure system?
 
 ### Technical Approach
 
@@ -118,7 +118,7 @@ Ruffin and Crawford share the same archetype (Lead Scoring Playmaker), which cre
 
 - **VISUAL 2a:** Silhouette curve showing k=9 selection
 - **VISUAL 2b:** 2D UMAP scatter of all player-season vectors colored by archetype — three targets highlighted with labels
-- **VISUAL 2c:** Per-archetype centroid feature heatmap (9 rows × key features) — highlights what separates "Isolation Scorer" from "3-and-D Wing"
+- **VISUAL 2c:** Per-archetype centroid feature heatmap (9 rows × key features) — highlights what separates lead scoring playmakers from post scoring bigs
 - **VISUAL 2d:** Table of 5 peer players in each target's cluster (name, school, season) — grounds archetypes in recognizable players
 
 ---
@@ -270,7 +270,7 @@ Phase 2a is *more conservative* than Phase 0 for all three. This is the expected
 
 ### Visual Callouts
 
-- **VISUAL 5a:** Per-player skill comparison table: last season observed rate vs. Phase 0 shrunk rate vs. Phase 2a smoothed rate, for all 10 skills. Annotate where shrinkage pulled a stat toward the prior (e.g., Moore's 3PT% is slightly shrunk because his sample was 22 games at moderate minute share).
+- **VISUAL 5a:** Per-player skill comparison table: last season observed rate vs. Phase 0 shrunk rate vs. Phase 2a smoothed rate, for all 10 skills.
 - **VISUAL 5b:** Phase 0 shrinkage weight chart — bar showing `games_played × min_pct` for each player alongside how much their estimates moved from raw to shrunk (small movement = high confidence; large movement = sparse signal).
 - **VISUAL 5c:** Phase 2a cross-season trajectory — for each player, a line chart showing their skill estimate (± uncertainty band) across seasons 2021–2026 with the Phase 2a Kalman smoothed estimate overlaid. Demonstrates where the persistence/drift model adds vs. subtracts from the per-season estimate.
 - **VISUAL 5d:** Phase 0 vs. Phase 2a scatter (all players in DB) — show that Ph2a is uniformly better on offense, neutral on defense. Highlight the three targets.
@@ -327,8 +327,8 @@ Evans moves above Crawford in composite when real role_fit is applied — his ga
 
 ### Visual Callouts
 
-- **VISUAL 6a:** Horizontal bar chart — projected minutes per game for each player, with 90% CI whiskers. Three players side by side. Annotate Carter's wide CI explicitly.
-- **VISUAL 6b:** Usage rate projection alongside minutes — dual-axis or paired bars showing that Carter's usage stays elevated even at reduced minutes (system won't absorb his style at full-star rate)
+- **VISUAL 6a:** Horizontal bar chart — projected minutes per game for each player, with 90% CI whiskers.
+- **VISUAL 6b:** Usage rate projection alongside minutes — paired bars showing how role expectations differ across the two guards and the center.
 
 ---
 
@@ -388,8 +388,8 @@ The destination model uses `player-proj-phase2a-fcast-v1` (the Phase 2a forward 
 
 ### Visual Callouts
 
-- **VISUAL 7a:** Waterfall chart per player — neutral Off RAPM as baseline, each delta (Δ1–Δ4) as a step up or down, destination RAPM as the final bar. Three players side by side or three separate charts with consistent y-axis.
-- **VISUAL 7b:** Final projected stat line comparison table — Moore vs. Carter vs. Ellis, PPG/APG/RPG alongside Dest Off/Def RAPM and composite fit score.
+- **VISUAL 7a:** Waterfall chart per player — neutral value/100 as baseline, each delta (Δ1–Δ4) as a step up or down, destination value/100 as the final bar. Three players side by side or three separate charts with consistent y-axis.
+- **VISUAL 7b:** Final comparison table — Ruffin vs. Crawford vs. Evans, destination value/100, projected minutes, role fit, and composite fit score.
 
 ---
 

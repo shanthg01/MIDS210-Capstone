@@ -43,9 +43,37 @@ def get_sync_engine() -> Engine:
     Real env vars win over .env file (matches mlflow_helpers.ensure_aws_env's
     precedence) — needed for CI, which sets DATABASE_URL directly and has no
     .env file at all.
+
+    sslmode is extracted from the URL query string and passed via connect_args
+    instead of the URL — SQLAlchemy's psycopg2 dialect misroutes host resolution
+    when sslmode appears as a URL query param (libpq reads it before applying
+    the explicit host/port, causing it to fall back to service/passfile lookup).
     """
+    import re
     raw_url = os.environ.get("DATABASE_URL") or load_env().get(
         "DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5433/portalpoint"
     )
-    sync_url = raw_url.replace("+asyncpg", "+psycopg2").replace("ssl=require", "sslmode=require")
-    return create_engine(sync_url, echo=False, pool_pre_ping=True, pool_recycle=1800)
+    # Strip ssl/sslmode from URL query string; pass via connect_args instead
+    sync_url = raw_url.replace("+asyncpg", "+psycopg2")
+    ssl_required = bool(re.search(r"[?&]ssl(?:mode)?=require", sync_url))
+    sync_url = re.sub(r"[?&]ssl(?:mode)?=require", "", sync_url)
+    # Clean up dangling ? or & left over after stripping
+    sync_url = re.sub(r"\?$", "", sync_url)
+    connect_args: dict = {
+        # TCP keepalives: pool_pre_ping only validates a connection at checkout time,
+        # not while a long-running query is mid-flight. Without these, a connection
+        # that dies mid-query (e.g. a dropped SSH tunnel) leaves the client blocked on
+        # a socket read forever, with no exception raised — see Issue #53 follow-up,
+        # where a chunk hung silently for 10+ hours with no traceback. With these set,
+        # the OS detects a dead peer within ~30s + 10s*5 = 80s and errors out the read.
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    }
+    if ssl_required:
+        connect_args["sslmode"] = "require"
+    return create_engine(
+        sync_url, echo=False, pool_pre_ping=True, pool_recycle=1800,
+        connect_args=connect_args,
+    )

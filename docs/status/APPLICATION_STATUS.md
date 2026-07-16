@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** June 25, 2026 (`players.py`'s `/{id}/projection` endpoint added)
+**Last updated:** July 9, 2026 (Role Fit, Destination Projection, and Recommendation v1 status corrected on `main`)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -32,16 +32,16 @@ User-facing fit should eventually expose four components:
 |---|---|---|
 | Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
 | Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v4` code path, all-pairs, shared roster baseline); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
-| Role Fit | Not built | Requires playing time / rotation model (M4). Scalar stubbed at 50.0; breakdown is seeded-random placeholder. Roster-state data dependency (`roster_snapshots`) now exists — see `ARCHITECTURE_STATUS.md` — model itself still not built. |
+| Role Fit | Real for 2027 rows | `playing-time-rotation-v2` writes `playing_time_projections` and syncs `player_team_fit_scores.role_fit` / `breakdown.role_fit`. Missing/out-of-scope pairs still fall back through the normal fit-score stub path. |
 | Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
 
 Current state:
 
 ```text
-overall_fit = 0.30 * scheme_fit + 0.20 * gap_match + 0.50 * 50.0
+overall_fit = weighted(scheme_fit, gap_match, role_fit, program_fit)
 ```
 
-`overall_fit` is still partial — narrow effective range until role_fit and program_fit are real. Do not present `overall_fit` as a trustworthy ranking signal yet; `gap_match` and `scheme_fit` individually are meaningful now.
+`overall_fit` is still partial because `program_fit` remains the 50.0 placeholder and component calibration is not final. `scheme_fit`, `gap_match`, and model-written `role_fit` are meaningful individually where rows exist.
 
 ---
 
@@ -56,10 +56,10 @@ Interactive docs: `http://localhost:8000/docs`
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
 | `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves Player Projection Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision; response includes Phase 2a's `projected_box_score`/`projected_rates` when present — see `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path). `role_fit` is implemented in branch through `playing_time_projections` / `playing-time-rotation-v2`, but requires the full 2027 all-school write before the API should present it as production. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates the all-pairs scoring (e.g. below the 5-game minimum). |
-| `recommendations.py` | Stub | Program-facing recommendation shape exists; blocked on Model 7 and complete fit scores. Documented contract: default to `is_portal_candidate = true` once real. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates model scope. |
+| `recommendations.py` | Stub API / v1 engine exists | Program-facing response shape exists and currently returns real DB players with stub scores. `src/portalpoint/modeling/recommendations.py` and `scripts/run_recommendations.py` implement a baseline scheme+gap ranking engine; API wiring to persisted recommendations is still pending. |
 | `predictions.py` | Stub | Blocked on transfer success model. |
-| `projections.py` | Stub | Blocked on team rating projection model. |
+| `projections.py` | Stub on `main` | Blocked on merging/rerunning Team Rating Projection PR #49. |
 | `comparison.py` | Stub/partial | Side-by-side comparison shape exists; richer comparison blocked on full fit scores/projections. |
 
 Important backend modules:
@@ -129,7 +129,7 @@ Current app assumptions:
 Watch-outs:
 
 - Default JWT expiry is one hour; set `JWT_EXPIRY_SECONDS=86400` locally if helpful.
-- Any page that assumes complete fit scores must communicate partial/stub state until all components are real.
+- Any page that assumes complete fit scores must communicate partial state until Program Fit and final calibration are real.
 - `fit_scores.py` resolves current season dynamically (`fit_score_service.get_current_season()` — max season in `player_team_fit_scores`, Redis-cached); `season` query param overrides it for historical seasons.
 - `gap.uniqueness_bonus` / `redundancy_penalty` in the breakdown are hardcoded 0.0 — not yet computed by `gap-cos-v4`.
 
@@ -137,7 +137,7 @@ Watch-outs:
 
 ## Tests
 
-Current state (2026-06-22):
+Current state (2026-07-09):
 
 ```text
 115 tests passing across 8 modules
@@ -178,17 +178,18 @@ The app becomes truly useful when the fit stack is no longer mostly stubbed.
 ```text
 ✅ Build Gap Matching
 ✅ wire fit_scores.py to real scheme_fit + gap_match
+✅ run Role Fit / Playing Time full 2027 write
+✅ build Recommendation Engine v1 script
 -> expose partial but meaningful fit breakdown in UI
--> run Role Fit / Playing Time full 2027 write
+-> merge/rerun Team Rating Projection PR #49
 -> build Program Fit
 -> wire complete fit_scores.py
--> build Recommendation Engine
 -> replace recommendation stubs with ranked program-specific players
 ```
 
 Recommended app-side order:
 
-1. Update the Fit Score page to distinguish real (scheme, gap) from placeholder (role, program) components — `fit_scores.py` now returns real values for the first two.
+1. Update the Fit Score page to distinguish real (scheme, gap, role where synced) from placeholder/incomplete Program Fit and calibration state.
 2. Add clearer empty/loading/error states around missing scores.
 3. Make player shortlist actions prominent from search/profile/fit pages.
 4. Once recommendations are real, make Dashboard the coach's daily recruiting queue.
@@ -198,7 +199,7 @@ Recommended app-side order:
 
 ## Application Open Questions
 
-1. How should the UI label partial fit scores while gap/role/program are stubs?
+1. How should the UI label partial fit scores while Program Fit is still stubbed and final calibration is pending?
 2. Should the Dashboard prioritize recommendations, shortlists, or roster gaps first?
 3. What is the minimum explanation required beside each fit score for a coach to trust it?
 4. Should coaches be able to override preference weights before Program Fit is fully modeled?
