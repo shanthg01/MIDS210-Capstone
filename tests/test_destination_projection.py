@@ -348,6 +348,9 @@ class TestFitStyleSkillWeights:
         known_coef = 0.6
         style_training = pd.DataFrame({
             "value_delta": known_coef * raw_shooting + rng.normal(0, 0.02, n),
+            # 2 seasons (150/50 split) so the held-out gate (fit on 2025, score on 2026)
+            # has a fold to evaluate — a single-season frame can't hold anything out and
+            # would fall back by design (see fit_style_skill_weights).
             "dest_season": np.where(np.arange(n) < 150, 2025, 2026),
             "dest_usage_rate": np.full(n, 0.22),
             "source_usage_rate": np.full(n, 0.22),

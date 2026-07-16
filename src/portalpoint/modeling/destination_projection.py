@@ -2096,10 +2096,22 @@ def run_destination_projection(
     school_id_subset: list[int] | None = None,
     portal_only: bool = True,
     dry_run: bool = False,
+    validate: bool = True,
 ) -> dict[str, Any]:
     """End-to-end destination projection pipeline.
 
     Returns a metrics dict for MLflow logging.
+
+    validate: set False to skip run_rolling_origin_cv/compute_cohort_validation
+    entirely (not just skip acting on their output). Real finding (2026-07-14):
+    a population-restricted historical backfill run's CV metric is computed
+    from a much smaller, single-fold sample than a real production run — even
+    though the metric itself is real (not a bug), comparing it against the
+    full-population champion via maybe_promote isn't a meaningful comparison,
+    and produced a real but spurious promotion (v5, Δ=+8.3%, manually
+    reverted). scripts/run_destination_projection.py's --backfill flag sets
+    this False and also skips MLflow model registration/maybe_promote — a
+    restricted run should never be able to become @champion.
     """
     # --- 1. Candidate pool ---
     if player_id_subset:
@@ -2163,10 +2175,15 @@ def run_destination_projection(
 
     # --- 4a. Data-driven usage coefficient + rolling-origin CV ---
     usage_coef = estimate_usage_value_coef(neutral_df, source_stats_df)
-    cv_metrics = run_rolling_origin_cv(training_df)
-    log.info("CV metrics: %s", cv_metrics)
-    cohort_metrics = compute_cohort_validation(training_df)
-    log.info("Cohort validation: %s", cohort_metrics)
+    if validate:
+        cv_metrics = run_rolling_origin_cv(training_df)
+        log.info("CV metrics: %s", cv_metrics)
+        cohort_metrics = compute_cohort_validation(training_df)
+        log.info("Cohort validation: %s", cohort_metrics)
+    else:
+        log.info("validate=False — skipping run_rolling_origin_cv/compute_cohort_validation")
+        cv_metrics = {}
+        cohort_metrics = {}
 
     # --- 5. Build inference frame ---
     frame = build_destination_inference_frame(

@@ -22,6 +22,7 @@ from sklearn.ensemble import (
 )
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from portalpoint.modeling.availability import AVAILABLE_STATUSES
 from portalpoint.modeling.minutes import minutes_per_game_from_min_pct, minutes_share_from_min_pct
 
 try:
@@ -220,6 +221,7 @@ transfer_pairs AS (
     FROM transfer_portal_events
     WHERE player_id IS NOT NULL
       AND match_status = 'matched'
+      AND status = ANY(%(available_statuses)s)
 ),
 hep_dedup AS (
     SELECT DISTINCT ON (player_id, season)
@@ -440,6 +442,7 @@ PT_STAGING_TABLES: list[tuple[str, str]] = [
         WHERE season = %(source_season)s
           AND player_id IS NOT NULL
           AND match_status = 'matched'
+          AND status = ANY(%(available_statuses)s)
         ORDER BY player_id, updated_at DESC NULLS LAST, id DESC
     """),
     ("pt_staging_hep_dedup", """
@@ -485,6 +488,7 @@ def materialize_inference_staging(
         "source_season": source_season,
         "roster_season": roster_season,
         "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
+        "available_statuses": list(AVAILABLE_STATUSES),
     }
     raw_conn = _raw_connection_with_timeout(engine)
     try:
@@ -726,6 +730,27 @@ class PlayingTimeModels:
     high_usage_model: Any | None = None
     freshman_minutes_share_by_group: dict[str, float] = field(default_factory=dict)
     freshman_usage_by_group: dict[str, float] = field(default_factory=dict)
+
+
+def resolve_promotion_gate_metric(metrics: dict[str, float]) -> float | None:
+    """Real held-out minutes_rmse for maybe_promote gating, or None if unavailable.
+
+    minutes_rmse only exists when rolling_origin_validation had enough seasons to
+    compute real held-out CV folds. A restricted/single-season run (e.g. a
+    historical backtest scoped to one season's transfer population) never gets
+    real folds, so minutes_rmse is absent from metrics.
+
+    Previously (scripts/run_playing_time.py's log_mlflow) a missing minutes_rmse
+    fell back to train_minutes_share_rmse — a completely different metric
+    (in-sample, fractional minutes-SHARE, not per-40-minutes RMSE) — compared
+    under the "minutes_rmse" name in maybe_promote. Confirmed real on 2026-07-14:
+    a historical backfill run logged train_minutes_share_rmse=0.0754 with no
+    minutes_rmse at all; comparing 0.0754 against the real champion's
+    minutes_rmse=5.623 produced a nonsensical Δ=+98.6% "improvement" and a false
+    promotion (manually reverted). Returns None (caller must skip promotion)
+    instead of silently substituting an incompatible metric.
+    """
+    return metrics.get("minutes_rmse")
 
 
 class TreeQuantileRegressor:
@@ -1356,6 +1381,7 @@ def build_training_examples(engine, seasons: Sequence[int]) -> pd.DataFrame:
         "min_games": MIN_TRAIN_GAMES,
         "projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
         "synthetic_school_id_floor": SYNTHETIC_SCHOOL_ID_FLOOR,
+        "available_statuses": list(AVAILABLE_STATUSES),
     }
     raw = read_sql_frame(engine, TRAINING_SQL, params)
     raw = null_leaking_neutral_projection_features(raw)

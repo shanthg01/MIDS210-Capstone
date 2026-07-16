@@ -721,3 +721,28 @@ def test_fit_score_uses_real_role_breakdown(client, H):
     assert role["projected_minutes"] == pytest.approx(22.0)
     assert role["usage_role"] == "connector"
     assert role["displaced_minutes"]["replacement_slot"] == pytest.approx(8.0)
+
+
+# ---------------------------------------------------------------------------
+# Promotion gate metric (regression: real false-promotion found 2026-07-14)
+# ---------------------------------------------------------------------------
+
+def test_resolve_promotion_gate_metric_returns_real_minutes_rmse():
+    metrics = {"minutes_rmse": 5.623, "usage_rmse": 4.86}
+    assert pt.resolve_promotion_gate_metric(metrics) == 5.623
+
+
+def test_resolve_promotion_gate_metric_none_when_missing():
+    # Regression: a single-season/population-restricted run has no rolling-origin
+    # CV folds, so minutes_rmse is never computed. Previously this silently fell
+    # back to train_minutes_share_rmse (a different, incompatible metric) inside
+    # scripts/run_playing_time.py's log_mlflow, comparing 0.0754 against a real
+    # champion's minutes_rmse=5.623 and producing a false Δ=+98.6% promotion
+    # (confirmed real, manually reverted). The fix must return None here, not a
+    # substitute value, so the caller skips maybe_promote entirely.
+    metrics = {"train_minutes_share_rmse": 0.0754, "usage_rmse": 3.496}
+    assert pt.resolve_promotion_gate_metric(metrics) is None
+
+
+def test_resolve_promotion_gate_metric_none_on_empty_metrics():
+    assert pt.resolve_promotion_gate_metric({}) is None
