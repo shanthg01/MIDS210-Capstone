@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** July 9, 2026 (Role Fit, Destination Projection, and Recommendation v1 status corrected on `main`)
+**Last updated:** July 15, 2026 (`/api/recommendations` wired to the real engine; frontend explainability pass; destination-adjusted projection surfaced; Scheme Fit UI fixes)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -30,10 +30,10 @@ User-facing fit should eventually expose four components:
 
 | Component | Status | App implication |
 |---|---|---|
-| Scheme Fit | Real | `player_team_fit_scores.scheme_fit`, served via `fit_scores.py`. |
+| Scheme Fit | Real | `player_team_fit_scores.scheme_fit` (shot-distribution cosine), served via `fit_scores.py`. Breakdown fixed 2026-07-15: mislabeled `ball_movement_match` (was actually `mid_range_rate`'s match score) renamed to `mid_range_match`; fake `usage_match` (always a `50.0` stub) removed; real `he_scheme_fit`/`he_breakdown` (6-dim HoopExplorer play-type cosine, computed but never reached the API before) now surfaced. `FitScorePage` shows a display-only average of shot-distribution + play-type match as the headline — the stored `scheme_fit` column and everything that reads it (Overall Fit, Compare, recommendation engine) is untouched. |
 | Gap Match | Real | `player_team_fit_scores.gap_match` (`gap-cos-v4` code path, all-pairs, shared roster baseline); sparse/right-skewed by design — most pairs score low, high scores indicate genuine roster need. Served via `fit_scores.py`. |
-| Role Fit | Real for 2027 rows | `playing-time-rotation-v2` writes `playing_time_projections` and syncs `player_team_fit_scores.role_fit` / `breakdown.role_fit`. Missing/out-of-scope pairs still fall back through the normal fit-score stub path. |
-| Program Fit | Not built | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar stubbed at 50.0; breakdown is seeded-random placeholder. |
+| Role Fit | Real per-row | `playing-time-rotation-v2` writes `playing_time_projections` and syncs `player_team_fit_scores.role_fit` / `breakdown.role_fit`. `FitScorePage`'s Live/Placeholder indicator now checks `fit.model_version === 'playing-time-rotation-v2'` per response (fixed 2026-07-15 — was previously a blanket "always Placeholder" flag regardless of whether the row was actually synced). Dashboard/Compare still show the blanket flag — no per-player `model_version` in those response shapes yet. |
+| Program Fit | Not built, descoped | Requires preference/proxy data for NIL, geography, academics, and program constraints. Scalar hardcoded `50.0` on every real row (confirmed via DB query 2026-07-15 — zero variation across 12M+ rows, not just "pending a model"). UI honesty pass (2026-07-15): fake sub-metric bars removed from `FitScorePage`, replaced everywhere Program Fit appears (FitScorePage, Compare tooltip, Settings caption) with one shared "not live yet, here's what it represents" note. Settings weight sliders stay live/adjustable by product choice even though they currently have no real effect. |
 
 Current state:
 
@@ -54,10 +54,10 @@ Interactive docs: `http://localhost:8000/docs`
 | Router | Status | Notes |
 |---|---|---|
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
-| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves Player Projection Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by product decision; response includes Phase 2a's `projected_box_score`/`projected_rates` when present — see `MODEL_STATUS.md`'s Player Projection section. |
+| `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves neutral Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by default, or destination-adjusted projections when `?school_id=X` is passed — the destination branch existed and was tested but was never called from the frontend until 2026-07-15, when `FitScorePage` (school-specific everywhere else) was switched to it. Destination mode's `projected_box_score` uses `_per_game` keys scaled to real expected minutes, not neutral's `_per_40` keys — frontend picks the right label map by `projection_mode`. See `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
 | `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates model scope. |
-| `recommendations.py` | Stub API / v1 engine exists | Program-facing response shape exists and currently returns real DB players with stub scores. `src/portalpoint/modeling/recommendations.py` and `scripts/run_recommendations.py` implement a baseline scheme+gap ranking engine; API wiring to persisted recommendations is still pending. |
+| `recommendations.py` | Real, live | Wired 2026-07-15 — was a hardcoded stub list since the original scaffold, on every branch, despite the real 2-stage engine (`src/portalpoint/modeling/recommendations.py`, `rec-v1.2`) existing and being run for real by the batch script. Router now resolves the caller's `school_id`/saved weights, builds the candidate pool live via `CANDIDATE_SQL` (moved into `modeling/recommendations.py` — `scripts/` isn't a packaged module, can't be imported from the API), and runs `generate_top_50_candidates()`/`refine_to_top_10()` in-process per request. `FitComponents.program_fit` → `team_impact_fit` in this response only (engine has no program_fit signal). |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub on `main` | Blocked on merging/rerunning Team Rating Projection PR #49. |
 | `comparison.py` | Stub/partial | Side-by-side comparison shape exists; richer comparison blocked on full fit scores/projections. |
@@ -87,13 +87,15 @@ Implemented pages:
 |---|---|---|
 | App shell | `frontend/src/App.tsx`, `components/AppLayout.tsx` | Routing/layout. |
 | Login/signup | `pages/LoginPage.tsx`, `pages/SignupPage.tsx` | Auth flow. |
-| Dashboard | `pages/DashboardPage.tsx` | Program landing surface. |
+| Overview | `pages/OverviewPage.tsx` | New 2026-07-15 — plain-language landing page (goal, qualitative "what this does" tiles), first nav item. |
+| Dashboard | `pages/DashboardPage.tsx` | Program landing surface. Recommendation cards now show real, varied component scores (was a fixed 10-row stub sequence before the recommendations router wiring) with a tiered-verdict reasoning line. |
 | Player search | `pages/PlayerSearchPage.tsx` | Search/browse players. |
-| Player profile | `pages/PlayerProfilePage.tsx` | Player detail surface. |
-| Fit score | `pages/FitScorePage.tsx` | Fit score visualization; still depends on partial backend data. |
-| Compare | `pages/ComparePage.tsx` | Player comparison shell. |
+| Player profile | `pages/PlayerProfilePage.tsx` | Player detail surface; neutral (context-free) Player Projection, unchanged. |
+| Fit score | `pages/FitScorePage.tsx` | Fit score visualization. Destination-adjusted Player Projection (was neutral), per-row Role Fit Live/Placeholder accuracy, restructured Scheme Fit section (Shot Distribution + Play Type groups), key-insight summary strip, Program Fit honesty note — all 2026-07-15. |
+| Compare | `pages/ComparePage.tsx` | Player comparison; header-row CSS bug fixed, verdict summary added above the matrix, Program Fit tooltip. |
 | Pipeline | `pages/PipelinePage.tsx` | Build/status style page. |
-| Settings | `pages/SettingsPage.tsx` | Preferences/account settings. |
+| Settings | `pages/SettingsPage.tsx` | Preferences/account settings; Program Fit weight slider now has an inline "not live yet" caption. |
+| Glossary | `pages/GlossaryPage.tsx` | New 2026-07-15 — definitions for every fit component/metric, last nav item. |
 
 API clients:
 
@@ -137,10 +139,12 @@ Watch-outs:
 
 ## Tests
 
-Current state (2026-07-09):
+Current state (2026-07-15):
 
 ```text
-115 tests passing across 8 modules
+~491 tests passing repo-wide (uv run pytest -q) — run it for the current exact count,
+this number drifts fast. tests/test_recommendations.py (11) and tests/test_fit_scores.py
+(15) both re-verified green after this pass's changes.
 ```
 
 Test areas:
@@ -150,8 +154,9 @@ Test areas:
 | `tests/test_auth.py` | Signup/login/auth edge cases. |
 | `tests/test_players.py` | Player endpoints and real DB data shape. |
 | `tests/test_users.py` | Preferences/shortlist behavior. |
-| `tests/test_fit_scores.py` | Fit score router behavior. |
-| `tests/test_recommendations.py` | Recommendation endpoint shape. |
+| `tests/test_fit_scores.py` | Fit score router behavior — includes Scheme Fit breakdown field checks (`mid_range_match`, not `usage_match`/`ball_movement_match`, 2026-07-15). |
+| `tests/test_recommendations.py` | Recommendation endpoint — now exercises the real engine end-to-end (real `user_id` fixture, `season` pinned explicitly, `team_impact_fit` field, ownership-check 403 case), not just response shape. |
+| `tests/test_recommendation_engine.py` | Pure-unit tests for `modeling/recommendations.py` (no DB) — 46 tests. |
 | `tests/test_predictions.py` | Prediction endpoint shape. |
 | `tests/test_projections.py` | Projection endpoint shape. |
 | `tests/test_comparison.py` | Comparison endpoint shape. |
@@ -180,11 +185,11 @@ The app becomes truly useful when the fit stack is no longer mostly stubbed.
 ✅ wire fit_scores.py to real scheme_fit + gap_match
 ✅ run Role Fit / Playing Time full 2027 write
 ✅ build Recommendation Engine v1 script
--> expose partial but meaningful fit breakdown in UI
--> merge/rerun Team Rating Projection PR #49
--> build Program Fit
--> wire complete fit_scores.py
--> replace recommendation stubs with ranked program-specific players
+✅ expose partial but meaningful fit breakdown in UI (frontend explainability pass, 2026-07-15)
+✅ merge/rerun Team Rating Projection PR #49
+✅ replace recommendation stubs with ranked program-specific players (2026-07-15)
+✳️ build Program Fit — descoped, not on this path
+-> wire complete fit_scores.py (reweight decision pending, program_fit descoped)
 ```
 
 Recommended app-side order:
@@ -199,9 +204,10 @@ Recommended app-side order:
 
 ## Application Open Questions
 
-1. How should the UI label partial fit scores while Program Fit is still stubbed and final calibration is pending?
+1. ✅ Partially resolved (2026-07-15) — Program Fit now has a consistent "not live yet, here's what it represents" note everywhere it appears (FitScorePage, Compare, Settings), sourced from one shared string. Open remainder: whether/how to communicate final-calibration status once `overall_fit`'s weighting question (3 vs. 4 components) is decided.
 2. Should the Dashboard prioritize recommendations, shortlists, or roster gaps first?
-3. What is the minimum explanation required beside each fit score for a coach to trust it?
-4. Should coaches be able to override preference weights before Program Fit is fully modeled?
-5. Which comparison dimensions matter most for MVP: fit components, archetype, projected minutes, projected impact, or risk?
+3. What is the minimum explanation required beside each fit score for a coach to trust it? Partial answer landed 2026-07-15 (key-insight summary strips, hover tooltips on every component/sub-metric, Glossary page) — still open whether this is *sufficient*, not just present.
+4. Should coaches be able to override preference weights before Program Fit is fully modeled? (Settings sliders are live/adjustable already, per 2026-07-15 product decision, even though Program Fit's slider has no real effect yet.)
+5. Which comparison dimensions matter most for MVP: fit components, archetype, projected minutes, projected impact, or risk? Compare page gained a plain-language verdict summary 2026-07-15 (which player is the stronger fit and why) — doesn't resolve which raw dimensions to prioritize.
 6. Should the Pipeline page remain a user-facing screen, or move to internal/admin status only?
+7. Should `he_scheme_fit` (now surfaced 2026-07-15) actually feed `scheme_fit`'s weight in `overall_fit`/ranking, not just this page's own display average? Same class of open question as #4 for Program Fit.

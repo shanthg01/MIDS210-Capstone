@@ -1,71 +1,136 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query
-from sqlalchemy import select
+import pandas as pd
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import text
 
-from portalpoint.api.deps import CurrentUser, DbSession
+from portalpoint.api.deps import CurrentUser, DbSession, RedisClient
 from portalpoint.api.schemas.recommendation import FitComponents, RecommendationItem, RecommendationsResponse
-from portalpoint.db.models import Player
+from portalpoint.api.services import fit_score_service
+from portalpoint.modeling.recommendations import (
+    CANDIDATE_SQL,
+    DEFAULT_FIT_WEIGHTS,
+    MODEL_VERSION,
+    fixed_team_impact_preferences,
+    generate_top_50_candidates,
+    refine_to_top_10,
+    team_impact_fit,
+)
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
-# (overall, gap, scheme, role_fit, program_fit, reasoning) — only the scores/reasoning
-# are fake here; player_id/name/position come from real DB rows (see get_recommendations)
-# so clicking through to a player profile actually resolves, instead of 404ing on a
-# fabricated id that was never a real player.
-_STUB_SCORES = [
-    (92.0, 95.0, 90.0, 88.0, 67.0, "High scheme fit — 3PT-heavy offense matches shooting profile exactly."),
-    (87.5, 85.0, 92.0, 78.0, 72.0, "Drive-and-kick system maximizes off-ball movement and assist tendencies."),
-    (84.0, 88.0, 81.0, 82.0, 70.0, "Two wings departing; clear path to 24+ minutes as starter."),
-    (82.1, 91.0, 75.0, 80.0, 64.0, "Top gap match — roster needs stretch 4 and archetype fits perfectly."),
-    (80.8, 82.0, 84.0, 74.0, 71.0, "Similar tempo to current program — minimal statistical adjustment expected."),
-    (79.5, 78.0, 80.0, 76.0, 68.0, "NIL budget alignment and academic fit match program's stated priorities."),
-    (77.3, 75.0, 72.0, 79.0, 65.0, "Coaching system emphasizes ball movement matching pass-first tendencies."),
-    (76.0, 70.0, 78.0, 75.0, 62.0, "High-tempo offense suits usage profile and shot creation volume."),
-    (74.9, 82.0, 70.0, 72.0, 60.0, "Familiar conference opponent; scheme transition risk is low."),
-    (73.2, 77.0, 68.0, 70.0, 71.0, "Strong academic match and regional fit align with program preference weights."),
-]
+# Single-user variant of scripts/run_recommendations.py's USERS_SQL — same
+# COALESCE defaults (contract with that script's batch job), scoped to one
+# user instead of "all active users of a school", and also resolves school_id
+# in the same round-trip since the live endpoint needs it for CANDIDATE_SQL.
+_USER_SQL = """
+SELECT
+    u.school_id,
+    COALESCE(up.weight_scheme, 0.25) AS weight_scheme,
+    COALESCE(up.weight_gap,    0.30) AS weight_gap,
+    COALESCE(up.weight_role,   0.25) AS weight_role
+FROM users u
+LEFT JOIN user_preferences up ON up.user_id = u.id
+WHERE u.id = :user_id
+"""
+
+_COMPONENT_LABELS = {
+    "scheme_fit": "scheme fit",
+    "gap_match": "roster gap match",
+    "role_fit": "role fit",
+    "team_impact_fit": "team-impact projection",
+}
+
+
+def _check_auth(user_id: int, current_user: int) -> None:
+    if user_id != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def _build_reasoning(row: pd.Series) -> str:
+    scores = {key: row[key] for key in _COMPONENT_LABELS}
+    top_key = max(scores, key=lambda k: scores[k])
+    overall = row["personalized_fit"]
+    if overall >= 75:
+        verdict = "Excellent overall fit"
+    elif overall >= 60:
+        verdict = "Strong fit"
+    elif overall >= 45:
+        verdict = "Solid, worth a look"
+    else:
+        verdict = "Developmental fit"
+    return f"{verdict} — stands out most in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
 
 
 @router.get("", response_model=RecommendationsResponse)
-async def get_recommendations(current_user: CurrentUser, db: DbSession, user_id: int = Query(...)):
-    # STUB — replace with Model 7 (30% SVD collab filter + 30% content-based + 40% fit scores)
-    #
-    # Contract once M7 ships (PR #33 follow-ups #1/#2/#5): default to
-    # WHERE is_portal_candidate = true on player_team_fit_scores — recommendations
-    # are "available players", not every player ever scored. Gap Matching/Scheme
-    # Fit stay all-pairs (clustering/projections/one-off scenarios need the full
-    # universe); this endpoint is the one that should narrow to it. Add an
-    # admin/debug query param to opt into all players rather than defaulting to it.
-    rows = (
-        await db.execute(
-            select(Player.id, Player.full_name, Player.position)
-            .order_by(Player.id)
-            .limit(len(_STUB_SCORES))
+async def get_recommendations(
+    current_user: CurrentUser,
+    db: DbSession,
+    redis: RedisClient,
+    user_id: int = Query(...),
+    season: int | None = Query(default=None, description="Defaults to the most recent scored season"),
+):
+    _check_auth(user_id, current_user)
+
+    if season is None:
+        season = await fit_score_service.get_current_season(db, redis)
+
+    user_row = (await db.execute(text(_USER_SQL), {"user_id": user_id})).mappings().first()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now = datetime.now(timezone.utc)
+
+    pool_rows = (
+        (
+            await db.execute(
+                text(CANDIDATE_SQL),
+                {"school_id": user_row["school_id"], "season": season},
+            )
         )
-    ).all()
+        .mappings()
+        .all()
+    )
+    if not pool_rows:
+        return RecommendationsResponse(
+            program_id=user_id, recommendations=[], total=0, generated_at=now, model_version=MODEL_VERSION
+        )
+
+    pool = pd.DataFrame(pool_rows)
+    pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
+
+    top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS)
+
+    try:
+        user_preferences = fixed_team_impact_preferences(
+            user_row["weight_scheme"], user_row["weight_gap"], user_row["weight_role"]
+        )
+        top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     items = [
         RecommendationItem(
-            rank=i + 1,
-            player_id=str(p.id),
-            player_name=p.full_name,
-            position=p.position,
-            overall_fit=fit,
+            rank=int(row["final_rank"]),
+            player_id=str(row["player_id"]),
+            player_name=row["player_name"],
+            position=row["position"],
+            overall_fit=row["personalized_fit"],
             components=FitComponents(
-                gap_match=gap,
-                scheme_fit=scheme,
-                role_fit=role,
-                program_fit=prog,
+                gap_match=row["gap_match"],
+                scheme_fit=row["scheme_fit"],
+                role_fit=row["role_fit"],
+                team_impact_fit=row["team_impact_fit"],
             ),
-            reasoning=reason,
+            reasoning=_build_reasoning(row),
+            is_portal_candidate=bool(row["is_portal_candidate"]),
         )
-        for i, (p, (fit, gap, scheme, role, prog, reason)) in enumerate(zip(rows, _STUB_SCORES))
+        for _, row in top10.iterrows()
     ]
     return RecommendationsResponse(
         program_id=user_id,
         recommendations=items,
         total=len(items),
-        generated_at=datetime.now(timezone.utc),
-        model_version="rec_v1.0-stub",
+        generated_at=now,
+        model_version=MODEL_VERSION,
     )

@@ -53,7 +53,7 @@ WHERE snapshot_id = %s
 PLAYER_POOL_SQL = """
 SELECT
     pss.player_id, pss.school_id, pss.season, pss.games_played, pss.min_pct,
-    pss.usage_rate, pss.points_per_game, pss.per,
+    pss.usage_rate, pss.points_per_game, pss.bpm,
     p.position, p.height_inches, pss.barttorvik_role,
     hep.pos_confidence_pg, hep.pos_confidence_sg, hep.pos_confidence_sf,
     hep.pos_confidence_pf, hep.pos_confidence_c,
@@ -100,7 +100,15 @@ def build_for_snapshot(conn, snapshot_id: int, school_id: int, season: int) -> d
     with conn.cursor() as cur:
         cur.execute(SNAPSHOT_PLAYERS_SQL, (snapshot_id,))
         cols = [d[0] for d in cur.description]
-        snapshot_df = pd.DataFrame(cur.fetchall(), columns=cols)
+        rows = cur.fetchall()
+        snapshot_df = pd.DataFrame(rows, columns=cols)
+        # player_id is nullable here (unmatched "new" players) — pandas' default
+        # column-dtype inference would upcast it to float64 and corrupt it (see
+        # rsf.safe_bigint_series docstring). Rebuild from the raw rows, not from
+        # snapshot_df["player_id"] — precision is already lost by the time the
+        # DataFrame column exists.
+        pid_idx = cols.index("player_id")
+        snapshot_df["player_id"] = rsf.safe_bigint_series([r[pid_idx] for r in rows])
 
     matched = snapshot_df[snapshot_df["player_id"].notna()]
     returning_ids = matched.loc[matched["returning_status"] == "returning", "player_id"].tolist()

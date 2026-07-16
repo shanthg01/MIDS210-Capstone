@@ -117,14 +117,28 @@ def main() -> None:
         default=False,
         help="Compute all rows but skip the DB upsert (logs what would be written)",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Historical/population-restricted run (e.g. a scoped backtest season): writes real "
+            "rows, but skips run_rolling_origin_cv/compute_cohort_validation entirely and never "
+            "touches MLflow (no run, no model registration, no maybe_promote). Real finding "
+            "(2026-07-14): a restricted population's CV metric, even when computed correctly "
+            "(not a bug), is a much smaller/noisier sample than a real production run and once "
+            "produced a real but spurious promotion (Delta=+8.3 pct, manually reverted) — --backfill "
+            "makes that structurally impossible instead of relying on catching it after the fact."
+        ),
+    )
     args = parser.parse_args()
 
     engine = get_sync_engine()
 
     log.info(
-        "Destination projection — target=%d source=%d train=%s portal_only=%s dry_run=%s",
+        "Destination projection — target=%d source=%d train=%s portal_only=%s dry_run=%s backfill=%s",
         args.target_season, args.source_season, args.train_seasons,
-        args.portal_only, args.dry_run,
+        args.portal_only, args.dry_run, args.backfill,
     )
 
     if args.dry_run:
@@ -137,11 +151,47 @@ def main() -> None:
             school_id_subset=args.school_ids,
             portal_only=args.portal_only,
             dry_run=True,
+            validate=not args.backfill,
         )
         log.info("Dry-run destination projection complete. Metrics: %s", metrics)
         if metrics.get("skipped"):
             log.warning("Run skipped: %s", metrics["skipped"])
             sys.exit(1)
+        return
+
+    if args.backfill:
+        metrics = run_destination_projection(
+            engine,
+            target_season=args.target_season,
+            source_season=args.source_season,
+            train_seasons=args.train_seasons,
+            player_id_subset=args.player_ids,
+            school_id_subset=args.school_ids,
+            portal_only=args.portal_only,
+            dry_run=False,
+            validate=False,
+        )
+        log.info("Backfill destination projection complete (no MLflow run). Metrics: %s", metrics)
+
+        if metrics.get("skipped"):
+            log.warning("Run skipped: %s", metrics["skipped"])
+            if metrics["skipped"] == "no_pt_rows":
+                log.warning(
+                    "Fix: run_playing_time.py --target-season %d first, "
+                    "then rerun this script",
+                    args.target_season,
+                )
+            sys.exit(1)
+
+        n_written = metrics.get("n_records_written", 0)
+        if n_written == 0:
+            log.error("Zero rows written — check logs above for why inference frame was empty")
+            sys.exit(1)
+
+        log.info(
+            "Wrote %d destination projection rows (model_version=%s, target_season=%d)",
+            n_written, MODEL_VERSION, args.target_season,
+        )
         return
 
     import mlflow
