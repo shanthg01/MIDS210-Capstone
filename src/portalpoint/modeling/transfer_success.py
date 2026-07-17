@@ -11,12 +11,17 @@ silent merge collisions when two (offense, defense) pairs share a label.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
+
 import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+MODEL_VERSION: str  = "transfer-success-eb-v1"
 
 SHRINKAGE_K: int   = 15   # pseudo-observations from cluster prior
 CELL_MIN_N: int    = 5    # effective n below which shrinkage is meaningfully active
@@ -111,6 +116,47 @@ def load_transfer_data(engine, model_version: str) -> pd.DataFrame:
         return pd.read_sql(sql, conn)
     finally:
         conn.close()
+
+
+# Active portal candidates × all D1 schools with cluster context for forward scoring.
+# target_season is the play year (transfers.season + 1). Portal year = target_season - 1.
+# pa.season = target_season - 1: archetype from the departure season (same convention
+# as TRANSFER_EVAL_SQL's pa.season = t.season where t.season IS the portal/departure year).
+# tsp.season = target_season - 1: most recent completed team profile (live system can't
+# have target_season's profile — same intentional choice as TRANSFER_EVAL_SQL's tsp.season = t.season).
+ACTIVE_CANDIDATES_SQL = """\
+SELECT DISTINCT
+    ptf.player_id,
+    p.full_name        AS player_name,
+    ptf.school_id      AS to_school_id,
+    :target_season     AS season,
+    pa.archetype_id    AS player_cluster,
+    pa.archetype_label AS player_cluster_label,
+    tsp.system_label   AS team_cluster_label,
+    tsp.offense_cluster_id AS team_offense_cluster_id,
+    tsp.defense_cluster_id AS team_defense_cluster_id
+FROM player_team_fit_scores ptf
+JOIN players p ON p.id = ptf.player_id
+LEFT JOIN player_archetypes pa
+    ON  pa.player_id = ptf.player_id
+    AND pa.season    = :target_season - 1
+LEFT JOIN team_system_profiles tsp
+    ON  tsp.school_id = ptf.school_id
+    AND tsp.season    = :target_season - 1
+WHERE ptf.is_portal_candidate = true
+  AND ptf.season = :target_season
+"""
+
+
+def load_active_candidates(engine, target_season: int) -> pd.DataFrame:
+    """Load active portal candidates × all D1 schools for forward scoring."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text(ACTIVE_CANDIDATES_SQL),
+            conn,
+            params={"target_season": target_season},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +415,157 @@ def build_explanation(row: pd.Series, cell_min_n: int = CELL_MIN_N) -> str:
         f"{tier} historical success rate ({prob:.0%}) for this archetype at {team}, "
         f"{precedent}. Similar transfers: {comp_strs}."
     )
+
+
+def score_active_candidates(
+    df_active: pd.DataFrame,
+    df_historical: pd.DataFrame,
+    target_season: int,
+    shrinkage_k: int = SHRINKAGE_K,
+    decay_lambda: float = DECAY_LAMBDA,
+) -> pd.DataFrame:
+    """Forward-score active portal candidates using historical cell rates.
+
+    Appends active candidates (success=NaN, season=target_season) to the
+    labeled historical frame, then runs compute_success_probability. The
+    expanding-window logic naturally treats the target season as the score
+    season and uses ALL historical labeled rows as training.
+
+    Args:
+        df_active:    Output of load_active_candidates (no success column).
+        df_historical: Labeled historical frame from run_transfer_success_pipeline.
+        target_season: Season being scored (play year, e.g. 2027).
+
+    Returns:
+        Only the active candidate rows, with success_probability and tier.
+    """
+    # Align columns: active frame has no success/label columns yet.
+    active = df_active.copy()
+    active["season"] = target_season
+    active["success"] = np.nan
+    active["success_label"] = pd.NA
+    active["has_prior_history"] = False
+
+    # Add any historical columns missing from active (post_*, drift, etc.)
+    for col in df_historical.columns:
+        if col not in active.columns:
+            active[col] = np.nan
+
+    # Historical rows used purely as training; active rows scored in their season.
+    # Override historical seasons to be < target_season (they already are).
+    combined = pd.concat(
+        [df_historical[active.columns], active],
+        ignore_index=True,
+    )
+
+    scored = compute_success_probability(
+        combined, shrinkage_k=shrinkage_k, decay_lambda=decay_lambda
+    )
+    return scored[scored["season"] == target_season].copy()
+
+
+UPSERT_SQL = """\
+INSERT INTO transfer_success_scores (
+    player_id, to_school_id, season,
+    player_cluster, team_offense_cluster_id, team_defense_cluster_id,
+    team_cluster_label,
+    success_probability, success_tier,
+    cell_n, shrinkage_w, cluster_success_rate, cell_success_rate,
+    explanation, similar_transfers,
+    model_version, computed_at, expires_at
+) VALUES (
+    %(player_id)s, %(to_school_id)s, %(season)s,
+    %(player_cluster)s, %(team_offense_cluster_id)s, %(team_defense_cluster_id)s,
+    %(team_cluster_label)s,
+    %(success_probability)s, %(success_tier)s,
+    %(cell_n)s, %(shrinkage_w)s, %(cluster_success_rate)s, %(cell_success_rate)s,
+    %(explanation)s, %(similar_transfers)s,
+    %(model_version)s, %(computed_at)s, %(expires_at)s
+)
+ON CONFLICT (player_id, to_school_id, season, model_version)
+DO UPDATE SET
+    player_cluster             = EXCLUDED.player_cluster,
+    team_offense_cluster_id    = EXCLUDED.team_offense_cluster_id,
+    team_defense_cluster_id    = EXCLUDED.team_defense_cluster_id,
+    team_cluster_label         = EXCLUDED.team_cluster_label,
+    success_probability        = EXCLUDED.success_probability,
+    success_tier               = EXCLUDED.success_tier,
+    cell_n                     = EXCLUDED.cell_n,
+    shrinkage_w                = EXCLUDED.shrinkage_w,
+    cluster_success_rate       = EXCLUDED.cluster_success_rate,
+    cell_success_rate          = EXCLUDED.cell_success_rate,
+    explanation                = EXCLUDED.explanation,
+    similar_transfers          = EXCLUDED.similar_transfers,
+    computed_at                = EXCLUDED.computed_at,
+    expires_at                 = EXCLUDED.expires_at
+"""
+
+
+def upsert_transfer_success_scores(
+    engine,
+    records: list[dict],
+    expires_days: int = 7,
+) -> int:
+    """Upsert scored active candidates into transfer_success_scores.
+
+    Args:
+        engine:      SQLAlchemy sync engine.
+        records:     List of dicts from score_active_candidates (one per row).
+        expires_days: TTL; rows expire this many days after computed_at.
+
+    Returns:
+        Number of rows upserted.
+    """
+    if not records:
+        return 0
+
+    now = datetime.now(tz=timezone.utc)
+    expires = now + timedelta(days=expires_days)
+
+    def _coerce(val):
+        if isinstance(val, float) and np.isnan(val):
+            return None
+        if isinstance(val, (np.integer,)):
+            return int(val)
+        if isinstance(val, (np.floating,)):
+            return float(val)
+        return val
+
+    rows = []
+    for rec in records:
+        sim = rec.get("similar_transfers") or []
+        if not isinstance(sim, (list, str)):
+            sim = []
+        rows.append({
+            "player_id":                int(rec["player_id"]),
+            "to_school_id":             int(rec["to_school_id"]),
+            "season":                   int(rec["season"]),
+            "player_cluster":           _coerce(rec.get("player_cluster")),
+            "team_offense_cluster_id":  _coerce(rec.get("team_offense_cluster_id")),
+            "team_defense_cluster_id":  _coerce(rec.get("team_defense_cluster_id")),
+            "team_cluster_label":       rec.get("team_cluster_label"),
+            "success_probability":      float(rec["success_probability"]),
+            "success_tier":             str(rec["success_tier"]) if pd.notna(rec.get("success_tier")) else None,
+            "cell_n":                   _coerce(rec.get("cell_n")),
+            "shrinkage_w":              _coerce(rec.get("shrinkage_w")),
+            "cluster_success_rate":     _coerce(rec.get("cluster_success_rate")),
+            "cell_success_rate":        _coerce(rec.get("cell_success_rate")),
+            "explanation":              rec.get("explanation"),
+            "similar_transfers":        json.dumps(sim),
+            "model_version":            MODEL_VERSION,
+            "computed_at":              now,
+            "expires_at":               expires,
+        })
+
+    conn = engine.raw_connection()
+    try:
+        cur = conn.cursor()
+        cur.executemany(UPSERT_SQL, rows)
+        n = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return n
 
 
 def run_transfer_success_pipeline(
