@@ -26,6 +26,9 @@ import { getShortlist } from '../api/users';
 import { comparePlayers } from '../api/compare';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip } from '../components/FitScoreBar';
+import DefinitionTooltip from '../components/DefinitionTooltip';
+import { FIT_COMPONENTS, OVERALL_FIT } from '../constants/definitions';
+import { buildVerdict } from '../utils/compareInsights';
 import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
@@ -58,6 +61,7 @@ function ComparisonResults({
 }) {
   const navigate = useNavigate();
   const entries = result.players;
+  const verdict = buildVerdict(result);
 
   return (
     <Box>
@@ -70,12 +74,24 @@ function ComparisonResults({
         </Button>
       </Box>
 
+      {/* Verdict — plain-language summary, leads before the detailed matrix */}
+      <Alert severity="info" sx={{ mb: 3 }}>
+        <Typography variant="body2" fontWeight={700}>
+          {verdict.headline}
+        </Typography>
+        {verdict.bullets.map((b) => (
+          <Typography key={b} variant="body2">
+            • {b}
+          </Typography>
+        ))}
+      </Alert>
+
       {/* Score matrix */}
       <Paper variant="outlined" sx={{ mb: 3, overflow: 'hidden' }}>
         <TableContainer>
           <Table size="small">
             <TableHead>
-              <TableRow sx={{ bgcolor: 'grey.50' }}>
+              <TableRow>
                 <TableCell sx={{ fontWeight: 700, width: 140 }}>Metric</TableCell>
                 {entries.map((e) => (
                   <TableCell key={e.player.player_id} align="center">
@@ -107,7 +123,11 @@ function ComparisonResults({
                   <TableRow key={key} hover>
                     <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        {label}
+                        <DefinitionTooltip
+                          title={key === 'overall_fit' ? OVERALL_FIT.short : FIT_COMPONENTS[key as keyof typeof FIT_COMPONENTS]?.short ?? ''}
+                        >
+                          <span>{label}</span>
+                        </DefinitionTooltip>
                         {key !== 'overall_fit' && <DataStatusChip component={key} />}
                       </Box>
                     </TableCell>

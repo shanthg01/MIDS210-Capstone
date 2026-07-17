@@ -20,9 +20,12 @@ class FitWeights(BaseModel):
 class SchemeBreakdown(BaseModel):
     three_point_match: float = Field(..., ge=0, le=100)
     pace_match: float = Field(..., ge=0, le=100)
-    usage_match: float = Field(..., ge=0, le=100)
     rim_attack_match: float = Field(..., ge=0, le=100)
-    ball_movement_match: float = Field(..., ge=0, le=100)
+    mid_range_match: float = Field(..., ge=0, le=100)
+    # Play-type match (HoopExplorer 6-dim cosine) — only present when both
+    # player and team have HE coverage; None otherwise, never fabricated.
+    he_scheme_fit: float | None = None
+    he_breakdown: dict[str, float] | None = None
 
 
 class RoleFitBreakdown(BaseModel):
@@ -100,6 +103,5 @@ class FitScoreResponse(BaseModel):
     is_roster_baseline_member: bool = False
     # True when the news-monitoring agent detected a coaching change at school_id
     # and M2 team_system_profiles has not yet been re-run for this school/season.
-    # Surfaces as a warning: scheme fit score may not reflect the new coaching staff's system.
     scheme_fit_stale: bool = False
     scheme_fit_stale_reason: Optional[str] = None

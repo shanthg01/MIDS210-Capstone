@@ -74,6 +74,9 @@ export default function RecommendationCard({ item }: Props) {
             <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5, flexWrap: 'wrap' }}>
               <Chip label={item.position} size="small" />
               <Chip label={`#${item.rank}`} size="small" variant="outlined" color="primary" />
+              {item.is_portal_candidate && (
+                <Chip label="In Portal" color="success" size="small" />
+              )}
             </Box>
           </Box>
 

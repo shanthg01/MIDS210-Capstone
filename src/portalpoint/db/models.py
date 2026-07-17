@@ -331,7 +331,7 @@ class TeamSystemProfile(Base):
     # Set true by news-monitoring agent when a coaching change is detected;
     # cleared when M2 is re-run for this school/season.
     stale_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    stale_reason: Mapped[Optional[str]] = mapped_column(String(100))
+    stale_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     school: Mapped[School] = relationship(back_populates="team_system_profiles")

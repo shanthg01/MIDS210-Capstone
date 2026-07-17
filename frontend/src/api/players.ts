@@ -24,7 +24,14 @@ export async function getPlayer(playerId: string): Promise<PlayerProfile> {
 }
 
 // 404 means no projection row for this player — real "not available", not an error to surface.
-export async function getPlayerProjection(playerId: string): Promise<PlayerProjectionResponse> {
-  const { data } = await client.get<PlayerProjectionResponse>(`/players/${playerId}/projection`);
+// Omit schoolId for the neutral (context-free) projection; pass it for the
+// destination-adjusted projection (school-specific, includes projected_minutes/usage).
+export async function getPlayerProjection(
+  playerId: string,
+  schoolId?: number,
+): Promise<PlayerProjectionResponse> {
+  const { data } = await client.get<PlayerProjectionResponse>(`/players/${playerId}/projection`, {
+    params: schoolId !== undefined ? { school_id: schoolId } : undefined,
+  });
   return data;
 }

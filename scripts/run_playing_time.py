@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -121,6 +122,21 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Score and validate without DB writes or MLflow logging",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Historical/population-restricted run (e.g. a scoped backtest season): writes real "
+            "rows, but skips rolling_origin_validation entirely and never calls log_mlflow (no "
+            "MLflow run, no model registration, no maybe_promote). Real finding (2026-07-14): a "
+            "restricted population's rolling-origin CV fold is a much smaller, noisier sample "
+            "than a real production run and previously fell through log_mlflow's gate-metric "
+            "fallback bug into a false promotion (Delta=+98.6 pct, manually reverted; see "
+            "resolve_promotion_gate_metric). --backfill makes the whole registry interaction "
+            "structurally impossible instead of relying on catching it after the fact."
+        ),
     )
     return parser.parse_args()
 
@@ -669,19 +685,25 @@ def log_mlflow(
             mlflow.log_artifact(str(path), artifact_path="validation")
         run_id = run.info.run_id
 
-    gate_metric = metrics.get(
-        "minutes_rmse", models.train_metrics.get("train_minutes_share_rmse", 999.0)
-    )
-    result = maybe_promote(
-        client,
-        "playing-time-rotation",
-        run_id,
-        "playing_time_model",
-        metric_name="minutes_rmse",
-        new_value=float(gate_metric),
-        higher_is_better=False,
-    )
-    log.info("MLflow run %s — %s", run_id, result)
+    gate_metric = pt.resolve_promotion_gate_metric(numeric_metrics)
+    if gate_metric is None:
+        log.warning(
+            "No real held-out minutes_rmse in this run's metrics (target_seasons=%s did not "
+            "produce rolling-origin CV folds — likely a single-season or population-restricted "
+            "run) — skipping maybe_promote rather than comparing an incompatible fallback metric.",
+            target_seasons,
+        )
+    else:
+        result = maybe_promote(
+            client,
+            "playing-time-rotation",
+            run_id,
+            "playing_time_model",
+            metric_name="minutes_rmse",
+            new_value=float(gate_metric),
+            higher_is_better=False,
+        )
+        log.info("MLflow run %s — %s", run_id, result)
 
 
 def main() -> None:
@@ -725,6 +747,9 @@ def main() -> None:
     benchmark_results: dict[str, dict[str, float]] = {}
     val_metrics: dict[str, float] = {}
     validation_artifacts: list[Path] = []
+    if args.backfill:
+        log.info("--backfill set — skipping rolling_origin_validation entirely")
+        benchmark_families = []
     for model_family in benchmark_families:
         family_metrics, fold_results = rolling_origin_validation(
             train_df,
@@ -798,6 +823,19 @@ def main() -> None:
             )
             continue
 
+        materialize_start = time.monotonic()
+        pt.materialize_inference_staging(
+            engine,
+            target_season=target_season,
+            source_season=source_season,
+            roster_season=roster_season,
+        )
+        log.info(
+            "season=%s materialized INFERENCE_SQL staging tables in %.1fs",
+            target_season,
+            time.monotonic() - materialize_start,
+        )
+
         for start in range(0, len(school_ids), args.school_chunk_size):
             batch = school_ids[start : start + args.school_chunk_size]
             frame = pt.build_inference_pairs(
@@ -860,7 +898,9 @@ def main() -> None:
         {k: round(v, 4) for k, v in run_metrics.items()},
     )
 
-    if not args.dry_run:
+    if args.backfill:
+        log.info("--backfill set — skipping log_mlflow entirely (no run, no registration, no promote)")
+    elif not args.dry_run:
         log_mlflow(
             models,
             {**val_metrics, **run_metrics},

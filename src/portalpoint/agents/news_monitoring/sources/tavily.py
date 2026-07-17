@@ -17,24 +17,11 @@ from portalpoint.agents.news_monitoring.config import (
 )
 
 
-@tool
-def search_news(
+def _search_news_impl(
     query: str,
-    window_days: int = TAVILY_WINDOW_DAYS,
+    window_days: int,
     include_domains: list[str] | None = None,
 ) -> str:
-    """Search college basketball news via Tavily.
-
-    Args:
-        query: Search query string.
-        window_days: How many days back to search (default 7).
-        include_domains: Domains to restrict results to.  Defaults to
-            247sports.com, on3.com, and espn.com.
-
-    Returns:
-        JSON string with a list of ``{title, url, content, score, published_date}``
-        dicts, filtered to score >= TAVILY_MIN_SCORE.
-    """
     try:
         from tavily import TavilyClient  # type: ignore[import]
     except ImportError:
@@ -74,3 +61,42 @@ def search_news(
     ]
 
     return json.dumps({"results": results, "query": query, "count": len(results)})
+
+
+def build_search_news_tool(window_days: int = TAVILY_WINDOW_DAYS):
+    """Return a Tavily search tool with a fixed lookback window for this run."""
+
+    description = (
+        f"Search college basketball news via Tavily (last {window_days} days). "
+        "Returns JSON with title, url, content, score, and published_date."
+    )
+
+    @tool(description=description)
+    def search_news(
+        query: str,
+        include_domains: list[str] | None = None,
+    ) -> str:
+        return _search_news_impl(query, window_days, include_domains)
+
+    return search_news
+
+
+@tool
+def search_news(
+    query: str,
+    window_days: int = TAVILY_WINDOW_DAYS,
+    include_domains: list[str] | None = None,
+) -> str:
+    """Search college basketball news via Tavily.
+
+    Args:
+        query: Search query string.
+        window_days: How many days back to search (default 7).
+        include_domains: Domains to restrict results to.  Defaults to
+            247sports.com, on3.com, and espn.com.
+
+    Returns:
+        JSON string with a list of ``{title, url, content, score, published_date}``
+        dicts, filtered to score >= TAVILY_MIN_SCORE.
+    """
+    return _search_news_impl(query, window_days, include_domains)

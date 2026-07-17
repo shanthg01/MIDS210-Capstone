@@ -24,6 +24,7 @@ from portalpoint.modeling.destination_projection import (
     MODEL_VERSION,
     NEUTRAL_MODEL_PRIORITY,
     ROSTER_CONTEXT_BREAKPOINTS,
+    STYLE_SKILL_INTERACTION_WEIGHTS,
     apply_delta_caps,
     assign_competition_tiers,
     build_competition_tier_matrix,
@@ -39,6 +40,7 @@ from portalpoint.modeling.destination_projection import (
     compute_style_skill_fit_delta,
     estimate_usage_value_coef,
     fit_role_usage_model,
+    fit_style_skill_weights,
     propagate_destination_uncertainty,
     run_rolling_origin_cv,
     translate_neutral_to_destination_value,
@@ -281,6 +283,249 @@ class TestStyleSkillFitDelta:
     def test_empty_frame_returns_empty(self):
         delta = compute_style_skill_fit_delta(pd.DataFrame())
         assert len(delta) == 0
+
+    def test_custom_weights_change_output(self, minimal_frame):
+        default_delta = compute_style_skill_fit_delta(minimal_frame)
+        custom_weights = dict(STYLE_SKILL_INTERACTION_WEIGHTS)
+        custom_weights["shooting_3p_x_team_threepr"] = 0.0
+        custom_delta = compute_style_skill_fit_delta(minimal_frame, weights=custom_weights)
+        # Row 0 has a nonzero shooting_3p interaction — zeroing its weight must change the result.
+        assert float(custom_delta.iloc[0]) != float(default_delta.iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# Empirical style/skill weight fitting
+# ---------------------------------------------------------------------------
+
+class TestFitStyleSkillWeights:
+    def test_falls_back_when_role_model_is_none(self, minimal_training_df):
+        weights, metrics = fit_style_skill_weights(minimal_training_df, None, None, [])
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics == {"fallback": 1.0}
+
+    def test_falls_back_when_training_df_empty(self):
+        weights, metrics = fit_style_skill_weights(pd.DataFrame(), None, None, [])
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics == {"fallback": 1.0}
+
+    def test_falls_back_below_min_rows(self, minimal_training_df):
+        rng = np.random.default_rng(1)
+        n = 10  # below MIN_STYLE_SKILL_TRAIN_ROWS
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(minimal_training_df)
+        df = pd.DataFrame({
+            "value_delta": rng.normal(0, 1, n),
+            "dest_usage_rate": np.full(n, 0.20),
+            "source_usage_rate": np.full(n, 0.20),
+            "competition_level_delta": np.zeros(n),
+            "skill_percentiles": [{}] * n,
+        })
+        weights, metrics = fit_style_skill_weights(df, role_model, role_scaler, role_features)
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics["fallback"] == 1.0
+
+    def test_recovers_known_shooting_interaction_coefficient(self):
+        # Fit a role model whose prediction at usage_delta=0 is ~0, isolating the
+        # style/skill residual so the recovered coefficient can be checked directly.
+        rng = np.random.default_rng(42)
+        n_role = 80
+        usage_delta = np.linspace(-0.08, 0.08, n_role)
+        role_training = pd.DataFrame({
+            "source_usage_rate": np.full(n_role, 0.22),
+            "dest_usage_rate": 0.22 + usage_delta,
+            "neutral_value": rng.normal(0, 1, n_role),
+            "value_delta": 5.0 * usage_delta,
+            "role_usage_target": 5.0 * usage_delta,
+            "position": ["SG"] * n_role,
+            "skill_states": [{}] * n_role,
+        })
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(role_training)
+        assert role_model is not None
+
+        n = 200
+        shooting_pctile = rng.uniform(10, 90, n)
+        team_threepr = rng.uniform(0.20, 0.50, n)
+        raw_shooting = (shooting_pctile - 50.0) / 50.0 * team_threepr
+        known_coef = 0.6
+        style_training = pd.DataFrame({
+            "value_delta": known_coef * raw_shooting + rng.normal(0, 0.02, n),
+            # 2 seasons (150/50 split) so the held-out gate (fit on 2025, score on 2026)
+            # has a fold to evaluate — a single-season frame can't hold anything out and
+            # would fall back by design (see fit_style_skill_weights).
+            "dest_season": np.where(np.arange(n) < 150, 2025, 2026),
+            "dest_usage_rate": np.full(n, 0.22),
+            "source_usage_rate": np.full(n, 0.22),
+            "neutral_value": np.zeros(n),
+            "competition_level_delta": np.zeros(n),
+            "position": ["SG"] * n,
+            "skill_states": [{}] * n,
+            "skill_percentiles": [
+                {"shooting_3p": p, "passing_creation": 50.0, "shot_creation_usage": 50.0,
+                 "block_rim_protection": 50.0, "offensive_rebounding": 50.0}
+                for p in shooting_pctile
+            ],
+            "dest_off_threepr": team_threepr,
+            "dest_three_point_rate": team_threepr,
+            "dest_def_orb": np.full(n, 0.27),
+            "dest_off_style_rim_attack_pct": np.full(n, 0.30),
+            "dest_off_twoprimr": np.full(n, 0.30),
+        })
+
+        weights, metrics = fit_style_skill_weights(style_training, role_model, role_scaler, role_features)
+
+        assert metrics.get("fallback") is None
+        # Recovered coefficient should be close to the known 0.6, same sign at minimum.
+        assert weights["shooting_3p_x_team_threepr"] > 0.3
+        # Other 4 fittable terms have zero-variance raw features here (neutral percentiles) —
+        # Ridge should push them to ~0, not leave them at their hardcoded nonzero defaults.
+        for key in ["passing_creation_x_open_usage", "shot_creation_x_usage_crowding",
+                    "block_rim_x_def_rim_need", "off_reb_x_rim_style"]:
+            assert abs(weights[key]) < 0.05
+        # def_reb_x_frontcourt_need is never fit — must stay at its hardcoded default.
+        assert weights["def_reb_x_frontcourt_need"] == STYLE_SKILL_INTERACTION_WEIGHTS["def_reb_x_frontcourt_need"]
+
+    def test_rejects_fit_when_residual_is_pure_noise(self):
+        # Regression test for the real 2026-07-14 finding: fit on real historical data
+        # produced R²=-0.0228 and a sign-flipped coefficient. A fit that doesn't clear
+        # a real improvement threshold must fall back to the hardcoded weights, not
+        # ship noise as if it were a genuine improvement.
+        rng = np.random.default_rng(7)
+        n_role = 80
+        usage_delta = np.linspace(-0.08, 0.08, n_role)
+        role_training = pd.DataFrame({
+            "source_usage_rate": np.full(n_role, 0.22),
+            "dest_usage_rate": 0.22 + usage_delta,
+            "neutral_value": rng.normal(0, 1, n_role),
+            "value_delta": 5.0 * usage_delta,
+            "role_usage_target": 5.0 * usage_delta,
+            "position": ["SG"] * n_role,
+            "skill_states": [{}] * n_role,
+        })
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(role_training)
+
+        n = 200
+        shooting_pctile = rng.uniform(10, 90, n)
+        team_threepr = rng.uniform(0.20, 0.50, n)
+        style_training = pd.DataFrame({
+            "value_delta": rng.normal(0, 3, n),  # pure noise, no relationship to any feature
+            "dest_season": np.where(np.arange(n) < 150, 2025, 2026),
+            "dest_usage_rate": np.full(n, 0.22),
+            "source_usage_rate": np.full(n, 0.22),
+            "neutral_value": np.zeros(n),
+            "competition_level_delta": np.zeros(n),
+            "position": ["SG"] * n,
+            "skill_states": [{}] * n,
+            "skill_percentiles": [
+                {"shooting_3p": p, "passing_creation": 50.0, "shot_creation_usage": 50.0,
+                 "block_rim_protection": 50.0, "offensive_rebounding": 50.0}
+                for p in shooting_pctile
+            ],
+            "dest_off_threepr": team_threepr,
+            "dest_three_point_rate": team_threepr,
+            "dest_def_orb": np.full(n, 0.27),
+            "dest_off_style_rim_attack_pct": np.full(n, 0.30),
+            "dest_off_twoprimr": np.full(n, 0.30),
+        })
+
+        weights, metrics = fit_style_skill_weights(style_training, role_model, role_scaler, role_features)
+
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics["rejected_insufficient_improvement"] == 1.0
+
+    def test_output_weights_dict_has_all_six_keys(self, minimal_training_df):
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(minimal_training_df)
+        training = minimal_training_df.copy()
+        training["competition_level_delta"] = 0.0
+        weights, _ = fit_style_skill_weights(training, role_model, role_scaler, role_features)
+        assert set(weights.keys()) == set(STYLE_SKILL_INTERACTION_WEIGHTS.keys())
+
+    def test_falls_back_when_only_one_dest_season(self, minimal_training_df):
+        # Regression test: a single dest_season can't be held out, so there's no way
+        # to validate the fit out-of-sample. Must fall back rather than silently
+        # evaluating in-sample (the exact gap the holdout gate closes).
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(minimal_training_df)
+        training = minimal_training_df.copy()
+        training["competition_level_delta"] = 0.0
+        training["dest_season"] = 2026  # collapse to a single season
+        weights, metrics = fit_style_skill_weights(training, role_model, role_scaler, role_features)
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics["no_holdout_season"] == 1.0
+
+    def test_falls_back_when_holdout_eval_fold_too_small(self, minimal_training_df):
+        # Regression test: enough total rows to pass MIN_STYLE_SKILL_TRAIN_ROWS, but
+        # the most recent dest_season (the held-out eval fold) has too few rows to
+        # trust a residual_std comparison — must fall back, not evaluate on noise.
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(minimal_training_df)
+        training = minimal_training_df.copy()
+        training["competition_level_delta"] = 0.0
+        n = len(training)
+        training["dest_season"] = [2025] * (n - 2) + [2026] * 2  # eval fold: 2 rows
+        weights, metrics = fit_style_skill_weights(training, role_model, role_scaler, role_features)
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics["fallback"] == 1.0
+        assert metrics["n_eval"] == 2.0
+
+    def test_gate_evaluated_out_of_sample_not_in_sample(self):
+        # Construct data where the interaction signal is real in the train seasons
+        # but the held-out season is pure noise (e.g. a regime shift) — an in-sample
+        # gate would fit train+eval together and could still pass; the out-of-sample
+        # gate must catch that the relationship doesn't hold up on unseen data.
+        rng = np.random.default_rng(11)
+        n_role = 80
+        usage_delta = np.linspace(-0.08, 0.08, n_role)
+        role_training = pd.DataFrame({
+            "source_usage_rate": np.full(n_role, 0.22),
+            "dest_usage_rate": 0.22 + usage_delta,
+            "neutral_value": rng.normal(0, 1, n_role),
+            "value_delta": 5.0 * usage_delta,
+            "role_usage_target": 5.0 * usage_delta,
+            "position": ["SG"] * n_role,
+            "skill_states": [{}] * n_role,
+        })
+        role_model, role_scaler, role_features, _ = fit_role_usage_model(role_training)
+
+        n_train, n_eval = 150, 50
+        train_shooting_pctile = rng.uniform(10, 90, n_train)
+        train_team_threepr = rng.uniform(0.20, 0.50, n_train)
+        train_value_delta = 0.6 * (train_shooting_pctile - 50.0) / 50.0 * train_team_threepr + rng.normal(0, 0.02, n_train)
+
+        # Eval fold: same feature distribution, but value_delta is pure noise —
+        # the train-fit relationship should not transfer.
+        eval_shooting_pctile = rng.uniform(10, 90, n_eval)
+        eval_team_threepr = rng.uniform(0.20, 0.50, n_eval)
+        eval_value_delta = rng.normal(0, 3, n_eval)
+
+        shooting_pctile = np.concatenate([train_shooting_pctile, eval_shooting_pctile])
+        team_threepr = np.concatenate([train_team_threepr, eval_team_threepr])
+        value_delta = np.concatenate([train_value_delta, eval_value_delta])
+
+        style_training = pd.DataFrame({
+            "value_delta": value_delta,
+            "dest_season": [2025] * n_train + [2026] * n_eval,
+            "dest_usage_rate": np.full(n_train + n_eval, 0.22),
+            "source_usage_rate": np.full(n_train + n_eval, 0.22),
+            "neutral_value": np.zeros(n_train + n_eval),
+            "competition_level_delta": np.zeros(n_train + n_eval),
+            "position": ["SG"] * (n_train + n_eval),
+            "skill_states": [{}] * (n_train + n_eval),
+            "skill_percentiles": [
+                {"shooting_3p": p, "passing_creation": 50.0, "shot_creation_usage": 50.0,
+                 "block_rim_protection": 50.0, "offensive_rebounding": 50.0}
+                for p in shooting_pctile
+            ],
+            "dest_off_threepr": team_threepr,
+            "dest_three_point_rate": team_threepr,
+            "dest_def_orb": np.full(n_train + n_eval, 0.27),
+            "dest_off_style_rim_attack_pct": np.full(n_train + n_eval, 0.30),
+            "dest_off_twoprimr": np.full(n_train + n_eval, 0.30),
+        })
+
+        weights, metrics = fit_style_skill_weights(style_training, role_model, role_scaler, role_features)
+
+        # A train-only in-sample fit here would look great; on held-out 2026 the
+        # relationship is gone, so the gate must reject it.
+        assert weights == STYLE_SKILL_INTERACTION_WEIGHTS
+        assert metrics["rejected_insufficient_improvement"] == 1.0
+        assert metrics["eval_season"] == 2026.0
 
 
 # ---------------------------------------------------------------------------

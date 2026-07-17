@@ -5,6 +5,26 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+class RosterImpactItem(BaseModel):
+    """Single player row in the ranked roster-impact list."""
+    player_id: str              # str, not int — see player.py's PlayerBase.player_id comment
+    player_name: str
+    position: str
+    delta_adjEM: float
+    current_adjEM: float
+    projected_adjEM: float
+    confidence_interval: tuple[float, float]
+    expected_minutes_input: float
+    candidate_usage_role: Optional[str] = None
+
+
+class RosterImpactResponse(BaseModel):
+    school_id: int
+    season: int
+    players: list[RosterImpactItem]
+    total: int
+
+
 class TeamRatingProjectionResponse(BaseModel):
     player_id: str          # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int

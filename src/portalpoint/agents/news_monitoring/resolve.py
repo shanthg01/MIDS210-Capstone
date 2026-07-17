@@ -3,21 +3,28 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import Any
 
 from langchain_core.tools import tool
 from sqlalchemy import text as sql_text
 
-from portalpoint.agents.news_monitoring.config import CONFIDENCE_THRESHOLD, DEDUP_WINDOW_DAYS
+from portalpoint.agents.news_monitoring.config import DEDUP_WINDOW_DAYS
 from portalpoint.modeling.entity_resolution import (
-    SCHOOL_ALIASES,
     match_player,
-    normalize_name,
     resolve_school,
 )
 
 log = logging.getLogger(__name__)
+
+_PROGRAM_EVENTS_TRANSFER_CONFLICT = (
+    "ON CONFLICT (event_type, source, player_id, event_date) "
+    "WHERE event_type = 'transfer_entry' AND player_id IS NOT NULL DO NOTHING"
+)
+_PROGRAM_EVENTS_COACH_CONFLICT = (
+    "ON CONFLICT (event_type, source, school_id, event_date) "
+    "WHERE event_type = 'coach_departed' AND school_id IS NOT NULL DO NOTHING"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -25,8 +32,9 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _get_engine():
-    from portalpoint.modeling.io import get_sync_engine, load_env
-    load_env()
+    from portalpoint.modeling.io import apply_env_file, get_sync_engine
+
+    apply_env_file()
     return get_sync_engine()
 
 
@@ -64,32 +72,16 @@ def _load_all_players(conn, season: int) -> list[tuple[int, str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# transfer_player tool
+# transfer_player implementation
 # ---------------------------------------------------------------------------
 
-@tool
-def transfer_player(player_name: str, school_from: str) -> str:
-    """Record a player's transfer-portal entry in the PortalPoint database.
-
-    Pipeline:
-    1. Fuzzy-match player_name against the from_school's season roster
-       (position-aware, 3-pass threshold with full-roster fallback).
-    2. INSERT into transfer_portal_events — makes the agent a feeder into the
-       same pipeline used by ingest_transfers_247sports.py.
-    3. UPSERT into transfers (portal_entry_date preserved on conflict).
-    4. Call sync_portal_candidate_flags() so is_portal_candidate stays in sync
-       with transfer_portal_events — NOT via a raw UPDATE.
-
-    Args:
-        player_name: Player's name as extracted by the LLM classifier.
-        school_from: School the player is departing (raw name from news text).
-    """
+def _transfer_player_impl(player_name: str, school_from: str, season: int) -> str:
+    """Core transfer-portal write pipeline (season supplied by caller)."""
     try:
         engine = _get_engine()
     except Exception as exc:
         return json.dumps({"success": False, "error": f"DB connection failed: {exc}"})
 
-    season = date.today().year
     entry_date = date.today().isoformat()
 
     try:
@@ -104,9 +96,12 @@ def transfer_player(player_name: str, school_from: str) -> str:
             else:
                 roster = []
 
-            # Fallback: search all players if school unresolved or roster empty
             if not roster:
-                log.warning("transfer_player: no roster for %s (id=%s) — falling back to full player table", school_from, from_school_id)
+                log.warning(
+                    "transfer_player: no roster for %s (id=%s) — falling back to full player table",
+                    school_from,
+                    from_school_id,
+                )
                 roster = _load_all_players(conn, season)
 
             player_id, match_confidence, status_tag = match_player(player_name, roster)
@@ -120,14 +115,12 @@ def transfer_player(player_name: str, school_from: str) -> str:
                     "message": f"Player not matched (status={status_tag}). Manual review required.",
                 })
 
-            # Retrieve the canonical name for the response
             matched_name_row = conn.execute(
                 sql_text("SELECT full_name FROM players WHERE id = :pid"),
                 {"pid": player_id},
             ).fetchone()
             matched_name = matched_name_row[0] if matched_name_row else player_name
 
-            # ── Step 1: Write to program_events (generic event log) ──────────
             conn.execute(
                 sql_text(
                     "INSERT INTO program_events "
@@ -136,7 +129,7 @@ def transfer_player(player_name: str, school_from: str) -> str:
                     "VALUES "
                     "  ('transfer_entry', :school_id, :player_id, :event_date, "
                     "   'news-agent', :raw_text, :confidence, 'matched', NOW()) "
-                    "ON CONFLICT DO NOTHING"
+                    + _PROGRAM_EVENTS_TRANSFER_CONFLICT
                 ),
                 {
                     "school_id": from_school_id,
@@ -147,7 +140,6 @@ def transfer_player(player_name: str, school_from: str) -> str:
                 },
             )
 
-            # ── Step 2: Write to transfer_portal_events ───────────────────────
             source_key = f"news-{player_id}"
             conn.execute(
                 sql_text(
@@ -176,7 +168,6 @@ def transfer_player(player_name: str, school_from: str) -> str:
                 },
             )
 
-            # ── Step 3: UPSERT into transfers ─────────────────────────────────
             conn.execute(
                 sql_text(
                     "INSERT INTO transfers "
@@ -198,10 +189,9 @@ def transfer_player(player_name: str, school_from: str) -> str:
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc), "queried_name": player_name})
 
-    # ── Step 4: Sync is_portal_candidate via authoritative pipeline ───────────
-    # Called AFTER with-block commits so the transfer_portal_events row is visible.
     try:
         from portalpoint.modeling.availability import sync_portal_candidate_flags
+
         sync_result = sync_portal_candidate_flags(engine, [season])
         rows_flagged = sync_result.get(season, 0)
     except Exception as exc:
@@ -217,6 +207,7 @@ def transfer_player(player_name: str, school_from: str) -> str:
         "from_school": school_from,
         "from_school_id": from_school_id,
         "portal_entry_date": entry_date,
+        "season": season,
         "fit_score_rows_flagged": rows_flagged,
         "message": (
             f"{matched_name} (confidence={match_confidence:.2f}) written to "
@@ -226,23 +217,33 @@ def transfer_player(player_name: str, school_from: str) -> str:
     }, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# coach_departure tool
-# ---------------------------------------------------------------------------
-
 @tool
-def coach_departure(coach_name: str, school_from: str) -> str:
-    """Record a coaching departure event in the PortalPoint database.
+def transfer_player(player_name: str, school_from: str) -> str:
+    """Record a player's transfer-portal entry in the PortalPoint database.
 
-    Covers any reason a head coach leaves (fired, resigns, retires, takes
-    another job). Writes to program_events as event_type='coach_departed' and
-    flags team_system_profiles stale for school_from (scheme fit may change
-    under new staff). Manual review is required before any Model 2 re-run.
+    Pipeline:
+    1. Fuzzy-match player_name against the from_school's season roster
+       (position-aware, 3-pass threshold with full-roster fallback).
+    2. INSERT into transfer_portal_events — makes the agent a feeder into the
+       same pipeline used by ingest_transfers_247sports.py.
+    3. UPSERT into transfers (portal_entry_date preserved on conflict).
+    4. Call sync_portal_candidate_flags() so is_portal_candidate stays in sync
+       with transfer_portal_events — NOT via a raw UPDATE.
 
     Args:
-        coach_name: Name of the departing head coach.
-        school_from: School the coach is leaving.
+        player_name: Player's name as extracted by the LLM classifier.
+        school_from: School the player is departing (raw name from news text).
     """
+    return _transfer_player_impl(player_name, school_from, date.today().year)
+
+
+# ---------------------------------------------------------------------------
+# coach_departure implementation
+# ---------------------------------------------------------------------------
+
+def _coach_departure_impl(coach_name: str, school_from: str, season: int) -> str:
+    """Core coaching-departure write pipeline (season unused but kept for symmetry)."""
+    del season  # reserved for future coaches-table season scoping
     event_date = date.today().isoformat()
 
     try:
@@ -259,7 +260,7 @@ def coach_departure(coach_name: str, school_from: str) -> str:
                     "VALUES "
                     "  ('coach_departed', :school_id, NULL, :event_date, "
                     "   'news-agent', :raw_text, 0.7, 'pending_review', NOW()) "
-                    "ON CONFLICT DO NOTHING"
+                    + _PROGRAM_EVENTS_COACH_CONFLICT
                 ),
                 {
                     "school_id": school_id,
@@ -268,9 +269,6 @@ def coach_departure(coach_name: str, school_from: str) -> str:
                 },
             )
 
-            # Flag all team_system_profiles rows for this school as stale.
-            # Scheme fit scores computed against the old coaching staff's style
-            # vector may no longer be accurate until M2 is re-run for this school.
             if school_id is not None:
                 result = conn.execute(
                     sql_text(
@@ -316,6 +314,48 @@ def coach_departure(coach_name: str, school_from: str) -> str:
         }, indent=2)
 
 
+@tool
+def coach_departure(coach_name: str, school_from: str) -> str:
+    """Record a coaching departure event in the PortalPoint database.
+
+    Covers any reason a head coach leaves (fired, resigns, retires, takes
+    another job). Writes to program_events as event_type='coach_departed' and
+    flags team_system_profiles stale for school_from (scheme fit may change
+    under new staff). Manual review is required before any Model 2 re-run.
+
+    Args:
+        coach_name: Name of the departing head coach.
+        school_from: School the coach is leaving.
+    """
+    return _coach_departure_impl(coach_name, school_from, date.today().year)
+
+
+def build_action_tools(season: int) -> tuple:
+    """Return (transfer_player, coach_departure) tools bound to ``season``."""
+
+    @tool
+    def transfer_player_for_season(player_name: str, school_from: str) -> str:
+        """Record a player's transfer-portal entry in the PortalPoint database.
+
+        Args:
+            player_name: Player's name as extracted by the LLM classifier.
+            school_from: School the player is departing (raw name from news text).
+        """
+        return _transfer_player_impl(player_name, school_from, season)
+
+    @tool
+    def coach_departure_for_season(coach_name: str, school_from: str) -> str:
+        """Record a coaching departure event in the PortalPoint database.
+
+        Args:
+            coach_name: Name of the departing head coach.
+            school_from: School the coach is leaving.
+        """
+        return _coach_departure_impl(coach_name, school_from, season)
+
+    return transfer_player_for_season, coach_departure_for_season
+
+
 # ---------------------------------------------------------------------------
 # Cross-source deduplication (Gate 4)
 # ---------------------------------------------------------------------------
@@ -359,7 +399,6 @@ def cross_source_dedup(
         evt_date = _parse_date(update.get("portal_entry_date"))
         confidence = update.get("match_confidence", 0.0) or 0.0
 
-        # Build a date-bucketed key (round to window boundary)
         if evt_date:
             day_bucket = (evt_date - date(2020, 1, 1)).days // window_days
         else:

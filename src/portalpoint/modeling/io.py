@@ -65,7 +65,18 @@ def get_sync_engine() -> Engine:
     sync_url = re.sub(r"[?&]ssl(?:mode)?=require", "", sync_url)
     # Clean up dangling ? or & left over after stripping
     sync_url = re.sub(r"\?$", "", sync_url)
-    connect_args: dict = {}
+    connect_args: dict = {
+        # TCP keepalives: pool_pre_ping only validates a connection at checkout time,
+        # not while a long-running query is mid-flight. Without these, a connection
+        # that dies mid-query (e.g. a dropped SSH tunnel) leaves the client blocked on
+        # a socket read forever, with no exception raised — see Issue #53 follow-up,
+        # where a chunk hung silently for 10+ hours with no traceback. With these set,
+        # the OS detects a dead peer within ~30s + 10s*5 = 80s and errors out the read.
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    }
     if ssl_required:
         connect_args["sslmode"] = "require"
     return create_engine(

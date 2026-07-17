@@ -14,7 +14,7 @@ class AgentState(TypedDict):
     """ReAct loop state — backward-compatible with the v2 notebook."""
     messages: Annotated[list, add_messages]
     detected_events: Annotated[list[dict], operator.add]
-    portal_updates: Annotated[list[dict], operator.add]
+    portal_updates: list[dict]  # replaced by collect_results (merge) / dedup_node
     news_sources: list[str]
     run_window_start: Optional[datetime]
     run_window_end: Optional[datetime]

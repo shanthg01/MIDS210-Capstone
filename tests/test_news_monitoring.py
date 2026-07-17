@@ -295,6 +295,101 @@ class TestCrossSourceDedup:
 
 
 # ---------------------------------------------------------------------------
+# collect_results_node
+# ---------------------------------------------------------------------------
+
+class TestCollectResultsNode:
+    def test_parses_transfer_player_success(self):
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from portalpoint.agents.news_monitoring.graph import collect_results_node
+
+        payload = json.dumps({
+            "success": True,
+            "player_id": 101,
+            "from_school_id": 9900301,
+            "match_confidence": 0.9,
+            "portal_entry_date": "2026-07-16",
+        })
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{"name": "transfer_player", "args": {}, "id": "1"}]),
+                ToolMessage(content=payload, tool_call_id="1", name="transfer_player"),
+            ],
+            "detected_events": [],
+            "portal_updates": [],
+            "news_sources": [],
+            "run_window_start": None,
+            "run_window_end": None,
+            "errors": [],
+        }
+        result = collect_results_node(state)
+        assert len(result["portal_updates"]) == 1
+        assert result["portal_updates"][0]["player_id"] == 101
+
+    def test_parses_classify_batch_target_events(self):
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from portalpoint.agents.news_monitoring.graph import collect_results_node
+
+        payload = json.dumps({
+            "results": [
+                {
+                    "event_type": "player_enters_portal",
+                    "confidence": 0.9,
+                    "is_target_event": True,
+                    "above_threshold": True,
+                    "title": "Guard enters portal",
+                },
+                {
+                    "event_type": "unknown",
+                    "confidence": 0.1,
+                    "is_target_event": False,
+                    "above_threshold": False,
+                },
+            ],
+            "total": 2,
+            "target_events": 1,
+        })
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}]),
+                ToolMessage(content=payload, tool_call_id="1", name="classify_events_batch_llm"),
+            ],
+            "detected_events": [],
+            "portal_updates": [],
+            "news_sources": [],
+            "run_window_start": None,
+            "run_window_end": None,
+            "errors": [],
+        }
+        result = collect_results_node(state)
+        assert len(result["detected_events"]) == 1
+        assert result["detected_events"][0]["event_type"] == "player_enters_portal"
+
+    def test_merges_portal_updates_with_existing(self):
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from portalpoint.agents.news_monitoring.graph import collect_results_node
+
+        payload = json.dumps({"success": True, "player_id": 2})
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}]),
+                ToolMessage(content=payload, tool_call_id="1", name="transfer_player_for_season"),
+            ],
+            "detected_events": [],
+            "portal_updates": [{"success": True, "player_id": 1}],
+            "news_sources": [],
+            "run_window_start": None,
+            "run_window_end": None,
+            "errors": [],
+        }
+        result = collect_results_node(state)
+        assert [u["player_id"] for u in result["portal_updates"]] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
 # Graph routing (should_continue) — requires langgraph
 # ---------------------------------------------------------------------------
 

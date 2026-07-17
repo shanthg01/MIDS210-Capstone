@@ -271,6 +271,101 @@ def test_build_neutral_records_stores_turnover_avoidance_as_higher_is_better():
     assert explanation["skill_state_direction"]["turnover_avoidance"] == "stored_as_negative_rate_so_higher_is_better"
 
 
+def _cross_season_projected_frame(player_ids: list[int], seasons: list[int]) -> pd.DataFrame:
+    """Minimal frame matching build_cross_season_records' projected_df shape --
+    real, sensible skill_<s>/pctile_<s> values for every skill, plus value_per_100/CI."""
+    n = len(player_ids)
+    data = {"player_id": player_ids, "season": seasons}
+    for s in pp.SKILLS:
+        data[f"skill_{s}"] = [5.0] * n
+        data[f"pctile_{s}"] = [55.0] * n
+    data["value_per_100"] = [1.0] * n
+    data["value_ci_lower"] = [-1.0] * n
+    data["value_ci_upper"] = [3.0] * n
+    return pd.DataFrame(data)
+
+
+def _projected_rates_frame(player_ids: list[int], seasons: list[int]) -> pd.DataFrame:
+    """Minimal, *purely numeric* projected_rates_df (player_id/season plus only
+    float rate_ columns, no string column) -- the exact shape that triggered the
+    real 2026-07-15 bug: DataFrame.iterrows() upcasts a row with no object/string
+    column to float64, corrupting a 63-bit BigInteger player_id (>= 2^53) before
+    the int() cast in the rates_lookup dict key, so the box-score lookup missed
+    for ~99% of real players (confirmed live: nonempty rate went from 1.40% to
+    100.00% after the fix)."""
+    n = len(player_ids)
+    return pd.DataFrame({
+        "player_id": player_ids,
+        "season": seasons,
+        "rate_2pa_make": [2.0] * n,
+        "rate_3pa_make": [1.5] * n,
+        "rate_ft_trip": [3.0] * n,
+        "rate_oreb": [1.0] * n,
+        "rate_dreb": [3.0] * n,
+        "rate_assist": [2.5] * n,
+        "rate_stl": [1.2] * n,
+        "rate_blk": [0.4] * n,
+        "rate_tov": [2.1] * n,
+    })
+
+
+def test_build_cross_season_records_preserves_bigint_player_id_through_rates_lookup():
+    # Regression test for the real 2026-07-15 finding: player_id is a 63-bit
+    # BigInteger (hash(barttorvik_id)); values >= 2^53 (~9e15) lose precision if
+    # DataFrame.iterrows() upcasts a purely-numeric row to float64. Uses a real
+    # player_id confirmed to corrupt under the old code (int(float(x)) != x).
+    big_id = 10572760005071915
+    assert int(float(big_id)) != big_id, "test fixture must use an id float64 can't represent exactly"
+
+    projected_df = _cross_season_projected_frame([big_id], [2025])
+    projected_rates_df = _projected_rates_frame([big_id], [2025])
+
+    records = pp.build_cross_season_records(
+        projected_df, projected_rates_df=projected_rates_df, model_version="test-version",
+    )
+    assert len(records) == 1
+    rec = records[0]
+    assert rec[0] == big_id  # player_id written to the DB must be the real, uncorrupted id
+    box_score = json.loads(rec[9])
+    rates = json.loads(rec[10])
+    assert box_score != {}, "box_score must not be empty -- rates_lookup must have found this player's key"
+    assert rates != {}
+    assert box_score["pts_per_40"] > 0
+
+
+def test_build_cross_season_records_multiple_bigint_players_no_cross_contamination():
+    # Two distinct large ids in the same batch -- confirms the fix doesn't just
+    # work by accident for a single row (e.g. dict insertion order) and that each
+    # player's own rates are attached, not another player's.
+    ids = [10572760005071915, 12655993413256351]
+    seasons = [2025, 2026]
+    for pid in ids:
+        assert int(float(pid)) != pid, "test fixture must use ids float64 can't represent exactly"
+
+    projected_df = _cross_season_projected_frame(ids, seasons)
+    projected_rates_df = pd.DataFrame({
+        "player_id": ids,
+        "season": seasons,
+        "rate_2pa_make": [2.0, 4.0],
+        "rate_3pa_make": [1.0, 2.0],
+        "rate_ft_trip": [1.0, 1.0],
+        "rate_oreb": [1.0, 1.0],
+        "rate_dreb": [1.0, 1.0],
+        "rate_assist": [1.0, 1.0],
+        "rate_stl": [1.0, 1.0],
+        "rate_blk": [1.0, 1.0],
+        "rate_tov": [1.0, 1.0],
+    })
+
+    records = pp.build_cross_season_records(
+        projected_df, projected_rates_df=projected_rates_df, model_version="test-version",
+    )
+    assert {rec[0] for rec in records} == set(ids)
+    by_id = {rec[0]: json.loads(rec[9]) for rec in records}
+    # player 0's higher rate_2pa_make/rate_3pa_make must produce a higher pts_per_40
+    assert by_id[ids[1]]["pts_per_40"] > by_id[ids[0]]["pts_per_40"]
+
+
 def test_save_artifacts_writes_replayable_bundle(tmp_path):
     df = _synthetic_training_frame(n=80)
     shrunk = pp.shrink_skills(df)

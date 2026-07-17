@@ -17,8 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -27,11 +28,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from langchain_core.messages import HumanMessage
 
-from portalpoint.agents.news_monitoring.config import (
-    CONFIDENCE_THRESHOLD,
-    GEMINI_MODEL,
-    TAVILY_WINDOW_DAYS,
-)
+from portalpoint.agents.news_monitoring.config import GEMINI_MODEL, TAVILY_WINDOW_DAYS
 from portalpoint.agents.news_monitoring.extract import (
     RateLimiter,
     build_llm,
@@ -40,13 +37,28 @@ from portalpoint.agents.news_monitoring.extract import (
     classify_events_batch,
 )
 from portalpoint.agents.news_monitoring.graph import build_graph
-from portalpoint.agents.news_monitoring.resolve import coach_departure, transfer_player
-from portalpoint.agents.news_monitoring.sources.tavily import search_news
+from portalpoint.agents.news_monitoring.resolve import build_action_tools
+from portalpoint.agents.news_monitoring.sources.tavily import build_search_news_tool
 from portalpoint.agents.news_monitoring.state import initial_state
-from portalpoint.modeling.io import load_env
+from portalpoint.modeling.io import apply_env_file
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+
+def _validate_runtime_keys(*, dry_run: bool) -> list[str]:
+    """Return missing required env var names (empty list = ready to run)."""
+    missing: list[str] = []
+    if not os.environ.get("TAVILY_API_KEY"):
+        missing.append("TAVILY_API_KEY")
+    if not os.environ.get("GOOGLE_API_KEY"):
+        missing.append("GOOGLE_API_KEY")
+    if not dry_run:
+        from portalpoint.modeling.io import load_env
+
+        if not os.environ.get("DATABASE_URL") and not load_env().get("DATABASE_URL"):
+            missing.append("DATABASE_URL")
+    return missing
 
 
 def run(
@@ -57,23 +69,26 @@ def run(
     dry_run: bool = False,
     gemini_model: str = GEMINI_MODEL,
 ) -> dict:
-    """Run one monitoring cycle and return a summary dict.
-
-    Args:
-        season: Transfer season to record events under.  Defaults to current year.
-        window_days: Tavily search lookback window in days.
-        use_llm_classifier: Use Gemini for classification (True) or regex (False).
-        dry_run: If True, skip all DB writes (search + classify only).
-        gemini_model: Gemini model ID to use for LLM classification + agent.
-
-    Returns:
-        Summary dict with keys: ``events_detected``, ``portal_updates``,
-        ``errors``, ``run_window_start``, ``run_window_end``.
-    """
-    load_env()
+    """Run one monitoring cycle and return a summary dict."""
+    apply_env_file()
 
     _season = season or date.today().year
     run_start = datetime.utcnow()
+
+    missing = _validate_runtime_keys(dry_run=dry_run)
+    if missing:
+        msg = f"Missing required environment variables: {', '.join(missing)}"
+        log.error(msg)
+        return {
+            "run_window_start": run_start.isoformat(),
+            "run_window_end": datetime.utcnow().isoformat(),
+            "events_detected": 0,
+            "portal_updates": 0,
+            "errors": [msg],
+            "dry_run": dry_run,
+            "season": _season,
+            "success": False,
+        }
 
     rate_limiter = RateLimiter()
     llm = build_llm(model=gemini_model)
@@ -84,16 +99,14 @@ def run(
         classify_single = classify_event
         classify_batch = classify_events_batch
 
+    search_tool = build_search_news_tool(window_days)
+
     if dry_run:
         log.info("DRY RUN — DB writes disabled")
-
-        @classify_batch.as_tool if hasattr(classify_batch, "as_tool") else lambda f: f
-        def _noop_transfer_player(*a, **kw):
-            return json.dumps({"success": False, "dry_run": True})
-
-        tools = [search_news, classify_single, classify_batch]
+        tools = [search_tool, classify_single, classify_batch]
     else:
-        tools = [search_news, classify_single, classify_batch, transfer_player, coach_departure]
+        transfer_tool, coach_tool = build_action_tools(_season)
+        tools = [search_tool, classify_single, classify_batch, transfer_tool, coach_tool]
 
     graph = build_graph(tools, llm=llm)
 
@@ -102,7 +115,12 @@ def run(
         run_window_end=None,
     )
 
-    log.info("Starting news monitoring run (season=%d, window=%dd, llm=%s)", _season, window_days, use_llm_classifier)
+    log.info(
+        "Starting news monitoring run (season=%d, window=%dd, llm=%s)",
+        _season,
+        window_days,
+        use_llm_classifier,
+    )
 
     final_state = graph.invoke(
         {
@@ -128,6 +146,8 @@ def run(
         "errors": final_state.get("errors", []),
         "dry_run": dry_run,
         "season": _season,
+        "window_days": window_days,
+        "success": not final_state.get("errors"),
     }
 
     log.info(
@@ -156,6 +176,8 @@ def main() -> None:
         gemini_model=args.model,
     )
     print(json.dumps(summary, indent=2))
+    if not summary.get("success", True):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
