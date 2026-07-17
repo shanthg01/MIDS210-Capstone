@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portalpoint.api.schemas.fit_score import (
+    CosineFeatureContribution,
     FitBreakdown,
     FitScoreResponse,
     FitWeights,
@@ -21,7 +22,12 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
-from portalpoint.db.models import PlayerSeasonStats, PlayerTeamFitScore, RosterBaselineMember, TeamSystemProfile
+from portalpoint.db.models import (
+    PlayerSeasonStats,
+    PlayerTeamFitScore,
+    RosterBaselineMember,
+    TeamSystemProfile,
+)
 from portalpoint.modeling.gap_matching import GAP_FEATURES
 
 
@@ -182,9 +188,16 @@ def real_fit_score(
                 three_point_match=scheme_bd.get("three_point_match", 50.0),
                 pace_match=scheme_bd.get("pace_match", 50.0),
                 rim_attack_match=scheme_bd.get("rim_attack_match", 50.0),
-                mid_range_match=scheme_bd.get("mid_range_match", scheme_bd.get("ball_movement_match", 50.0)),
+                mid_range_match=scheme_bd.get(
+                    "mid_range_match",
+                    scheme_bd.get("ball_movement_match", 50.0),
+                ),
                 he_scheme_fit=scheme_bd.get("he_scheme_fit"),
                 he_breakdown=scheme_bd.get("he_breakdown"),
+                cosine_contributions=scheme_bd.get("cosine_contributions"),
+                cosine_score_adjustment=scheme_bd.get("cosine_score_adjustment"),
+                he_cosine_contributions=scheme_bd.get("he_cosine_contributions"),
+                he_cosine_score_adjustment=scheme_bd.get("he_cosine_score_adjustment"),
             ),
             role_fit=role_fit_breakdown_from_model(role_bd, rng),
             gap=GapMatchBreakdown(
@@ -195,6 +208,17 @@ def real_fit_score(
                     GapFeatureGap(feature=f["feature"], gap=f["gap"])
                     for f in gap_bd.get("top_gap_features", [])
                 ],
+                raw_gap_match=gap_bd.get("raw_gap_match"),
+                calibrated_gap_match=gap_bd.get("calibrated_gap_match"),
+                cosine_contributions=[
+                    CosineFeatureContribution(**item)
+                    for item in gap_bd.get("cosine_contributions", [])
+                ] or None,
+                raw_score_adjustment=gap_bd.get("raw_score_adjustment"),
+                reliability_baseline_contribution=gap_bd.get(
+                    "reliability_baseline_contribution"
+                ),
+                calibrated_score_adjustment=gap_bd.get("calibrated_score_adjustment"),
             ),
             program_fit=stub_program_fit_breakdown(rng),
         ),

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -399,12 +398,18 @@ def score_gap_matches(
         SIM_flat = cosine_similarity(P_s, G_flat)
         SIM = SIM_flat.reshape(n_p, n_s, 5)
         RAW_GAP_MATRIX = np.clip((W_s[:, None, :] * SIM).sum(axis=2) * 100, 0.0, 100.0)
+        P_norms = np.linalg.norm(P_s, axis=1, keepdims=True)
+        G_norms = np.linalg.norm(G_s, axis=2, keepdims=True)
+        P_unit = np.divide(P_s, P_norms, out=np.zeros_like(P_s), where=P_norms > 0)
+        G_unit = np.divide(G_s, G_norms, out=np.zeros_like(G_s), where=G_norms > 0)
 
         now_ts = datetime.now(timezone.utc).isoformat()
         player_ids = s_df["player_id"].astype(int).to_numpy()
         for pi, pid in enumerate(player_ids):
             row = s_df.iloc[pi]
-            gap_reliability = float(row.get(GAP_RELIABILITY_COL, 1.0))
+            gap_reliability = float(
+                np.clip(row.get(GAP_RELIABILITY_COL, 1.0), 0.0, 1.0)
+            )
             arch_id = row["archetype_id"]
             cluster = int(arch_id) if pd.notna(arch_id) else -1
             pos_w = W_s[pi]
@@ -415,6 +420,34 @@ def score_gap_matches(
                 pos_depth = float(np.sum(pos_w * np.array([depth_score(depth[p]) for p in range(5)])))
                 archetype_needed = cluster >= 0 and cluster in arch_deficit[season].get(sid, set())
                 weighted_gap_vec = (pos_w[:, None] * gap_data[season][sid]["gap_vecs"]).sum(axis=0)
+                raw_contributions = np.round(
+                    (
+                        pos_w[:, None]
+                        * P_unit[pi][None, :]
+                        * G_unit[si]
+                    ).sum(axis=0) * 100.0,
+                    6,
+                )
+                raw_score_rounded = round(raw_gap_match, 2)
+                calibrated_score_rounded = round(gap_match, 2)
+                raw_adjustment = round(
+                    raw_score_rounded - float(raw_contributions.sum()),
+                    6,
+                )
+                calibrated_contributions = np.round(
+                    gap_reliability * raw_contributions,
+                    6,
+                )
+                baseline_contribution = round(
+                    (1.0 - gap_reliability) * BASELINE_GAP_MATCH,
+                    6,
+                )
+                calibrated_adjustment = round(
+                    calibrated_score_rounded
+                    - float(calibrated_contributions.sum())
+                    - baseline_contribution,
+                    6,
+                )
 
                 ex = existing_pairs.get((pid, sid, season), {})
                 scheme_fit = float(ex.get("scheme_fit") or 0.0)
@@ -424,8 +457,8 @@ def score_gap_matches(
                 merged_bd = {
                     **ex_bd,
                     "gap": {
-                        "raw_gap_match": round(raw_gap_match, 2),
-                        "calibrated_gap_match": round(gap_match, 2),
+                        "raw_gap_match": raw_score_rounded,
+                        "calibrated_gap_match": calibrated_score_rounded,
                         "position_source": str(row.get(POSITION_SOURCE_COL, "unknown")),
                         "position_reliability": round(float(row.get(POSITION_RELIABILITY_COL, 0.0)), 3),
                         "sample_reliability": round(float(row.get(SAMPLE_RELIABILITY_COL, 0.0)), 3),
@@ -434,6 +467,17 @@ def score_gap_matches(
                         "position_depth_score": round(pos_depth, 1),
                         "archetype_needed": archetype_needed,
                         "top_gap_features": top_gap_features(weighted_gap_vec),
+                        "cosine_contributions": [
+                            {
+                                "feature": feature,
+                                "contribution": float(raw_contributions[k]),
+                                "calibrated_contribution": float(calibrated_contributions[k]),
+                            }
+                            for k, feature in enumerate(GAP_FEATURES)
+                        ],
+                        "raw_score_adjustment": raw_adjustment,
+                        "reliability_baseline_contribution": baseline_contribution,
+                        "calibrated_score_adjustment": calibrated_adjustment,
                     },
                 }
 

@@ -5,7 +5,41 @@ import pytest
 from lightgbm import LGBMRegressor
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
 
-from portalpoint.modeling.explainability import shrinkage_weight, tree_shap_explain
+from portalpoint.modeling.explainability import (
+    cosine_contributions,
+    shrinkage_weight,
+    tree_shap_explain,
+)
+
+
+def test_cosine_contributions_are_signed_and_additive() -> None:
+    left = np.array([2.0, -1.0, 3.0])
+    right = np.array([4.0, 5.0, -2.0])
+
+    contributions = cosine_contributions(left, right, output_scale=100.0)
+
+    expected_score = np.dot(left, right) / (np.linalg.norm(left) * np.linalg.norm(right)) * 100.0
+    assert contributions.sum() == pytest.approx(expected_score)
+    assert contributions[0] > 0
+    assert contributions[1] < 0
+
+
+def test_cosine_contributions_return_zero_for_zero_norm() -> None:
+    contributions = cosine_contributions([0.0, 0.0], [1.0, 2.0], output_scale=100.0)
+    np.testing.assert_array_equal(contributions, [0.0, 0.0])
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "message"),
+    [
+        ([[1.0, 2.0]], [[1.0, 2.0]], "one-dimensional"),
+        ([1.0], [1.0, 2.0], "same shape"),
+        ([np.nan], [1.0], "finite"),
+    ],
+)
+def test_cosine_contributions_reject_invalid_inputs(left, right, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        cosine_contributions(left, right)
 
 
 def test_shrinkage_weight_returns_observed_fraction() -> None:

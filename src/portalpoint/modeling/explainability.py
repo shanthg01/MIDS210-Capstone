@@ -13,6 +13,36 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+def cosine_contributions(
+    left: Sequence[float] | NDArray[np.float64],
+    right: Sequence[float] | NDArray[np.float64],
+    *,
+    output_scale: float = 1.0,
+) -> NDArray[np.float64]:
+    """Return signed, additive per-dimension cosine contributions.
+
+    The returned vector sums to ``cosine_similarity(left, right)`` multiplied
+    by ``output_scale``. A zero-norm input follows scikit-learn's convention
+    and returns all-zero contributions; callers own any model-specific
+    fallback or score clipping and should expose that as a separate adjustment.
+    """
+    left_arr = np.asarray(left, dtype=np.float64)
+    right_arr = np.asarray(right, dtype=np.float64)
+    if left_arr.ndim != 1 or right_arr.ndim != 1:
+        raise ValueError("Cosine contribution inputs must be one-dimensional")
+    if left_arr.shape != right_arr.shape:
+        raise ValueError("Cosine contribution inputs must have the same shape")
+    if np.any(~np.isfinite(left_arr)) or np.any(~np.isfinite(right_arr)):
+        raise ValueError("Cosine contribution inputs must be finite")
+    if not np.isfinite(output_scale):
+        raise ValueError("output_scale must be finite")
+
+    denominator = float(np.linalg.norm(left_arr) * np.linalg.norm(right_arr))
+    if denominator == 0.0:
+        return np.zeros_like(left_arr, dtype=np.float64)
+    return left_arr * right_arr / denominator * float(output_scale)
+
+
 def shrinkage_weight(
     prior_weight: float | NDArray[np.float64],
     observed_weight: float | NDArray[np.float64],
