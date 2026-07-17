@@ -255,6 +255,23 @@ def test_build_neutral_records_shape_and_neutral_mode():
         assert model_version == pp.MODEL_VERSION
 
 
+def test_build_neutral_records_surfaces_shrinkage_blend():
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    pctiles = pp.skill_percentiles(shrunk)
+    off_model, off_resid = pp.fit_value_model(pctiles, "off_adj_rapm")
+    def_model, def_resid = pp.fit_value_model(pctiles, "def_adj_rapm")
+    projected = pp.project_value(pctiles, off_model, def_model, off_resid, def_resid)
+
+    explanation = json.loads(pp.build_neutral_records(projected.head(1))[0][14])
+    blend = explanation["shrinkage"]
+
+    assert blend["observed_data_weight"] + blend["prior_weight"] == pytest.approx(1.0)
+    assert blend["observed_data_weight"] == pytest.approx(
+        projected.iloc[0]["_observed_weight_fraction"], abs=0.0001,
+    )
+
+
 def test_build_neutral_records_stores_turnover_avoidance_as_higher_is_better():
     df = _synthetic_training_frame(n=80)
     shrunk = pp.shrink_skills(df)

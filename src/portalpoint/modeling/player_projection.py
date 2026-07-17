@@ -61,6 +61,7 @@ from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine, text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
+from portalpoint.modeling.explainability import shrinkage_weight
 from portalpoint.modeling.io import find_repo_root
 
 log = logging.getLogger(__name__)
@@ -258,6 +259,9 @@ def shrink_skills(
     prior_*, and _weight columns; does not mutate the input frame."""
     out = df.copy()
     out["_weight"] = sample_weight(df["games_played"], df["min_pct"])
+    out["_observed_weight_fraction"] = shrinkage_weight(k, out["_weight"].to_numpy())
+    out["_prior_weight_fraction"] = 1.0 - out["_observed_weight_fraction"]
+    out["_prior_strength"] = float(k)
     for skill, col in SKILL_COLUMNS.items():
         prior = _skill_prior(df, col, season_col, position_col)
         raw = df[col].fillna(prior)
@@ -546,6 +550,11 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
             "prior_skill_estimate": {s: round(float(r[f"prior_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "observed_performance_signal": {s: round(float(r[f"raw_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "sample_size_weight": round(float(r["_weight"]), 2),
+            "shrinkage": {
+                "observed_data_weight": round(float(r["_observed_weight_fraction"]), 4),
+                "prior_weight": round(float(r["_prior_weight_fraction"]), 4),
+                "prior_strength": round(float(r["_prior_strength"]), 4),
+            },
             "skill_state_direction": {
                 s: "higher_is_better" if s not in INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
                 for s in RAW_RATE_SKILLS

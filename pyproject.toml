@@ -32,6 +32,7 @@ dependencies = [
     "boto3>=1.43.33",
     "curl-cffi>=0.15.0",
     "lightgbm>=4.6.0",
+    "shap>=0.51.0",
 ]
 
 [project.optional-dependencies]
