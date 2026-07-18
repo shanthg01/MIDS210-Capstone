@@ -16,6 +16,12 @@ class FitWeights(BaseModel):
     program_fit: float = Field(default=0.25, ge=0.0, le=1.0)
 
 
+class CosineFeatureContribution(BaseModel):
+    feature: str
+    contribution: float
+    calibrated_contribution: float | None = None
+
+
 class SchemeBreakdown(BaseModel):
     three_point_match: float = Field(..., ge=0, le=100)
     pace_match: float = Field(..., ge=0, le=100)
@@ -25,6 +31,10 @@ class SchemeBreakdown(BaseModel):
     # player and team have HE coverage; None otherwise, never fabricated.
     he_scheme_fit: float | None = None
     he_breakdown: dict[str, float] | None = None
+    cosine_contributions: list[CosineFeatureContribution] | None = None
+    cosine_score_adjustment: float | None = None
+    he_cosine_contributions: list[CosineFeatureContribution] | None = None
+    he_cosine_score_adjustment: float | None = None
 
 
 class RoleFitBreakdown(BaseModel):
@@ -55,7 +65,13 @@ class GapMatchBreakdown(BaseModel):
     # largest first — real model output (gap_matching.py's top_gap_features),
     # replaces the old uniqueness_bonus/redundancy_penalty fields, which were
     # never actually computed (always hardcoded to 0.0).
-    top_gap_features: list[GapFeatureGap] = []
+    top_gap_features: list[GapFeatureGap] = Field(default_factory=list)
+    raw_gap_match: float | None = Field(default=None, ge=0, le=100)
+    calibrated_gap_match: float | None = Field(default=None, ge=0, le=100)
+    cosine_contributions: list[CosineFeatureContribution] | None = None
+    raw_score_adjustment: float | None = None
+    reliability_baseline_contribution: float | None = None
+    calibrated_score_adjustment: float | None = None
 
 
 class ProgramFitBreakdown(BaseModel):

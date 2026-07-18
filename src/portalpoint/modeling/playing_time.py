@@ -23,6 +23,7 @@ from sklearn.ensemble import (
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
+from portalpoint.modeling.explainability import tree_shap_explain
 from portalpoint.modeling.minutes import minutes_per_game_from_min_pct, minutes_share_from_min_pct
 
 try:
@@ -142,6 +143,12 @@ USAGE_FEATURES = [
         "years_since_first_observed",
     }
 ]
+ROLE_PROBABILITY_FEATURES = (
+    "rotation_probability_model",
+    "starter_probability_model",
+    "heavy_minutes_probability",
+    "high_usage_probability",
+)
 
 FIT_SCORE_COLUMNS = ["player_id", "school_id", "season", "gap_match", "scheme_fit"]
 
@@ -631,8 +638,8 @@ INSERT INTO playing_time_projections
      expected_minutes, expected_minutes_share, minutes_ci_lower, minutes_ci_upper,
      expected_usage, usage_role, usage_role_confidence,
      starter_probability, rotation_probability, displaced_minutes,
-     opportunity_drivers, data_quality_flags, scenario_overrides,
-     role_fit, model_version, computed_at, expires_at)
+     opportunity_drivers, data_quality_flags, scenario_overrides, role_fit,
+     explanation, model_version, computed_at, expires_at)
 VALUES %s
 ON CONFLICT ON CONSTRAINT uq_playing_time_projection DO UPDATE SET
     roster_snapshot_id = EXCLUDED.roster_snapshot_id,
@@ -649,6 +656,7 @@ ON CONFLICT ON CONSTRAINT uq_playing_time_projection DO UPDATE SET
     opportunity_drivers = EXCLUDED.opportunity_drivers,
     data_quality_flags = EXCLUDED.data_quality_flags,
     scenario_overrides = EXCLUDED.scenario_overrides,
+    explanation = EXCLUDED.explanation,
     role_fit = EXCLUDED.role_fit,
     computed_at = EXCLUDED.computed_at,
     expires_at = EXCLUDED.expires_at
@@ -730,6 +738,22 @@ class PlayingTimeModels:
     high_usage_model: Any | None = None
     freshman_minutes_share_by_group: dict[str, float] = field(default_factory=dict)
     freshman_usage_by_group: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PlayingTimeInferenceInputs:
+    """Feature matrices shared by prediction and explanation."""
+
+    x_minutes: np.ndarray
+    x_usage: np.ndarray
+    x_minutes_augmented: np.ndarray
+    x_usage_augmented: np.ndarray
+    p_rotation: np.ndarray
+    p_starter: np.ndarray
+    p_heavy: np.ndarray
+    p_high_usage: np.ndarray
+    minutes_feature_names: tuple[str, ...]
+    usage_feature_names: tuple[str, ...]
 
 
 def resolve_promotion_gate_metric(metrics: dict[str, float]) -> float | None:
@@ -1323,6 +1347,44 @@ def append_role_probability_features(
     return np.column_stack([x, p_rotation, p_starter, p_heavy, p_high_usage])
 
 
+def build_playing_time_inference_inputs(
+    models: PlayingTimeModels,
+    df: pd.DataFrame,
+) -> PlayingTimeInferenceInputs:
+    """Build the exact staged-model inputs used for inference and TreeSHAP."""
+    x_minutes = feature_matrix(df, models.feature_medians, models.minutes_features)
+    x_usage = feature_matrix(df, models.feature_medians, models.usage_features)
+    p_rotation, p_starter, p_heavy, p_high_usage = role_probability_features(
+        models,
+        x_minutes,
+        x_usage=x_usage,
+    )
+    return PlayingTimeInferenceInputs(
+        x_minutes=x_minutes,
+        x_usage=x_usage,
+        x_minutes_augmented=append_role_probability_features(
+            x_minutes,
+            p_rotation,
+            p_starter,
+            p_heavy,
+            p_high_usage,
+        ),
+        x_usage_augmented=append_role_probability_features(
+            x_usage,
+            p_rotation,
+            p_starter,
+            p_heavy,
+            p_high_usage,
+        ),
+        p_rotation=p_rotation,
+        p_starter=p_starter,
+        p_heavy=p_heavy,
+        p_high_usage=p_high_usage,
+        minutes_feature_names=tuple(models.minutes_features) + ROLE_PROBABILITY_FEATURES,
+        usage_feature_names=tuple(models.usage_features) + ROLE_PROBABILITY_FEATURES,
+    )
+
+
 def neutral_projection_fallback_rate(df: pd.DataFrame) -> float:
     """Fraction of rows whose joined `player_projections` row is not the forecast model.
 
@@ -1750,39 +1812,29 @@ def predict_minutes_usage(models: PlayingTimeModels, df: pd.DataFrame) -> pd.Dat
     if df.empty:
         return df.copy()
     out = df.copy()
-    x_minutes = feature_matrix(out, models.feature_medians, models.minutes_features)
-    x_usage = feature_matrix(out, models.feature_medians, models.usage_features)
-    p_rotation, p_starter, p_heavy, p_high_usage = role_probability_features(
-        models,
-        x_minutes,
-        x_usage=x_usage,
+    inputs = build_playing_time_inference_inputs(models, out)
+    raw_share = np.asarray(
+        models.minutes_model.predict(inputs.x_minutes_augmented), dtype=np.float64
     )
-    x_minutes_aug = append_role_probability_features(
-        x_minutes,
-        p_rotation,
-        p_starter,
-        p_heavy,
-        p_high_usage,
+    raw_usage = np.asarray(
+        models.usage_model.predict(inputs.x_usage_augmented), dtype=np.float64
     )
-    x_usage_aug = append_role_probability_features(
-        x_usage,
-        p_rotation,
-        p_starter,
-        p_heavy,
-        p_high_usage,
-    )
-    share = np.clip(models.minutes_model.predict(x_minutes_aug), 0.0, 0.95)
-    usage = np.clip(models.usage_model.predict(x_usage_aug), 0.0, 100.0)
+    share = np.clip(raw_share, 0.0, 0.95)
+    usage = np.clip(raw_usage, 0.0, 100.0)
+    out["_minutes_model_output_share"] = raw_share
+    out["_usage_model_output"] = raw_usage
+    out["_minutes_share_after_clipping"] = share
+    out["_usage_after_clipping"] = usage
     share, usage = apply_freshman_prior_shrinkage(
         out, share, usage, models.freshman_minutes_share_by_group, models.freshman_usage_by_group
     )
     lower_share = (
-        np.clip(models.lower_model.predict(x_minutes_aug), 0.0, 0.95)
+        np.clip(models.lower_model.predict(inputs.x_minutes_augmented), 0.0, 0.95)
         if models.lower_model
         else share - 0.10
     )
     upper_share = (
-        np.clip(models.upper_model.predict(x_minutes_aug), 0.0, 0.95)
+        np.clip(models.upper_model.predict(inputs.x_minutes_augmented), 0.0, 0.95)
         if models.upper_model
         else share + 0.10
     )
@@ -1790,10 +1842,10 @@ def predict_minutes_usage(models: PlayingTimeModels, df: pd.DataFrame) -> pd.Dat
     out["expected_minutes_share"] = share
     out["expected_minutes"] = share * MAX_PLAYER_MINUTES
     out["expected_usage"] = usage
-    out["rotation_probability_model"] = p_rotation
-    out["starter_probability_model"] = p_starter
-    out["heavy_minutes_probability"] = p_heavy
-    out["high_usage_probability"] = p_high_usage
+    out["rotation_probability_model"] = inputs.p_rotation
+    out["starter_probability_model"] = inputs.p_starter
+    out["heavy_minutes_probability"] = inputs.p_heavy
+    out["high_usage_probability"] = inputs.p_high_usage
     base_lower = np.minimum(lower_share, share) * MAX_PLAYER_MINUTES
     base_upper = np.maximum(upper_share, share) * MAX_PLAYER_MINUTES
 
@@ -1858,6 +1910,99 @@ def compress_usage_to_roster_budget(
     excess = (out["expected_usage_raw"] - cap.fillna(0.0)).clip(lower=0.0)
     reduction = np.where(has_cap, excess * effective_pull, 0.0)
     out["expected_usage"] = (out["expected_usage_raw"] - reduction).clip(lower=0.0)
+    return out
+
+
+def attach_playing_time_explanations(
+    models: PlayingTimeModels,
+    scored_df: pd.DataFrame,
+    *,
+    top_n: int = 5,
+) -> pd.DataFrame:
+    """Attach compact minutes/usage TreeSHAP payloads to a scored batch.
+
+    SHAP explains each final regressor's raw output. The payload separately
+    records deterministic postprocessing so consumers do not assume the SHAP
+    contributions add directly to a clipped, shrunk, or compressed value.
+    """
+    if scored_df.empty:
+        return scored_df.copy()
+    out = scored_df.copy()
+    inputs = build_playing_time_inference_inputs(models, out)
+    minutes_explanations = tree_shap_explain(
+        models.minutes_model,
+        inputs.x_minutes_augmented,
+        inputs.minutes_feature_names,
+        top_n=top_n,
+        output_scale=MAX_PLAYER_MINUTES,
+        intermediate_features=ROLE_PROBABILITY_FEATURES,
+    )
+    usage_explanations = tree_shap_explain(
+        models.usage_model,
+        inputs.x_usage_augmented,
+        inputs.usage_feature_names,
+        top_n=top_n,
+        intermediate_features=ROLE_PROBABILITY_FEATURES,
+    )
+
+    final_minutes = out["expected_minutes"].to_numpy(dtype=np.float64)
+    final_usage = out["expected_usage"].to_numpy(dtype=np.float64)
+    clipped_minutes = (
+        out["_minutes_share_after_clipping"].to_numpy(dtype=np.float64)
+        * MAX_PLAYER_MINUTES
+    )
+    clipped_usage = out["_usage_after_clipping"].to_numpy(dtype=np.float64)
+    pre_compression_usage = pd.to_numeric(
+        out.get("expected_usage_raw", out["expected_usage"]), errors="coerce"
+    ).to_numpy(dtype=np.float64)
+
+    payloads: list[dict[str, Any]] = []
+    for idx, (minutes_target, usage_target) in enumerate(
+        zip(minutes_explanations, usage_explanations)
+    ):
+        minutes_raw = float(minutes_target["raw_model_output"])
+        usage_raw = float(usage_target["raw_model_output"])
+        minutes_target.update(
+            {
+                "final_output": round(float(final_minutes[idx]), 6),
+                "unit": "minutes_per_game",
+            }
+        )
+        usage_target.update(
+            {
+                "final_output": round(float(final_usage[idx]), 6),
+                "unit": "usage_rate",
+            }
+        )
+        payloads.append(
+            {
+                "version": 1,
+                "method": "tree_shap",
+                "model_family": models.model_family,
+                "targets": {
+                    "expected_minutes": minutes_target,
+                    "expected_usage": usage_target,
+                },
+                "postprocessing": {
+                    "minutes_clipping_delta": round(
+                        float(clipped_minutes[idx] - minutes_raw), 6
+                    ),
+                    "minutes_freshman_adjustment": round(
+                        float(final_minutes[idx] - clipped_minutes[idx]), 6
+                    ),
+                    "usage_clipping_delta": round(
+                        float(clipped_usage[idx] - usage_raw), 6
+                    ),
+                    "usage_freshman_adjustment": round(
+                        float(pre_compression_usage[idx] - clipped_usage[idx]), 6
+                    ),
+                    "usage_roster_compression": round(
+                        float(final_usage[idx] - pre_compression_usage[idx]), 6
+                    ),
+                },
+            }
+        )
+    out["explanation"] = payloads
     return out
 
 
@@ -2109,6 +2254,7 @@ def build_playing_time_records(
         )
         flags = flags_batch[i]
         role_fit = float(r["role_fit"]) if pd.notna(r.get("role_fit")) else float(role_fit_batch[i])
+        explanation = _json_dict(r.get("explanation"))
         opportunity = {
             "target_season": int(r["season"]),
             "source_stat_season": int(_as_float(r.get("source_stat_season"), r["season"])),
@@ -2198,6 +2344,7 @@ def build_playing_time_records(
                 json.dumps(flags),
                 None,
                 role_fit,
+                json.dumps(explanation) if explanation else None,
                 model_version,
                 now,
                 expires,

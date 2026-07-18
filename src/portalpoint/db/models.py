@@ -1184,6 +1184,7 @@ class PlayingTimeProjection(Base):
     opportunity_drivers: Mapped[Optional[dict]] = mapped_column(JSONB)
     data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
     scenario_overrides: Mapped[Optional[dict]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     role_fit: Mapped[float] = mapped_column(Float, nullable=False)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
