@@ -22,7 +22,10 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "matplotlib>=3.9.0",
     "seaborn>=0.13.0",
-    "numpy>=1.26.0",
+    # SHAP depends on Numba, whose wheel-supported releases currently require
+    # NumPy <2.3 on Python 3.11/3.12. Keep fresh uv syncs off the unsupported
+    # Numba/llvmlite backtracking path.
+    "numpy>=1.26.0,<2.3.0",
     "ipykernel>=6.29.0",
     "scikit-learn>=1.5.0",
     "scipy>=1.11.0",

@@ -89,3 +89,41 @@ def test_batch_scheme_explanation_reconstructs_persisted_score() -> None:
         + breakdown["cosine_score_adjustment"]
     )
     assert reconstructed == pytest.approx(scheme_score, abs=2e-6)
+
+
+def test_batch_he_explanation_reconstructs_persisted_score() -> None:
+    season = 2026
+    player = {
+        "player_id": 1,
+        "season": season,
+        "three_point_rate": 0.42,
+        "rim_rate": 0.39,
+        "mid_range_rate": 0.19,
+        "current_tempo": 69.0,
+        **{feature: 0.1 * (index + 1) for index, feature in enumerate(HE_FEATS)},
+    }
+    team = {
+        "school_id": 10,
+        "season": season,
+        "team_three_rate": 0.38,
+        "team_rim_rate": 0.44,
+        "team_mid_rate": 0.18,
+        "adj_tempo": 70.0,
+        "_he_covered": True,
+        **{feature: 0.08 * (index + 1) for index, feature in enumerate(HE_FEATS)},
+    }
+
+    records, _, n_he = score_all_seasons(
+        pd.DataFrame([player]),
+        pd.DataFrame([team]),
+        [season],
+        tempo_default=68.0,
+    )
+
+    breakdown = json.loads(records[0][12])["scheme"]
+    reconstructed = (
+        sum(item["contribution"] for item in breakdown["he_cosine_contributions"])
+        + breakdown["he_cosine_score_adjustment"]
+    )
+    assert n_he == 1
+    assert reconstructed == pytest.approx(breakdown["he_scheme_fit"], abs=2e-6)

@@ -302,6 +302,40 @@ def score_all_seasons(
         T_norms = np.linalg.norm(T_s, axis=1, keepdims=True)
         P_unit = np.divide(P_s, P_norms, out=np.zeros_like(P_s), where=P_norms > 0)
         T_unit = np.divide(T_s, T_norms, out=np.zeros_like(T_s), where=T_norms > 0)
+        BASE_CONTRIBUTIONS = np.round(
+            P_unit[:, None, :] * T_unit[None, :, :] * 100.0,
+            6,
+        )
+        BASE_ADJUSTMENTS = np.round(SIM_r - BASE_CONTRIBUTIONS.sum(axis=2), 6)
+
+        if HE_SIM_s.size > 0:
+            P_HE_norms = np.linalg.norm(P_HE_s, axis=1, keepdims=True)
+            T_HE_norms = np.linalg.norm(T_HE_s, axis=1, keepdims=True)
+            P_HE_unit = np.divide(
+                P_HE_s,
+                P_HE_norms,
+                out=np.zeros_like(P_HE_s),
+                where=P_HE_norms > 0,
+            )
+            T_HE_unit = np.divide(
+                T_HE_s,
+                T_HE_norms,
+                out=np.zeros_like(T_HE_s),
+                where=T_HE_norms > 0,
+            )
+            HE_CONTRIBUTIONS = np.round(
+                P_HE_unit[:, None, :] * T_HE_unit[None, :, :] * 100.0,
+                6,
+            )
+            HE_SCORES = np.round(HE_SIM_s, 1)
+            HE_ADJUSTMENTS = np.round(
+                HE_SCORES - HE_CONTRIBUTIONS.sum(axis=2),
+                6,
+            )
+        else:
+            HE_CONTRIBUTIONS = np.empty((0, 0, 0))
+            HE_SCORES = np.empty((0, 0))
+            HE_ADJUSTMENTS = np.empty((0, 0))
         PACE_r = np.round(np.where(np.isnan(PACE_s), 50.0, PACE_s), 1)
         CONST_PART = W_GAP * 50.0 + W_OPP * 50.0 + W_PERS * 50.0
         OVERALL_r = np.round(W_SCHEME * SIM_r + CONST_PART, 2)
@@ -320,35 +354,24 @@ def score_all_seasons(
                     "pace_match": float(PACE_r[i, j]),
                     "mid_range_match": float(MATCH[i, j, 2]),
                 }
-                base_contributions = np.round(P_unit[i] * T_unit[j] * 100.0, 6)
+                base_contributions = BASE_CONTRIBUTIONS[i, j]
                 bd["cosine_contributions"] = [
                     {"feature": feat, "contribution": float(base_contributions[k])}
                     for k, feat in enumerate(PLAYER_SHOT_FEATS)
                 ]
-                bd["cosine_score_adjustment"] = round(
-                    sfv - float(base_contributions.sum()),
-                    6,
-                )
+                bd["cosine_score_adjustment"] = float(BASE_ADJUSTMENTS[i, j])
                 if he_p >= 0 and he_t >= 0 and HE_SIM_s.size > 0:
-                    bd["he_scheme_fit"] = float(round(HE_SIM_s[he_p, he_t], 1))
+                    bd["he_scheme_fit"] = float(HE_SCORES[he_p, he_t])
                     bd["he_breakdown"] = {
                         feat: float(HE_MATCH_s[he_p, he_t, k]) for k, feat in enumerate(HE_FEATS)
                     }
-                    he_contributions = np.round(
-                        cosine_contributions(
-                            P_HE_s[he_p],
-                            T_HE_s[he_t],
-                            output_scale=100.0,
-                        ),
-                        6,
-                    )
+                    he_contributions = HE_CONTRIBUTIONS[he_p, he_t]
                     bd["he_cosine_contributions"] = [
                         {"feature": feat, "contribution": float(he_contributions[k])}
                         for k, feat in enumerate(HE_FEATS)
                     ]
-                    bd["he_cosine_score_adjustment"] = round(
-                        float(bd["he_scheme_fit"]) - float(he_contributions.sum()),
-                        6,
+                    bd["he_cosine_score_adjustment"] = float(
+                        HE_ADJUSTMENTS[he_p, he_t]
                     )
                     n_he_s += 1
 

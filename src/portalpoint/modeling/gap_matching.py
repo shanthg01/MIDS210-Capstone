@@ -402,6 +402,12 @@ def score_gap_matches(
         G_norms = np.linalg.norm(G_s, axis=2, keepdims=True)
         P_unit = np.divide(P_s, P_norms, out=np.zeros_like(P_s), where=P_norms > 0)
         G_unit = np.divide(G_s, G_norms, out=np.zeros_like(G_s), where=G_norms > 0)
+        weighted_gap_units = np.einsum("pk,skf->psf", W_s, G_unit, optimize=True)
+        RAW_CONTRIBUTIONS = np.round(
+            P_unit[:, None, :] * weighted_gap_units * 100.0,
+            6,
+        )
+        RAW_GAP_ROUNDED = np.round(RAW_GAP_MATRIX, 2)
 
         now_ts = datetime.now(timezone.utc).isoformat()
         player_ids = s_df["player_id"].astype(int).to_numpy()
@@ -413,41 +419,44 @@ def score_gap_matches(
             arch_id = row["archetype_id"]
             cluster = int(arch_id) if pd.notna(arch_id) else -1
             pos_w = W_s[pi]
+            calibrated_scores = np.clip(
+                gap_reliability * RAW_GAP_MATRIX[pi]
+                + (1.0 - gap_reliability) * BASELINE_GAP_MATCH,
+                0.0,
+                100.0,
+            )
+            calibrated_scores_rounded = np.round(calibrated_scores, 2)
+            raw_contributions_by_school = RAW_CONTRIBUTIONS[pi]
+            calibrated_contributions_by_school = np.round(
+                gap_reliability * raw_contributions_by_school,
+                6,
+            )
+            raw_adjustments = np.round(
+                RAW_GAP_ROUNDED[pi] - raw_contributions_by_school.sum(axis=1),
+                6,
+            )
+            baseline_contribution = round(
+                (1.0 - gap_reliability) * BASELINE_GAP_MATCH,
+                6,
+            )
+            calibrated_adjustments = np.round(
+                calibrated_scores_rounded
+                - calibrated_contributions_by_school.sum(axis=1)
+                - baseline_contribution,
+                6,
+            )
             for si, sid in enumerate(sids):
-                raw_gap_match = float(RAW_GAP_MATRIX[pi, si])
-                gap_match = calibrate_gap_match(raw_gap_match, gap_reliability)
+                gap_match = float(calibrated_scores[si])
                 depth = gap_data[season][sid]["depth"]
                 pos_depth = float(np.sum(pos_w * np.array([depth_score(depth[p]) for p in range(5)])))
                 archetype_needed = cluster >= 0 and cluster in arch_deficit[season].get(sid, set())
                 weighted_gap_vec = (pos_w[:, None] * gap_data[season][sid]["gap_vecs"]).sum(axis=0)
-                raw_contributions = np.round(
-                    (
-                        pos_w[:, None]
-                        * P_unit[pi][None, :]
-                        * G_unit[si]
-                    ).sum(axis=0) * 100.0,
-                    6,
-                )
-                raw_score_rounded = round(raw_gap_match, 2)
-                calibrated_score_rounded = round(gap_match, 2)
-                raw_adjustment = round(
-                    raw_score_rounded - float(raw_contributions.sum()),
-                    6,
-                )
-                calibrated_contributions = np.round(
-                    gap_reliability * raw_contributions,
-                    6,
-                )
-                baseline_contribution = round(
-                    (1.0 - gap_reliability) * BASELINE_GAP_MATCH,
-                    6,
-                )
-                calibrated_adjustment = round(
-                    calibrated_score_rounded
-                    - float(calibrated_contributions.sum())
-                    - baseline_contribution,
-                    6,
-                )
+                raw_contributions = raw_contributions_by_school[si]
+                calibrated_contributions = calibrated_contributions_by_school[si]
+                raw_score_rounded = float(RAW_GAP_ROUNDED[pi, si])
+                calibrated_score_rounded = float(calibrated_scores_rounded[si])
+                raw_adjustment = float(raw_adjustments[si])
+                calibrated_adjustment = float(calibrated_adjustments[si])
 
                 ex = existing_pairs.get((pid, sid, season), {})
                 scheme_fit = float(ex.get("scheme_fit") or 0.0)
