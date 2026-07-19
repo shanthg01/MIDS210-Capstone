@@ -1186,6 +1186,7 @@ class PlayingTimeProjection(Base):
     opportunity_drivers: Mapped[Optional[dict]] = mapped_column(JSONB)
     data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
     scenario_overrides: Mapped[Optional[dict]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     role_fit: Mapped[float] = mapped_column(Float, nullable=False)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1240,6 +1241,38 @@ class TeamRatingProjection(Base):
     explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     minutes_distribution: Mapped[Optional[dict]] = mapped_column(JSONB)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TransferSuccessScore(Base):
+    __tablename__ = "transfer_success_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "to_school_id", "season", "model_version",
+            name="uq_transfer_success_score",
+        ),
+        Index("ix_transfer_success_player_season", "player_id", "season"),
+        Index("ix_transfer_success_school_season", "to_school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
+    to_school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    player_cluster: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_offense_cluster_id: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_defense_cluster_id: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_cluster_label: Mapped[Optional[str]] = mapped_column(String(120))
+    success_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    success_tier: Mapped[Optional[str]] = mapped_column(String(20))
+    cell_n: Mapped[Optional[float]] = mapped_column(Float)
+    shrinkage_w: Mapped[Optional[float]] = mapped_column(Float)
+    cluster_success_rate: Mapped[Optional[float]] = mapped_column(Float)
+    cell_success_rate: Mapped[Optional[float]] = mapped_column(Float)
+    explanation: Mapped[Optional[str]] = mapped_column(Text)
+    similar_transfers: Mapped[Optional[list]] = mapped_column(JSONB)
+    model_version: Mapped[str] = mapped_column(String(50), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

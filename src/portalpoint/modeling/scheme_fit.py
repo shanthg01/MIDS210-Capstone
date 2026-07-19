@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import numpy as np
 import pandas as pd
-from psycopg2.extras import execute_values
 from sklearn.metrics.pairwise import cosine_similarity
 from sqlalchemy import Engine
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
+from portalpoint.modeling.explainability import cosine_contributions
 
 MODEL_VERSION = "scheme-cos-v3"
 EXPIRES_DAYS = 30
@@ -72,6 +71,22 @@ def scheme_breakdown(p_vec: np.ndarray, t_vec: np.ndarray, feat_ranges: dict, fe
         feat: float(max(0.0, (1.0 - abs(p_vec[i] - t_vec[i]) / feat_ranges[feat]) * 100))
         for i, feat in enumerate(feat_names)
     }
+
+
+def cosine_breakdown(
+    p_vec: np.ndarray,
+    t_vec: np.ndarray,
+    feature_names: list[str],
+    final_score: float,
+) -> tuple[list[dict[str, float | str]], float]:
+    """Package exact cosine drivers plus any clipping/fallback adjustment."""
+    values = cosine_contributions(p_vec, t_vec, output_scale=100.0)
+    contributions = [
+        {"feature": feature, "contribution": round(float(value), 6)}
+        for feature, value in zip(feature_names, values)
+    ]
+    adjustment = round(float(final_score) - sum(item["contribution"] for item in contributions), 6)
+    return contributions, adjustment
 
 
 def feature_ranges(player_df: pd.DataFrame, team_df: pd.DataFrame) -> dict[str, float]:
@@ -141,6 +156,7 @@ def compute_scheme_fit_ondemand(
 
     sf = scheme_fit_score(p, t)
     sub = scheme_breakdown(p, t, feat_ranges, PLAYER_SHOT_FEATS)
+    cosine_bd, cosine_adjustment = cosine_breakdown(p, t, PLAYER_SHOT_FEATS, round(sf, 2))
 
     if player_tempo is not None and team_tempo is not None:
         pm = float(np.clip((1.0 - abs(player_tempo - team_tempo) / tempo_range) * 100, 0, 100))
@@ -154,6 +170,8 @@ def compute_scheme_fit_ondemand(
             "rim_attack_match": round(sub["rim_rate"], 1),
             "pace_match": round(pm, 1),
             "mid_range_match": round(sub.get("mid_range_rate", 50.0), 1),
+            "cosine_contributions": cosine_bd,
+            "cosine_score_adjustment": cosine_adjustment,
         },
     }
 
@@ -166,6 +184,14 @@ def compute_scheme_fit_ondemand(
         result["breakdown"]["he_breakdown"] = {
             feat: round(v, 1) for feat, v in he_scheme_breakdown(ph, th, he_feat_ranges).items()
         }
+        he_contributions, he_adjustment = cosine_breakdown(
+            ph,
+            th,
+            HE_FEATS,
+            result["breakdown"]["he_scheme_fit"],
+        )
+        result["breakdown"]["he_cosine_contributions"] = he_contributions
+        result["breakdown"]["he_cosine_score_adjustment"] = he_adjustment
 
     return result
 
@@ -272,6 +298,44 @@ def score_all_seasons(
         diff = np.abs(P_s[:, None, :] - T_s[None, :, :])  # (n_p, n_t, 3)
         MATCH = np.round(np.maximum(0.0, (1.0 - diff / RANGE_arr[None, None, :]) * 100.0), 1)
         SIM_r = np.round(SIM_s, 2)
+        P_norms = np.linalg.norm(P_s, axis=1, keepdims=True)
+        T_norms = np.linalg.norm(T_s, axis=1, keepdims=True)
+        P_unit = np.divide(P_s, P_norms, out=np.zeros_like(P_s), where=P_norms > 0)
+        T_unit = np.divide(T_s, T_norms, out=np.zeros_like(T_s), where=T_norms > 0)
+        BASE_CONTRIBUTIONS = np.round(
+            P_unit[:, None, :] * T_unit[None, :, :] * 100.0,
+            6,
+        )
+        BASE_ADJUSTMENTS = np.round(SIM_r - BASE_CONTRIBUTIONS.sum(axis=2), 6)
+
+        if HE_SIM_s.size > 0:
+            P_HE_norms = np.linalg.norm(P_HE_s, axis=1, keepdims=True)
+            T_HE_norms = np.linalg.norm(T_HE_s, axis=1, keepdims=True)
+            P_HE_unit = np.divide(
+                P_HE_s,
+                P_HE_norms,
+                out=np.zeros_like(P_HE_s),
+                where=P_HE_norms > 0,
+            )
+            T_HE_unit = np.divide(
+                T_HE_s,
+                T_HE_norms,
+                out=np.zeros_like(T_HE_s),
+                where=T_HE_norms > 0,
+            )
+            HE_CONTRIBUTIONS = np.round(
+                P_HE_unit[:, None, :] * T_HE_unit[None, :, :] * 100.0,
+                6,
+            )
+            HE_SCORES = np.round(HE_SIM_s, 1)
+            HE_ADJUSTMENTS = np.round(
+                HE_SCORES - HE_CONTRIBUTIONS.sum(axis=2),
+                6,
+            )
+        else:
+            HE_CONTRIBUTIONS = np.empty((0, 0, 0))
+            HE_SCORES = np.empty((0, 0))
+            HE_ADJUSTMENTS = np.empty((0, 0))
         PACE_r = np.round(np.where(np.isnan(PACE_s), 50.0, PACE_s), 1)
         CONST_PART = W_GAP * 50.0 + W_OPP * 50.0 + W_PERS * 50.0
         OVERALL_r = np.round(W_SCHEME * SIM_r + CONST_PART, 2)
@@ -290,11 +354,25 @@ def score_all_seasons(
                     "pace_match": float(PACE_r[i, j]),
                     "mid_range_match": float(MATCH[i, j, 2]),
                 }
+                base_contributions = BASE_CONTRIBUTIONS[i, j]
+                bd["cosine_contributions"] = [
+                    {"feature": feat, "contribution": float(base_contributions[k])}
+                    for k, feat in enumerate(PLAYER_SHOT_FEATS)
+                ]
+                bd["cosine_score_adjustment"] = float(BASE_ADJUSTMENTS[i, j])
                 if he_p >= 0 and he_t >= 0 and HE_SIM_s.size > 0:
-                    bd["he_scheme_fit"] = float(round(HE_SIM_s[he_p, he_t], 1))
+                    bd["he_scheme_fit"] = float(HE_SCORES[he_p, he_t])
                     bd["he_breakdown"] = {
                         feat: float(HE_MATCH_s[he_p, he_t, k]) for k, feat in enumerate(HE_FEATS)
                     }
+                    he_contributions = HE_CONTRIBUTIONS[he_p, he_t]
+                    bd["he_cosine_contributions"] = [
+                        {"feature": feat, "contribution": float(he_contributions[k])}
+                        for k, feat in enumerate(HE_FEATS)
+                    ]
+                    bd["he_cosine_score_adjustment"] = float(
+                        HE_ADJUSTMENTS[he_p, he_t]
+                    )
                     n_he_s += 1
 
                 records.append((

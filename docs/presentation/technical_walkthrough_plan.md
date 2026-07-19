@@ -25,15 +25,23 @@ Each model narrows a different dimension of uncertainty. This is the through-lin
 
 **System:** Rim-pressure offense, strong assisted-shot rate, up-tempo pace, and a jump-shot funnel defensive profile. High-major (WCC). Heavy portal recruiter.
 
-**Roster situation:** Current roster gaps emphasize on-ball guard creation, assist pressure, and frontcourt depth/rebounding. Primary need: a high-fit lead guard, with a secondary big who can stabilize the center rotation.
+**Roster situation:** Significant minutes departing across all five positions (SG: 143 min/g, SF: 111, PG: 101, PF: 76, C: 69). Primary needs: backcourt depth and a rim-running center.
 
-**Three targets:**
+**Three targets (real portal candidates, complete data across all model sections):**
 
-| Player | Pos | From | Transfer direction |
-|---|---|---|---|
-| **Daeshun Ruffin** | PG | Jackson St. (SWAC) | Low-major → high-major |
-| **Elijah Crawford** | PG | Illinois Chicago (MVC) | Mid-major → high-major |
-| **Kyle Evans** | C | UC Irvine (Big West) | Mid-major → high-major |
+| Player | Pos | From | Conference | Transfer direction | player_id |
+|---|---|---|---|---|---|
+| **Daeshun Ruffin** | PG | Jackson St. | SWAC | Low-major → high-major (+3 tiers) | 7578028029286400392 |
+| **Elijah Crawford** | PG | Illinois Chicago | MVC | Mid-major → high-major (+1 tier) | 6910442837336165955 |
+| **Kyle Evans** | C | UC Irvine | Big West | Mid-major → high-major (+1 tier) | 9023425631028193516 |
+
+**2026 season stats:**
+
+| Player | GP | PPG | Usage% | AST% | TS% | 3P Rate | Rim% | BPM | OrtG |
+|---|---|---|---|---|---|---|---|---|---|
+| **Ruffin** | 28 | 23.3 | 36.2 | 45.2 | 55.2 | 29.2% | 37.8% | +4.06 | 108 |
+| **Crawford** | 23 | 14.1 | 31.1 | 43.0 | 53.0 | 28.5% | 22.1% | +2.61 | 107 |
+| **Evans** | 33 | 12.1 | 16.1 | 6.4 | 64.8 | 3.5% | 76.3% | +3.01 | 129 |
 
 ---
 
@@ -168,13 +176,13 @@ The news agent does **not** replace `ingest_transfers_247sports.py`, `ingest_bar
 
 ### Results
 
-| Player | Archetype | Centroid distance | Key distinguishing features |
-|---|---|---|---|
-| **Ruffin** | Lead Scoring Playmaker | 0.44 | Usage 36.2%, 3PT rate 29.2%, assist rate 45.2%, BPM +4.1 |
-| **Crawford** | Lead Scoring Playmaker | 0.47 | Usage 31.1%, 3PT rate 28.5%, assist rate 43.0%, BPM +2.6 |
-| **Evans** | Post Scoring Big | 0.48 | Usage 16.1%, rim-heavy profile, assist rate 6.4%, BPM +3.0 |
+| Player | Archetype | Key distinguishing features |
+|---|---|---|
+| **Ruffin** | Lead Scoring Playmaker | Usage 36.2%, AST% 45.2%, high creation volume, low 3PT rate (29.2%), mixed rim/3PT shot diet |
+| **Crawford** | Lead Scoring Playmaker | Usage 31.1%, AST% 43.0%, similar creation profile to Ruffin but lower volume; BYU bench → UIC starter arc |
+| **Evans** | Post Scoring Big | Rim% 76.3%, BLK% 11.8%, DReb% 21.8%, OrtG 129 — elite rim-running efficiency, near-zero 3PT |
 
-Ruffin and Crawford both profile as lead scoring playmakers, while Evans gives the board a contrasting frontcourt archetype. The comparison is useful because the model can separate "best guard fit" from "best roster-shape complement" rather than treating all portal targets as interchangeable.
+Ruffin and Crawford share the same archetype (Lead Scoring Playmaker), which creates a narrative tension: the cluster is the same, but the tier gap and usage context are very different. Evans's archetype (Post Scoring Big) is orthogonal to both and maps directly onto Gonzaga's center vacancy.
 
 ### Visual Callouts
 
@@ -203,14 +211,14 @@ Ruffin and Crawford both profile as lead scoring playmakers, while Evans gives t
 
 ### Results
 
-| | 3PT Att% | Rim Att% | Usage% | Assist% | **Scheme Fit** |
+| | 3PT Rate | Rim Rate | Usage% | AST% | **Scheme Fit** |
 |---|---|---|---|---|---|
-| **Gonzaga target** | 30.8 | 38.4 | — | 57.5 | — |
-| **Ruffin** | 29.2 | 37.8 | 36.2 | 42.6 | **99.6** |
-| **Crawford** | 28.5 | 21.0 | 31.1 | 38.6 | **89.7** |
-| **Evans** | 3.5 | 76.7 | 16.1 | 6.0 | **80.8** |
+| **Gonzaga system** | 30.8% | 35.9% | — | — | — |
+| **Ruffin** | 29.2% | 37.8% | 36.2 | 45.2 | **99.6** |
+| **Crawford** | 28.5% | 22.1% | 31.1 | 43.0 | **89.7** |
+| **Evans** | 3.5% | 76.3% | 16.1 | 6.4 | **80.8** |
 
-Ruffin is the strongest pure scheme match: his rim pressure and 3PT mix closely track Gonzaga's offensive shape. Crawford remains a strong guard fit, while Evans is a different bet — less guard creation, but a clear rim-pressure/frontcourt profile.
+Ruffin's 99.6 is the highest scheme fit in the portal candidate pool for Gonzaga — his 3PT/rim balance and pace contribution align almost perfectly with the team style vector. Crawford scores 89.7, penalized by lower rim rate. Evans scores 80.8 — the cosine penalty comes from his near-zero 3PT and assist dimensions; the rim and usage dimensions align but the other three pull him down. All three are above the median portal candidate score, making Gonzaga's system a strong stylistic match for each.
 
 ### Visual Callouts
 
@@ -239,17 +247,17 @@ Ruffin is the strongest pure scheme match: his rim pressure and 3PT mix closely 
 
 ### Gonzaga Roster State
 
-**Departing / roster context:** The current gap vector points toward guard creation and assist pressure, with a secondary frontcourt/rebounding need.
+**Departing minutes by position (2026 snapshot):** SG 143 min/g, SF 111, PG 101, PF 76, C 69 — every position has a real gap. Note: `roster_state_features.returning_minutes_by_position` is all-zero for this snapshot (2026-06-21 data quality issue — barttorvik rostercast had no committed incoming players recorded yet). The departing minutes are real and drive the gap vector accurately; the gap chart is correctly all-red (net minutes open at every position).
 
-**Post-departure roster:** `roster_state_features` captures returning/departing/incoming minutes by position and skill group, updated after 247Sports ingestion. The visualization normalizes those needs against each target's skill profile.
+**Post-departure roster:** Thin across the board, with SG and PG as the largest raw-minute gaps. The gap vector rewards players whose skill profile maps onto the departed production shape, not just the position.
 
 ### Results
 
 | Player | Gap Match | Key driver |
 |---|---|---|
-| **Ruffin** | **69.3** | Best all-around guard fit; high assist/usage profile maps to the creation need |
-| **Crawford** | **58.5** | Similar lead-guard archetype, but lower gap alignment than Ruffin |
-| **Evans** | **67.8** | Strong secondary match through center/frontcourt value and rebounding profile |
+| **Ruffin** | **69.3** | PG position maps onto the 101-min PG gap; high usage/creation profile fills a real initiator void; soft-weighted penalty for his non-3PT shot diet (Gonzaga's departed PG production skewed toward assisted looks) |
+| **Crawford** | **58.5** | Same position as Ruffin (competing PG), lower gap score because Crawford's lower-volume profile is a weaker match to the high-minute PG gap shape |
+| **Evans** | **67.8** | C position maps cleanly onto the 69-min C gap; elite rim rate (76.3%) and block% (11.8%) align directly with the departed center's skill fingerprint; highest gap_match among all C portal candidates at Gonzaga |
 
 ### Visual Callouts
 
@@ -319,16 +327,16 @@ Phase 0 is in production. Phase 2a is the technically complex, novel contributio
 
 ```
 GET /api/players/7578028029286400392/projection        # neutral, defaults to Phase 0
-GET /api/players/7578028029286400392/projection?model_version=player-proj-phase2a-fcast-v1
+GET /api/players/7578028029286400392/projection?model_version=player-projection-phase2a-v1
 ```
 
-| Player | Current season summary | Phase 0 Value/100 | Phase 2a Forecast Value/100 | Δ Ph2a vs Ph0 |
-|---|---|---|---|---|
-| **Ruffin** | 23.3 PPG / 29.2% 3PT / 36.2% usage | +3.3 | +1.7 | −1.6 |
-| **Crawford** | 14.1 PPG / 28.5% 3PT / 31.1% usage | +2.7 | −0.7 | −3.3 |
-| **Evans** | 12.1 PPG / 16.1% usage / center profile | +2.1 | +4.2 | +2.1 |
+| Player | 2026 PPG / TS% | Ph0 value/100 | 90% CI | Ph2a value/100 | Δ Ph2a vs Ph0 |
+|---|---|---|---|---|---|
+| **Ruffin** | 23.3 / 55.2% | **+3.33** | [+0.49, +6.16] | +2.02 | −1.31 |
+| **Crawford** | 14.1 / 53.0% | **+2.69** | [−0.15, +5.52] | +2.00 | −0.69 |
+| **Evans** | 12.1 / 64.8% | **+2.12** | [−0.71, +4.96] | +1.76 | −0.36 |
 
-Phase 2a separates the board more sharply than Phase 0: Ruffin leads the neutral production case in Phase 0, while Evans gets the largest cross-season lift.
+Phase 2a is *more conservative* than Phase 0 for all three. This is the expected behavior of the cross-season Kalman: it regresses toward the multi-year prior and applies a persistence discount for players who haven't yet shown multi-season consistency at this level. Ruffin's large Ph2a pullback (−1.31) reflects his limited career history in the DB (2022, 2025, 2026 — gap year). Crawford's 2025 season was 7.5% minutes at BYU (near-zero signal), so the smoother discounts it and the 2026 breakout is treated with partial skepticism. Evans has the flattest Ph0→Ph2a delta (−0.36), consistent with his steady multi-season progression at UC Irvine. In all three cases the Ph0 CI is wide (±2.8), indicating high per-season uncertainty — this is expected for mid-majors where fewer cross-referencing data points exist in the HE RAPM training set.
 
 ### Visual Callouts
 
@@ -367,21 +375,25 @@ Phase 2a separates the board more sharply than Phase 0: Ruffin leads the neutral
 
 ### Results
 
-| Player | Proj Minutes | 90% CI | Proj Usage Rate | Role Fit |
-|---|---|---|---|---|
-| **Ruffin** | **28.6 min/g** | 21.9–35.3 | 16.7% | **73.3** |
-| **Crawford** | **23.6 min/g** | 17.8–29.5 | 13.7% | **65.6** |
-| **Evans** | **25.1 min/g** | 20.9–29.3 | 10.4% | **71.4** |
+| Player | Proj Minutes | 90% CI | Proj Usage% | Role | Role Fit |
+|---|---|---|---|---|---|
+| **Ruffin** | **28.6 min/g** | 21.9–35.3 | 16.7% | defensive_specialist | **73.3** |
+| **Crawford** | **23.6 min/g** | 17.8–29.5 | 13.7% | defensive_specialist | **65.6** |
+| **Evans** | **25.1 min/g** | 20.9–29.3 | 10.4% | spacing_specialist | **71.4** |
 
-Ruffin projects for the largest role, while Evans has the tightest frontcourt rotation case. Crawford's interval leaves room for either a starter-level guard role or a smaller deployment depending on fit and roster competition.
+All three project into real rotation minutes (23–29 min/g). Evans has the tightest CI (±4.2) — consistent role archetype, clear positional need, minimal competition at C. Ruffin's CI is the widest (±6.7) reflecting the higher uncertainty of a SWAC star jumping three competition tiers. Usage projections reflect a substantial reduction for both PGs: Ruffin drops from 36.2% source usage to 16.7% projected at Gonzaga (he becomes a complementary player, not a usage anchor), Crawford from 31.1% to 13.7%.
 
-### Updated Composite Fit (Role Fit now live)
+Note: `player_team_fit_scores.role_fit` is still 50.0 for these players in the fit scores table (the playing-time run writes to `playing_time_projections.role_fit` but the back-sync to `player_team_fit_scores` requires a follow-up `sync_role_fit_scores()` call). The overall_fit scores (68.7/63.6/62.8) reflect this stub. With real role_fit values wired in, the composite updates:
+
+### Updated Composite Fit (with real Role Fit from playing time model)
 
 | Player | Scheme (×0.30) | Gap (×0.20) | Role (×0.25) | Program (×0.25, stub) | **Composite** |
 |---|---|---|---|---|---|
-| Ruffin | 99.6 | 69.3 | 73.3 | 50.0 | **68.7** |
-| Crawford | 89.7 | 58.5 | 65.6 | 50.0 | **63.6** |
-| Evans | 80.8 | 67.8 | 71.4 | 50.0 | **62.8** |
+| Ruffin | 99.6 | 69.3 | 73.3 | 50.0 | **74.6** |
+| Crawford | 89.7 | 58.5 | 65.6 | 50.0 | **67.5** |
+| Evans | 80.8 | 67.8 | 71.4 | 50.0 | **68.2** |
+
+Evans moves above Crawford in composite when real role_fit is applied — his gap_match (67.8) and role_fit (71.4) together outweigh Crawford's scheme advantage.
 
 ### Visual Callouts
 
@@ -428,15 +440,21 @@ Transfer-outcome matrix: source tier × destination tier (4 tiers each). Real si
 
 ### Results
 
+The destination model uses `player-proj-phase2a-fcast-v1` (the Phase 2a forward forecast) as its neutral baseline, not Phase 0. Forecast neutral values are higher than Ph0 for all three (Ruffin 4.52, Crawford 5.08, Evans 5.21), reflecting the Kalman smoother's forward extrapolation. All deltas are computed relative to this forecast baseline.
+
 | | Ruffin | Crawford | Evans |
 |---|---|---|---|
-| Neutral Value/100 (Ph 0) | +3.3 | +2.7 | +2.1 |
-| **Destination Value/100** | **+3.3** | **+4.8** | **+4.5** |
-| Δ total vs neutral | **−0.1** | **+2.1** | **+2.4** |
-| Projected minutes | 28.6 | 23.6 | 25.1 |
-| Projected usage | 16.7 | 13.7 | 10.4 |
+| Neutral (Ph2a fcast) | +4.52 | +5.08 | +5.21 |
+| Δ1 Role/Usage | −0.75 | −0.17 | −0.74 |
+| Δ2 Style/Skill Fit | −0.06 | +0.04 | +0.07 |
+| Δ3 Roster Context | +0.15 | +0.07 | +0.14 |
+| Δ4 Competition Tier | −0.60 | −0.20 | −0.20 |
+| **Total context Δ** | **−1.25** | **−0.26** | **−0.73** |
+| **Dest value/100** | **+3.26** | **+4.81** | **+4.48** |
+| Source tier → dest tier | SWAC(4)→WCC(1) | MVC(2)→WCC(1) | Big West(2)→WCC(1) |
+| Proj minutes | 28.6 | 23.6 | 25.1 |
 
-Crawford and Evans receive the largest destination uplift, while Ruffin remains the cleanest composite fit because his scheme and role scores are strongest.
+**Destination rank reverses the fit score rank.** Crawford (4.81) > Evans (4.48) > Ruffin (3.26) on destination value, despite Ruffin having the highest composite fit (74.6). Ruffin's SWAC→WCC jump (+3 tiers) drives a −0.60 tier penalty — the largest of any player in this set. Combined with a −0.75 role/usage delta (usage drops from 36.2% to 16.7%), the total context adjustment is −1.25, the steepest. Crawford's single-tier MVC→WCC jump produces a much smaller −0.20 tier penalty, so his underlying quality survives the translation. Evans takes the same tier penalty as Crawford (−0.20) but incurs a larger role/usage delta (−0.74, usage drops from 16.1% to 10.4% as he shifts from featured big to role center), landing him in between.
 
 ### Visual Callouts
 
@@ -453,14 +471,15 @@ Crawford and Evans receive the largest destination uplift, while Ruffin remains 
 | Scheme Fit | 99.6 | 89.7 | 80.8 |
 | Gap Match | 69.3 | 58.5 | 67.8 |
 | Role Fit | 73.3 | 65.6 | 71.4 |
-| **Composite Fit** | **68.7** | **63.6** | **62.8** |
-| Neutral Value/100 | +3.3 | +2.7 | +2.1 |
-| Dest Value/100 | +3.3 | +4.8 | +4.5 |
-| System delta | **−0.1** | **+2.1** | **+2.4** |
-| Proj Minutes (CI) | 28.6 (22–35) | 23.6 (18–29) | 25.1 (21–29) |
-| Proj usage | 16.7% | 13.7% | 10.4% |
+| **Composite Fit** | **74.6** | **67.5** | **68.2** |
+| Ph0 Neutral value/100 | +3.33 | +2.69 | +2.12 |
+| Ph2a Neutral value/100 | +2.02 | +2.00 | +1.76 |
+| Total context Δ | **−1.25** | **−0.26** | **−0.73** |
+| **Dest value/100** | **+3.26** | **+4.81** | **+4.48** |
+| Proj Minutes (CI) | 28.6 (21.9–35.3) | 23.6 (17.8–29.5) | 25.1 (20.9–29.3) |
+| Source → Dest tier | SWAC(4)→WCC(1) | MVC(2)→WCC(1) | Big West(2)→WCC(1) |
 
-**Recommendation:** Ruffin is the lead target on composite fit — the scheme score is elite, the projected minutes are starter-level, and the role fit is strongest. Crawford and Evans are the upside cases in destination value, with Evans especially useful as the frontcourt complement if roster construction is prioritized over pure guard fit.
+**Recommendation:** Crawford is the lead target on value delivered at Gonzaga (dest 4.81) — his MVC→WCC tier jump is manageable and his game survives the translation. Evans is the correct secondary target (only C in the pool, clear gap fill, tightest CI, spacing_specialist role). Ruffin is the scheme-fit trap: 99.6 scheme fit and the highest composite score, but the SWAC→WCC tier jump and a usage cut from 36.2% to 16.7% erode the raw advantage. His destination value (3.26) is the lowest of the three. The models surface a counter-intuitive result that pure scouting would miss.
 
 ---
 
@@ -468,4 +487,4 @@ Crawford and Evans receive the largest destination uplift, while Ruffin remains 
 
 > Every model narrows a different dimension of uncertainty. Clustering identifies whether the archetype even belongs. Scheme/Gap Fit measures alignment quantitatively. Player Projection tells you the floor — neutral talent. Playing Time tells you whether that talent deploys. Destination Projection synthesizes all five into a single answer: *what does this player do for us, in our system, this season.*
 >
-> Ruffin is the cleanest fit, while Crawford and Evans show why destination projection matters: fit score and destination value can point to different kinds of roster decisions.
+> Ruffin's case is the best slide in the deck. Scheme fit 99.6 — the closest match in the portal. Highest composite score. Raw recruiting instinct says he's the obvious answer. But a three-tier competition jump from the SWAC and a usage cut from 36% to 17% leave him projected at just 3.26 value/100 at Gonzaga — the lowest of the three targets. Crawford, with a lower fit score and a more modest profile, delivers 4.81 because the models know that one tier of competition adjustment is survivable, three is not. That gap only exists on paper if you have the model.

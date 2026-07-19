@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from portalpoint.modeling import gap_matching as gm
 
@@ -13,7 +14,7 @@ def test_score_gap_matches_scores_all_pairs_and_preserves_scheme_context():
             "player_id": player_id,
             "season": season,
             "archetype_id": player_id,
-            gm.GAP_RELIABILITY_COL: 1.0,
+            gm.GAP_RELIABILITY_COL: 0.5,
             gm.POSITION_SOURCE_COL: "hoop_explorer",
             gm.POSITION_RELIABILITY_COL: 1.0,
             gm.SAMPLE_RELIABILITY_COL: 1.0,
@@ -57,6 +58,20 @@ def test_score_gap_matches_scores_all_pairs_and_preserves_scheme_context():
     assert seeded_breakdown["scheme"] == {"source": "seeded"}
     assert seeded_breakdown["gap"]["archetype_needed"] is True
     assert seeded[4] >= 49.0
+    gap_bd = seeded_breakdown["gap"]
+    assert gap_bd["reliability_baseline_contribution"] == pytest.approx(7.5)
+    raw_sum = sum(item["contribution"] for item in gap_bd["cosine_contributions"])
+    assert raw_sum + gap_bd["raw_score_adjustment"] == pytest.approx(
+        gap_bd["raw_gap_match"], abs=2e-6
+    )
+    calibrated_sum = sum(
+        item["calibrated_contribution"] for item in gap_bd["cosine_contributions"]
+    )
+    assert (
+        calibrated_sum
+        + gap_bd["reliability_baseline_contribution"]
+        + gap_bd["calibrated_score_adjustment"]
+    ) == pytest.approx(gap_bd["calibrated_gap_match"], abs=2e-6)
 
     unseeded = next(r for r in records if r[:3] == (1, 20, season))
     unseeded_breakdown = json.loads(unseeded[5])

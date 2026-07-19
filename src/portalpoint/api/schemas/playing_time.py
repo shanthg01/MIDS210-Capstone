@@ -1,8 +1,46 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+class PlayingTimeFeatureContribution(BaseModel):
+    feature: str
+    feature_value: float
+    contribution: float
+    feature_kind: Literal["raw", "intermediate_probability"]
+
+
+class PlayingTimeTargetExplanation(BaseModel):
+    base_value: float
+    raw_model_output: float
+    final_output: float
+    unit: Literal["minutes_per_game", "usage_rate"]
+    other_contribution: float
+    drivers: list[PlayingTimeFeatureContribution]
+
+
+class PlayingTimeExplanationTargets(BaseModel):
+    expected_minutes: PlayingTimeTargetExplanation
+    expected_usage: PlayingTimeTargetExplanation
+
+
+class PlayingTimePostprocessing(BaseModel):
+    minutes_clipping_delta: float
+    minutes_freshman_adjustment: float
+    usage_clipping_delta: float
+    usage_freshman_adjustment: float
+    usage_roster_compression: float
+
+
+class PlayingTimeExplanation(BaseModel):
+    version: Literal[1]
+    method: Literal["tree_shap"]
+    model_family: str
+    targets: PlayingTimeExplanationTargets
+    postprocessing: PlayingTimePostprocessing
 
 
 class PlayingTimeProjectionResponse(BaseModel):
@@ -23,6 +61,7 @@ class PlayingTimeProjectionResponse(BaseModel):
     opportunity_drivers: dict | None = None
     data_quality_flags: dict | None = None
     scenario_overrides: dict | None = None
+    explanation: PlayingTimeExplanation | None = None
     role_fit: float = Field(..., ge=0.0, le=100.0)
     model_version: str
     computed_at: datetime

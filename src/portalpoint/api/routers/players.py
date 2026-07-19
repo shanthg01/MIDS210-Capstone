@@ -415,6 +415,7 @@ async def get_player_playing_time(
         opportunity_drivers=row.opportunity_drivers,
         data_quality_flags=row.data_quality_flags,
         scenario_overrides=row.scenario_overrides,
+        explanation=row.explanation,
         role_fit=row.role_fit,
         model_version=row.model_version,
         computed_at=row.computed_at,
