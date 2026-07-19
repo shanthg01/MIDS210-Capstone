@@ -1,6 +1,51 @@
 # Agentic Plan — CBB News & Portal Monitoring
 
-Status: proposal. Applies layered multi-agent pattern from `AGENT_ARCHITECTURE.md` to a broader monitoring problem than the current `transfer_portal_events`/`roster_snapshots` tables (just added on this branch) cover.
+**Status: Production scaffolding complete (2026-07-11). Phase A expansion (VerbalCommits, coaching/beat-writer sources) is next.**
+Original proposal text below preserved for full rollout planning reference.
+
+## Implementation Status (as of 2026-07-11)
+
+| Layer | Implemented | Where | Notes |
+|---|---|---|---|
+| Search (ingest) | ✅ | `search_news` tool | Tavily Python client; 247sports, ESPN, On3; `advanced` depth, weekly window, score ≥ 0.5 post-filter |
+| Classify/Extract | ✅ (dual) | `classify_event` / `classify_events_batch` (regex) + `classify_event_llm` / `classify_events_batch_llm` (Gemini structured output) | Toggle via `USE_LLM_CLASSIFIER`; LLM classifier uses `gemini-1.5-flash-8b` at temp=0 with Pydantic `ArticleClassification` schema; title match → 0.90/0.80 confidence, body-only → 0.70/0.60 |
+| Shared entity resolution | ✅ | `src/portalpoint/modeling/entity_resolution.py` | Extracted from `ingest_transfers_247sports.py` into shared module; `normalize_name`, `resolve_school`, `match_player` (3-pass: 0.82 strict → 0.75 relaxed → full-roster fallback; position pre-filter + disambiguation). Both the 247Sports ingest script and the agent import from the same module — no divergent logic. |
+| Entity Resolve (agent) | ✅ | `transfer_player` tool in `resolve.py` | Calls shared `match_player`; 3-pass position-aware matching with full-roster fallback; returns `(player_id, confidence, status_tag)` |
+| DB Update — player portal entry | ✅ | `transfer_player` tool | 4-step pipeline: (1) INSERT `program_events`; (2) INSERT `transfer_portal_events` ON CONFLICT COALESCE; (3) UPSERT `transfers`; (4) `sync_portal_candidate_flags()` called after commit — agent feeds the authoritative pipeline, not bypasses it |
+| DB Update — coach departure | ✅ | `coach_departure` tool | Writes `program_events` (`match_status='pending_review'`) + UPDATEs `team_system_profiles SET stale_flag=true, stale_reason='coaching_change'` for affected school — surfaced in `fit_scores.py` response as `scheme_fit_stale`/`scheme_fit_stale_reason` |
+| Coaching stale flag downstream | ✅ | `FitScoreResponse` | `fit_score_service.get_fit_score()` queries `team_system_profiles.stale_flag` per school/season and propagates to both real and stub response paths |
+| Orchestration graph | ✅ | `src/portalpoint/agents/news_monitoring/graph.py` | ReAct loop: `START → agent_node → (tools→agent_node)* → dedup_node → END`; `should_continue` routes on `last_message.tool_calls` |
+| Cross-source dedup | ✅ | `cross_source_dedup()` in `resolve.py` + `dedup_node` in `graph.py` | Groups by `(event_type, player_id, from_school_id, date-window-bucket)`; higher-confidence entry wins; runs after all tool calls complete (DB writes are idempotent via ON CONFLICT) |
+| Review queue table | ✅ | Migration `2547054ae5cb`, `program_events_review_queue` table | Same shape as `program_events`; sub-threshold / pending-review events land here |
+| Scheduled script | ✅ | `scripts/run_news_monitoring.py` | `--season`, `--window-days`, `--dry-run`, `--no-llm`; schedule-agnostic (cron / GitHub Actions / manual) |
+| Rate limiting | ✅ | `RateLimiter` (12 RPM default) | Stays below Gemini free-tier 15 RPM ceiling |
+| Agent package | ✅ | `src/portalpoint/agents/news_monitoring/` | `state.py` (`AgentState`/`MonitoringState`), `config.py`, `extract.py`, `resolve.py`, `graph.py`, `sources/tavily.py` |
+| Tests | ✅ | `tests/test_entity_resolution.py` (34), `tests/test_news_monitoring.py` (33) | 67 pure unit tests; 0 regressions against existing suite |
+| VerbalCommits source | ❌ not yet | — | Phase A rollout item |
+| Coaching / beat-writer sources | ❌ not yet | — | Phase B/C rollout items |
+| alert.py digest writer | ❌ not yet | — | Phase B item; needed for `user_shortlists` notification hook |
+
+### LangGraph Graph Structure (production module)
+
+```
+START → agent_node → should_continue
+                         │ tool_calls     │ no tool_calls
+                       tools             dedup_node → END
+                    (ToolNode)
+                         └──────────────→ agent_node  (ReAct loop)
+```
+
+**State schema** (`AgentState`):
+- `messages` — full conversation history (`add_messages` accumulator)
+- `detected_events` — classified events list
+- `portal_updates` — DB write log (one entry per player successfully updated)
+- `news_sources` — Tavily `include_domains` list
+
+**Tool call sequence (agent-directed):**
+1. `search_news("college basketball transfer portal player enters portal")` → 2. `classify_events_batch_llm(results)` → 3. `transfer_player(name, school)` per confirmed portal entry (confidence ≥ 0.6)
+4. `search_news("college basketball head coach leaves resigns fired")` → 5. `classify_events_batch_llm(results)` → 6. `coach_departure(name, school)` per confirmed coaching change
+
+---
 
 ## Why this, why now
 

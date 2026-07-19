@@ -37,13 +37,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import difflib
 import json
 import logging
 import re
 import sys
 import time
-import unicodedata
 from datetime import date, datetime
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -58,6 +56,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from portalpoint.db.models import Player, PlayerSeasonStats, School, Transfer, TransferPortalEvent
 from portalpoint.db.session import AsyncSessionLocal
 from portalpoint.modeling.availability import sync_portal_candidate_flags
+from portalpoint.modeling.entity_resolution import (
+    SCHOOL_ALIASES,
+    normalize_name as _normalize_name,
+    resolve_school as _resolve_school,
+    match_player as _match_player_shared,
+)
 from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.minutes import resolved_minutes_per_game
 
@@ -67,45 +71,18 @@ log = logging.getLogger(__name__)
 REQUEST_DELAY = 0.5  # seconds between requests — be polite
 BASE_URL = "https://247sports.com/season/{season}-basketball/transferportal/"
 
-# 247sports institution name -> schools.name. Same mappings already validated
-# in ESPN_TEAM_ALIASES (scripts/ingest_hoopr.py) / TEAM_NAME_ALIASES
-# (scripts/ingest_barttorvik.py) for the same canonical schools.name set —
-# duplicated here rather than cross-imported, matching this repo's existing
-# one-script-per-source convention (those two files don't share a dict with
-# each other either). Add more here as unmatched-school warnings surface.
-SCHOOL_ALIASES: dict[str, str] = {
-    "Penn State": "Penn St.",
-    "Alcorn State": "Alcorn St.",
-    "Ball State": "Ball St.",
-    "Boise State": "Boise St.",
-    "California Baptist": "Cal Baptist",
-    "FIU": "Florida International",
-    "Fresno State": "Fresno St.",
-    "Idaho State": "Idaho St.",
-    "Iowa State": "Iowa St.",
-    "Kansas City": "UMKC",
-    "Kansas State": "Kansas St.",
-    "Kent State": "Kent St.",
-    "Loyola Maryland": "Loyola MD",
-    "McNeese": "McNeese State",
-    "Morgan State": "Morgan St.",
-    "Murray State": "Murray St.",
-    "Nicholls": "Nicholls State",
-    "Ohio State": "Ohio St.",
-    "Omaha": "Nebraska Omaha",
-    "Oregon State": "Oregon St.",
-    "Pennsylvania": "Penn",
-    "Saint Mary's": "St. Mary's",
-    "South Carolina Upstate": "USC Upstate",
-    "Texas State": "Texas St.",
-    "UMass": "Massachusetts",
-    "UT Martin": "Tennessee Martin",
-    "UTRGV": "UT Rio Grande Valley",
-    "Utah State": "Utah St.",
-    "Weber State": "Weber St.",
-    "Wright State": "Wright St.",
-    "College of Charleston": "Charleston",
-}
+# SCHOOL_ALIASES, _normalize_name, _resolve_school are now canonical in
+# portalpoint.modeling.entity_resolution (imported above).  _match_player is
+# a thin wrapper that preserves the position_247 keyword used at every call site.
+
+
+def _match_player(
+    raw_name: str,
+    roster: list[tuple[int, str, str]],
+    threshold: float = 0.82,
+    position_247: str | None = None,
+) -> tuple[int | None, float | None, str]:
+    return _match_player_shared(raw_name, roster, threshold=threshold, position=position_247)
 
 
 def _safe_float(val) -> float | None:
@@ -192,28 +169,6 @@ def fetch_season(season: int) -> list[dict]:
 # School + player resolution
 # ---------------------------------------------------------------------------
 
-def _normalize_name(name: str) -> str:
-    """Lowercase, strip accents and generational suffixes for fuzzy matching."""
-    name = unicodedata.normalize("NFD", name)
-    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
-    name = name.lower().strip()
-    for suffix in (" jr.", " jr", " sr.", " sr", " ii", " iii", " iv"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)].strip()
-            break
-    return " ".join(name.split())
-
-
-def _resolve_school(raw_name: str | None, school_map: dict[str, int]) -> int | None:
-    if not raw_name:
-        return None
-    canonical = SCHOOL_ALIASES.get(raw_name, raw_name)
-    if canonical in school_map:
-        return school_map[canonical]
-    fuzzy = difflib.get_close_matches(canonical, list(school_map.keys()), n=1, cutoff=0.82)
-    return school_map.get(fuzzy[0]) if fuzzy else None
-
-
 def _committed_destination(transfer: dict | None) -> str | None:
     """destination is a list (rumored/considered schools before commitment) —
     take the one flagged transferred=True; if none yet (still uncommitted),
@@ -247,66 +202,6 @@ async def _build_roster(session, school_id: int, season: int) -> list[tuple[int,
     )
     result = await session.execute(stmt)
     return [(row[0], row[1], row[2] or "") for row in result.all()]
-
-
-def _match_player(
-    raw_name: str,
-    roster: list[tuple[int, str, str]],
-    threshold: float = 0.82,
-    position_247: str | None = None,
-) -> tuple[int | None, float | None, str]:
-    """Match a 247Sports player name to a barttorvik roster entry.
-
-    Improvements over naive difflib:
-    - Name normalization (accents, generational suffixes, case)
-    - Exact position pre-filter when position is available (reduces false ambiguity)
-    - Two-pass threshold: strict (threshold) then relaxed (0.75)
-    - Position-based disambiguation when multiple candidates match
-    """
-    if not roster:
-        return None, None, "no_school"
-
-    norm_query = _normalize_name(raw_name)
-    # (pid, raw_name, position, normalized_name)
-    norm_roster = [(pid, name, pos, _normalize_name(name)) for pid, name, pos in roster]
-
-    # Position pre-filter: exact match on DB position (PG/SG/SF/PF/C)
-    if position_247:
-        pos_filtered = [r for r in norm_roster if r[2] == position_247]
-        candidates = pos_filtered if pos_filtered else norm_roster
-    else:
-        candidates = norm_roster
-
-    norm_names = [r[3] for r in candidates]
-
-    # Pass 1: strict threshold
-    matches = difflib.get_close_matches(norm_query, norm_names, n=3, cutoff=threshold)
-    # Pass 2: relaxed threshold
-    if not matches:
-        matches = difflib.get_close_matches(norm_query, norm_names, n=3, cutoff=0.75)
-        if not matches:
-            # If position-filtered candidates failed, retry on full roster at relaxed threshold
-            if candidates is not norm_roster:
-                fallback_names = [r[3] for r in norm_roster]
-                matches = difflib.get_close_matches(norm_query, fallback_names, n=3, cutoff=0.75)
-                candidates = norm_roster  # switch to full roster for lookup below
-            if not matches:
-                return None, None, "unmatched"
-
-    if len(matches) == 1:
-        pid, name, pos, _ = next(r for r in candidates if r[3] == matches[0])
-        confidence = difflib.SequenceMatcher(None, norm_query, matches[0]).ratio()
-        return pid, round(confidence, 3), "matched"
-
-    # Multiple candidates — try position to pick one
-    if position_247:
-        pos_matches = [m for m in matches if next(r for r in norm_roster if r[3] == m)[2] == position_247]
-        if len(pos_matches) == 1:
-            pid, name, pos, _ = next(r for r in norm_roster if r[3] == pos_matches[0])
-            confidence = difflib.SequenceMatcher(None, norm_query, pos_matches[0]).ratio()
-            return pid, round(confidence, 3), "matched"
-
-    return None, None, "ambiguous"
 
 
 # ---------------------------------------------------------------------------

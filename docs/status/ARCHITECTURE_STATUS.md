@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 30, 2026 (AWS RDS PostgreSQL 15 migration complete; access hardened to bastion SSH tunnel, no per-IP allowlist — see Database section)
+**Last updated:** July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -83,6 +83,7 @@ Important values:
 | `AWS_DEFAULT_REGION` | `us-east-1`. |
 | `S3_BUCKET` | `portalpoint-data`. |
 | `MLFLOW_TRACKING_URI` | SQLite or MLflow server URL; do not use an `s3://` URI. |
+| `TAVILY_API_KEY` / `GOOGLE_API_KEY` | News-monitoring agent (`scripts/run_news_monitoring.py`). Documented in `.env.example`. |
 
 S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 
@@ -124,6 +125,12 @@ Applied migration chain:
 | `d4e8b1f3a927` | Adds `roster_baseline_members` |
 | `e6a2c8f1b734` | Adds `player_projections` (Player Projection Phase 0) — two partial unique indexes (`WHERE school_id IS NULL` / `IS NOT NULL`) instead of one `UniqueConstraint`, since `school_id` is nullable and Postgres treats every `NULL` as distinct under a normal unique constraint |
 | `f1c4a8d3e570` | Adds `hoop_explorer_player_stats.off_adj_rapm_prod`/`def_adj_prod_rapm`/`adj_rapm_prod_margin`/`off_adj_rapm_pred`/`def_adj_rapm_pred` — **migration only adds columns; must re-run `ingest_hoop_explorer.py --all-seasons` to populate.** Confirmed after rerun: only `off_adj_rapm_prod`/`adj_rapm_prod_margin` actually populate (100%) — the other 3 are empty in HE's raw export across all 6 seasons, an HE export-configuration limit, not an ingest bug |
+| `2547054ae5cb` | News agent: `program_events`, `program_events_review_queue` (idempotent create-if-missing on shared RDS) |
+| `b1d3f5a7c9e2` | `team_system_profiles.stale_flag` / `stale_reason` (Gate 7 coaching-change signal) |
+| `c9e2a1f4b8d3` | News agent catch-up: partial unique indexes on `program_events` for idempotent `ON CONFLICT DO NOTHING` (transfer + coach events) |
+| `d7f3b2e1a904` | Merge head for news-agent catch-up branch |
+
+**Alembic note (2026-07-16):** `alembic/env.py` passes `settings.database_url` directly to SQLAlchemy (bypasses ConfigParser — URL-encoded passwords with `%` break `set_main_option`). `coaches.tenure_end`/`departure_date` DDL from `2547054ae5cb` still requires RDS table-owner; runtime migrations skip it for `portalpoint_app`.
 
 Important tables:
 
@@ -153,6 +160,7 @@ Important tables:
 | `predictions` | Future transfer success outputs |
 | `team_rating_projections` | Team impact outputs; implementation is in open PR #49 and needs merge/rerun before current rows should be trusted |
 | `recommendations` | Batch-job cache table (`scripts/run_recommendations.py`, precomputed, no scheduler keeps it fresh — checked, none exists). `GET /api/recommendations` does **not** read this table — as of 2026-07-15 it computes live per request straight from `player_team_fit_scores`/`team_rating_projections` instead, since nothing schedules the batch job. This table is still written by the standalone script for offline/MLflow-tracked runs, just not the API's data source. |
+| `program_events` / `program_events_review_queue` | News-monitoring agent event log (migration `2547054ae5cb` + dedup indexes `c9e2a1f4b8d3`). `transfer_player` writes `transfer_entry` rows; `coach_departure` writes `coach_departed` + flags `team_system_profiles.stale_flag`. Source=`news-agent`. |
 | `users`, `user_preferences`, `user_shortlists` | Program-facing app state |
 
 **Known data gaps:** `player_school_seasons` is still empty (0 rows) — no VerbalCommits ingest yet. `transfers` backfill is done for 2021-2026 (499/628/774/1,037/1,346/1,251 rows respectively, confirmed 2026-06-23). Season 2020 was scraped (371 raw rows in `transfer_portal_events`) but produced zero matches — all rows landed `match_status='no_school'`; `transfers` has no 2020 rows and this needs separate investigation, not a rerun of the same command. **Game-level data backfill is done (2026-06-23):** `hoopr_player_game_logs`/`hoopr_games`/`hoopr_team_game_logs` now cover all 7 seasons 2020-2026 (player-game row counts: 162,813 / 121,547 / 171,896 / 176,962 / 180,527 / 184,504 / 178,108 — 1,176,237 total). This was blocked mid-backfill by an unrelated stray Postgres session that had been `idle in transaction` since before the backfill even started, silently holding a lock on `hoopr_games` inserts — `pg_terminate_backend()` on that session unblocked it; not a backfill-script bug.
@@ -215,6 +223,7 @@ Policy/ops notes:
 | Player Projection Phase 1 | `notebooks/models/player_projection_state_space.ipynb` Cells 8-12 | Validation only, no production script — single-season (2026) Kalman filter/smoother per skill; `R_t` scaling bug fixed 2026-06-23 | No DB write; validates Phase 2 readiness |
 | Player Projection Phase 2a | `scripts/run_player_projection.py --phase 2a` / `notebooks/models/player_projection_state_space.ipynb` Cells 14-18 | **Complete + real-data validated 2026-06-25**, reconciled against [Issue #37](https://github.com/shanthg01/MIDS210-Capstone/issues/37). Beats Phase 0 on held-out offense every fold, ties on defense. Production path now forecasts target season `S+1` from observed season `S`; same-season Phase 2a rows are diagnostic only. 11th skill (`foul_discipline`) + offense/defense feature-set split for the value model both landed. Gap B (context adjustment) regresses accuracy and is not enabled after root-cause analysis. | `player_projections` (`model_version="player-proj-phase2a-fcast-v1"`, neutral mode, with projected rates/box scores and source/target season metadata). API default serves this forecast version; Phase 0 remains the baseline comparator. |
 | 247Sports transfer ingest | `scripts/ingest_transfers_247sports.py` | Complete for 2021-2026 (499/628/774/1,037/1,346/1,251 promoted by season); 2020 scraped but 0 matched, needs investigation | `transfer_portal_events` (raw) + `transfers` (promoted) |
+| News monitoring agent | `scripts/run_news_monitoring.py` | **Manual live runs verified 2026-07-16** — Tavily + Gemini + RDS writes; no scheduler yet | `program_events` (`news-agent` source), `transfer_portal_events`, `transfers`, `team_system_profiles.stale_flag` on coach departures |
 | barttorvik roster snapshots | `scripts/ingest_roster_snapshots.py` | Complete — 357 distinct schools (target ~365) | `roster_snapshots` + `roster_snapshot_players` |
 | Roster-state features | `scripts/build_roster_state_features.py` | Plain script, not a model (no MLflow); depends on a roster snapshot existing — should be re-run against the full 357-school snapshot set if it was last run against a narrower subset | `roster_state_features` |
 | Feature engineering | `notebooks/features/feature_eng_m1_m2_m3.ipynb` | ✅ Complete — all 6 seasons, regenerated 2026-06-19/20 for local sync | Produces gitignored `data/features/player_features.parquet` and `data/features/team_style_vectors.parquet`; must be regenerated against each local DB because surrogate `players.id` values are not portable |

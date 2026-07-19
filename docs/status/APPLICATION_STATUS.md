@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** July 15, 2026 (`/api/recommendations` wired to the real engine; frontend explainability pass; destination-adjusted projection surfaced; Scheme Fit UI fixes)
+**Last updated:** July 16, 2026 (news-monitoring agent wired for manual live runs — CLI, RDS migrations, DB write pipeline, integration tests)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -56,7 +56,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `auth.py` | Real DB | Signup/login/logout; signup creates `UserPreference`; duplicate email returns 409. |
 | `players.py` | Real DB | Player get/search/claim; latest-season stats join; TS normalized for API. `/search` takes `available_only` to restrict to matched Entered/Committed `transfer_portal_events` rows for the player's latest season. `GET /{id}/projection` serves neutral Phase 2a next-season forecasts (`player-proj-phase2a-fcast-v1`) by default, or destination-adjusted projections when `?school_id=X` is passed — the destination branch existed and was tested but was never called from the frontend until 2026-07-15, when `FitScorePage` (school-specific everywhere else) was switched to it. Destination mode's `projected_box_score` uses `_per_game` keys scaled to real expected minutes, not neutral's `_per_40` keys — frontend picks the right label map by `projection_mode`. See `MODEL_STATUS.md`'s Player Projection section. |
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
-| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), and `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models). Falls back to full stub only when the pair predates model scope. |
+| `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models), and (Gate 7) `scheme_fit_stale`/`scheme_fit_stale_reason` — set when the news-monitoring agent has detected a coaching change at that school and M2 `team_system_profiles` has not yet been re-run. Falls back to full stub only when the pair predates model scope. |
 | `recommendations.py` | Real, live | Wired 2026-07-15 — was a hardcoded stub list since the original scaffold, on every branch, despite the real 2-stage engine (`src/portalpoint/modeling/recommendations.py`, `rec-v1.2`) existing and being run for real by the batch script. Router now resolves the caller's `school_id`/saved weights, builds the candidate pool live via `CANDIDATE_SQL` (moved into `modeling/recommendations.py` — `scripts/` isn't a packaged module, can't be imported from the API), and runs `generate_top_50_candidates()`/`refine_to_top_10()` in-process per request. `FitComponents.program_fit` → `team_impact_fit` in this response only (engine has no program_fit signal). |
 | `predictions.py` | Stub | Blocked on transfer success model. |
 | `projections.py` | Stub on `main` | Blocked on merging/rerunning Team Rating Projection PR #49. |
@@ -72,6 +72,8 @@ Important backend modules:
 | `src/portalpoint/core/security.py` | Password hashing/JWT helpers. |
 | `src/portalpoint/db/models.py` | SQLAlchemy ORM models. |
 | `src/portalpoint/db/session.py` | Async DB session setup. |
+| `src/portalpoint/modeling/entity_resolution.py` | Shared player/school fuzzy-match module — used by both `ingest_transfers_247sports.py` and the news-monitoring agent. |
+| `src/portalpoint/agents/news_monitoring/` | LangGraph ReAct news-monitoring agent (`state.py`, `config.py`, `extract.py`, `resolve.py`, `graph.py`, `sources/tavily.py`). Entrypoint: `scripts/run_news_monitoring.py` — loads `.env`, supports `--dry-run` / `--season` / `--window-days`. Live run path: Tavily search → Gemini classify → `transfer_player` / `coach_departure` DB writes. `collect_results` node parses tool outputs into run summary. **Verified 2026-07-16:** live CLI run succeeds end-to-end against RDS (0 events in a 1-day window is expected off-peak); 40 unit/integration tests green. Still manual-only — no scheduler/Airflow yet. |
 
 ---
 
@@ -139,12 +141,12 @@ Watch-outs:
 
 ## Tests
 
-Current state (2026-07-15):
+Current state (2026-07-16):
 
 ```text
-~491 tests passing repo-wide (uv run pytest -q) — run it for the current exact count,
-this number drifts fast. tests/test_recommendations.py (11) and tests/test_fit_scores.py
-(15) both re-verified green after this pass's changes.
+~531+ tests passing repo-wide (uv run pytest -q) — run it for the current exact count.
+tests/test_news_monitoring.py (36) + tests/test_news_monitoring_integration.py (4) green
+after ON CONFLICT / program_events wiring fixes (2026-07-16).
 ```
 
 Test areas:
@@ -161,6 +163,8 @@ Test areas:
 | `tests/test_projections.py` | Projection endpoint shape. |
 | `tests/test_comparison.py` | Comparison endpoint shape. |
 | `tests/test_health.py` | App health. |
+| `tests/test_news_monitoring.py` | News agent classifiers, dedup, graph routing, `collect_results` parsing (36 tests). |
+| `tests/test_news_monitoring_integration.py` | Live RDS write pipeline for `transfer_player` + `coach_departure` (4 tests; skips without tunnel/seed data). |
 
 Run tests:
 
@@ -190,6 +194,8 @@ The app becomes truly useful when the fit stack is no longer mostly stubbed.
 ✅ replace recommendation stubs with ranked program-specific players (2026-07-15)
 ✳️ build Program Fit — descoped, not on this path
 -> wire complete fit_scores.py (reweight decision pending, program_fit descoped)
+✅ news-monitoring agent manual live runs (2026-07-16)
+-> schedule news agent (GitHub Actions cron or Airflow)
 ```
 
 Recommended app-side order:

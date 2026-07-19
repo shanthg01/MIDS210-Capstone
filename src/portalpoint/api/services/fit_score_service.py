@@ -301,6 +301,8 @@ async def get_fit_score(
         db, player_id, school_id, season
     )
 
+    # Check whether the destination school's M2 team_system_profile is stale
+    # (set by coach_departure tool in the news-monitoring agent).
     stale_result = await db.execute(
         select(TeamSystemProfile.stale_flag, TeamSystemProfile.stale_reason).where(
             TeamSystemProfile.school_id == school_id,
@@ -308,7 +310,7 @@ async def get_fit_score(
         )
     )
     stale_row = stale_result.first()
-    scheme_fit_stale = bool(stale_row and stale_row.stale_flag)
+    scheme_fit_stale = bool(stale_row.stale_flag) if stale_row else False
     scheme_fit_stale_reason = stale_row.stale_reason if stale_row else None
 
     if row is not None:
