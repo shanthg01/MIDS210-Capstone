@@ -152,18 +152,22 @@ function ComparisonResults({
                 );
               })}
 
-              {/* Prediction row */}
+              {/* Transfer Success row */}
               <TableRow hover>
                 <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                  Predicted MPG
+                  Transfer Success
                 </TableCell>
                 {entries.map((e) => (
-                  <TableCell key={e.player.player_id} align="center">
-                    <Typography variant="body2" fontWeight={600}>
-                      {e.prediction.predicted_minutes.toFixed(1)}
+                  <TableCell key={e.player.player_id} align="center" title={e.prediction.explanation}>
+                    <Typography
+                      variant="body2"
+                      fontWeight={600}
+                      color={`${scoreColor(e.prediction.success_probability * 100)}.main`}
+                    >
+                      {(e.prediction.success_probability * 100).toFixed(0)}%
                     </Typography>
                     <Chip
-                      label={e.prediction.predicted_role}
+                      label={e.prediction.success_tier}
                       size="small"
                       variant="outlined"
                       sx={{ mt: 0.25 }}

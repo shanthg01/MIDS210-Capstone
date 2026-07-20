@@ -327,37 +327,36 @@ export interface TeamRatingProjectionResponse {
 }
 
 // ── Predictions ───────────────────────────────────────────────────────────────
+// Transfer Success (Model 5, transfer-success-eb-v1) — empirical-Bayes shrinkage
+// over (player_cluster x team system) cells, not a tree model — no SHAP/per-game
+// role prediction concept. Field names mirror transfer_success_scores directly.
 
-export type PredictedRole = 'starter' | 'rotation' | 'bench' | 'reserve';
+export type SuccessTier = 'Very Low' | 'Low' | 'Moderate' | 'High' | 'Very High';
 
 export interface SimilarTransfer {
   player_name: string;
-  season: string;
-  from_school: string;
-  to_school: string;
-  per_before: number;
-  per_after: number;
-  per_change: number;
-  minutes_before: number;
-  minutes_after: number;
-  outcome_score: number;
-}
-
-export interface SHAPExplanation {
-  feature: string;
-  impact: number;
-  description: string;
+  season: number;
+  value_vs_projection: number;
+  success_label: boolean | null;
+  minutes_drift: number | null;
+  usage_drift: number | null;
+  actual_value_per_100: number | null;
+  projected_value_per_100: number | null;
+  post_minutes_per_game: number | null;
+  projected_minutes: number | null;
+  post_usage_rate: number | null;
+  projected_usage: number | null;
 }
 
 export interface PredictionResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
-  predicted_per_change: number;
-  predicted_minutes: number;
-  predicted_role: PredictedRole;
-  confidence: number;
+  success_probability: number;
+  success_tier: SuccessTier;
+  cell_n: number | null;
+  shrinkage_w: number | null;
+  explanation: string;
   similar_transfers: SimilarTransfer[];
-  shap_explanations: SHAPExplanation[];
   model_version: string;
 }
 

@@ -20,14 +20,18 @@ Inference season: 2027 (portal candidates × all D1 schools).
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import pickle
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import mlflow
 import numpy as np
 import pandas as pd
+from mlflow.tracking import MlflowClient
 from psycopg2.extras import execute_values
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
@@ -1350,3 +1354,333 @@ def upsert_team_rating_projections(
 
     log.info("Upserted %d rows into team_rating_projections", len(rows))
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# On-demand minutes-override counterfactual
+# ---------------------------------------------------------------------------
+#
+# scripts/run_team_rating_projection.py refits `TeamRatingModels` from scratch
+# every batch run and never persists a load-back-and-reuse artifact — fine for
+# a scheduled job, not for a live "what if this player got more minutes?"
+# request. load_champion_models() below loads the same Ridge off/def
+# models + slot_baselines the batch script already logs to MLflow
+# (team_rating_models/*.pkl, slot_baselines.json) without refitting.
+#
+# load_single_school_context()/compute_team_rating_override() are a
+# school-scoped rebuild of load_inference_data()/build_school_baselines()'s
+# per-school output, not a shortcut around them — conference tier assignment
+# and slot-baseline fallback are the same formulas, just queried for one
+# school_id instead of all ~365. season_adj_ems still needs every school's
+# adj_em (a single float column, cheap) since tier is a population percentile.
+
+_SEASON_ADJ_EMS_SQL = """
+SELECT adj_em FROM team_season_stats
+WHERE season = :target_season AND adj_em IS NOT NULL
+"""
+
+_SCHOOL_META_ONE_SQL = """
+SELECT s.id AS school_id, s.name AS school_name, s.conference,
+       tss.season, tss.adj_em, tss.adj_tempo
+FROM schools s
+JOIN team_season_stats tss ON tss.school_id = s.id
+WHERE tss.season = :target_season AND s.id = :school_id
+"""
+
+_BASELINE_MEMBERS_ONE_SQL = """
+SELECT rbm.player_id, rbm.school_id, rbm.baseline_status
+FROM roster_baseline_members rbm
+WHERE rbm.season = :season AND rbm.school_id = :school_id
+"""
+
+_PRIOR_STATS_ONE_SQL = """
+SELECT
+    pss.player_id, pss.school_id,
+    pss.min_pct, pss.usage_rate, pss.three_point_rate, pss.off_reb_pct,
+    p.position
+FROM player_season_stats pss
+JOIN players p ON p.id = pss.player_id
+WHERE pss.season = :prior_season
+  AND pss.school_id = :school_id
+  AND pss.games_played >= :min_games
+  AND pss.min_pct IS NOT NULL AND pss.min_pct > 0
+"""
+
+_ROSTER_STATE_ONE_SQL = """
+SELECT school_id, season,
+       returning_minutes_by_position, departing_minutes_by_position,
+       open_minutes_by_position, class_balance, returning_player_impact
+FROM roster_state_features
+WHERE season = :season AND school_id = :school_id
+"""
+
+_HE_RAPM_ONE_SQL = """
+SELECT player_id, off_adj_rapm, def_adj_rapm
+FROM hoop_explorer_player_stats
+WHERE player_id = ANY(:player_ids) AND season = :season
+"""
+
+_CANDIDATE_PLAYING_TIME_ONE_SQL = """
+SELECT player_id, school_id, expected_minutes, expected_minutes_share,
+       minutes_ci_lower, minutes_ci_upper, expected_usage, usage_role,
+       displaced_minutes, role_fit
+FROM playing_time_projections
+WHERE season = :season AND model_version = :pt_model_version
+  AND player_id = :player_id AND school_id = :school_id
+LIMIT 1
+"""
+
+_CANDIDATE_NEUTRAL_PROJ_ONE_SQL = """
+SELECT player_id, value_per_100, model_version
+FROM player_projections
+WHERE school_id IS NULL AND projection_mode = 'neutral' AND season = :target_season
+  AND model_version = ANY(:model_versions) AND player_id = :player_id
+ORDER BY CASE WHEN model_version = :preferred_version THEN 0
+              ELSE array_position(CAST(:model_versions AS text[]), model_version) END
+LIMIT 1
+"""
+
+_CANDIDATE_PRIOR_STATS_ONE_SQL = """
+SELECT player_id, position, three_point_rate, off_reb_pct
+FROM player_season_stats
+WHERE player_id = :player_id
+ORDER BY season DESC
+LIMIT 1
+"""
+
+
+def load_champion_models(
+    client: MlflowClient, model_name: str = "team-rating-scorer"
+) -> TeamRatingModels:
+    """Load the @champion Ridge off/def models + slot_baselines from MLflow.
+
+    Reconstructs the same TeamRatingModels scripts/run_team_rating_projection.py
+    fits fresh every batch run, from the artifacts that run already logs
+    (team_rating_models/off_model.pkl, def_model.pkl, slot_baselines.json) —
+    no refit, safe to call per-request (mlflow caches the artifact download
+    locally after the first call).
+    """
+    mv = client.get_model_version_by_alias(model_name, "champion")
+    run_id = mv.run_id
+    run = client.get_run(run_id)
+
+    off_local = mlflow.artifacts.download_artifacts(
+        run_id=run_id, artifact_path="team_rating_models/off_model.pkl"
+    )
+    def_local = mlflow.artifacts.download_artifacts(
+        run_id=run_id, artifact_path="team_rating_models/def_model.pkl"
+    )
+    with open(off_local, "rb") as f:
+        off = pickle.load(f)
+    with open(def_local, "rb") as f:
+        deff = pickle.load(f)
+
+    slot_local = mlflow.artifacts.download_artifacts(
+        run_id=run_id, artifact_path="slot_baselines.json"
+    )
+    with open(slot_local) as f:
+        raw_slots = json.load(f)
+    slot_baselines = {ast.literal_eval(k): v for k, v in raw_slots.items()}
+
+    return TeamRatingModels(
+        off_model=off["model"], off_scaler=off["scaler"],
+        def_model=deff["model"], def_scaler=deff["scaler"],
+        off_resid_std=float(run.data.metrics.get("off_resid_std", 0.0)),
+        def_resid_std=float(run.data.metrics.get("def_resid_std", 0.0)),
+        slot_baselines=slot_baselines,
+    )
+
+
+def load_single_school_context(
+    engine: Engine, school_id: int, target_season: int, prior_season: int
+) -> dict:
+    """School-scoped counterpart to load_inference_data(), for one school_id."""
+    with engine.connect() as conn:
+        season_adj = pd.read_sql_query(
+            text(_SEASON_ADJ_EMS_SQL), conn, params={"target_season": prior_season}
+        )
+        school_meta = pd.read_sql_query(
+            text(_SCHOOL_META_ONE_SQL), conn,
+            params={"target_season": prior_season, "school_id": school_id},
+        )
+        baseline_members = pd.read_sql_query(
+            text(_BASELINE_MEMBERS_ONE_SQL), conn,
+            params={"season": prior_season, "school_id": school_id},
+        )
+        prior_stats = pd.read_sql_query(
+            text(_PRIOR_STATS_ONE_SQL), conn,
+            params={"prior_season": prior_season, "school_id": school_id, "min_games": MIN_TRAIN_GAMES},
+        )
+        roster_state = pd.read_sql_query(
+            text(_ROSTER_STATE_ONE_SQL), conn,
+            params={"season": prior_season, "school_id": school_id},
+        )
+        returner_ids = baseline_members["player_id"].unique().tolist()
+        he_rapm = (
+            pd.read_sql_query(
+                text(_HE_RAPM_ONE_SQL), conn,
+                params={"player_ids": returner_ids, "season": prior_season},
+            )
+            if returner_ids else pd.DataFrame()
+        )
+
+    school_adj_em = 0.0
+    if not school_meta.empty and pd.notna(school_meta["adj_em"].iloc[0]):
+        school_adj_em = float(school_meta["adj_em"].iloc[0])
+
+    return {
+        "school_meta": school_meta,
+        "baseline_members": baseline_members,
+        "prior_stats": prior_stats,
+        "roster_state": roster_state,
+        "he_rapm": he_rapm,
+        "season_adj_ems": season_adj["adj_em"].dropna().to_numpy(dtype=float),
+        "school_adj_em": school_adj_em,
+    }
+
+
+def load_candidate_context(
+    engine: Engine, player_id: int, school_id: int, target_season: int
+) -> tuple[pd.Series, pd.Series] | None:
+    """Real playing_time_projections + player_projections rows for one pair.
+
+    Same inputs build_candidate_roster() needs in the batch path, fetched
+    directly for a single (player, school) instead of via the population-wide
+    join. Returns None if the pair has no scored playing_time_projections row
+    (the same hard-gate the batch script enforces before scoring any pair).
+    """
+    with engine.connect() as conn:
+        pt_row = pd.read_sql_query(
+            text(_CANDIDATE_PLAYING_TIME_ONE_SQL), conn,
+            params={
+                "season": target_season, "pt_model_version": PLAYING_TIME_MODEL_VERSION,
+                "player_id": player_id, "school_id": school_id,
+            },
+        )
+        if pt_row.empty:
+            return None
+        neutral_row = pd.read_sql_query(
+            text(_CANDIDATE_NEUTRAL_PROJ_ONE_SQL), conn,
+            params={
+                "target_season": target_season, "model_versions": NEUTRAL_MODEL_PRIORITY,
+                "preferred_version": NEUTRAL_MODEL_PRIORITY[0], "player_id": player_id,
+            },
+        )
+        prior_row = pd.read_sql_query(
+            text(_CANDIDATE_PRIOR_STATS_ONE_SQL), conn, params={"player_id": player_id}
+        )
+
+    cand_value = float(neutral_row["value_per_100"].iloc[0]) if not neutral_row.empty else 0.0
+    cand_proj = pd.Series({
+        "value_per_100": cand_value,
+        "position": prior_row["position"].iloc[0] if not prior_row.empty else "SG",
+        "three_point_rate": (
+            float(prior_row["three_point_rate"].iloc[0]) if not prior_row.empty
+            and pd.notna(prior_row["three_point_rate"].iloc[0]) else 0.35
+        ),
+        "off_reb_pct": (
+            float(prior_row["off_reb_pct"].iloc[0]) if not prior_row.empty
+            and pd.notna(prior_row["off_reb_pct"].iloc[0]) else 0.25
+        ),
+    })
+    return pt_row.iloc[0], cand_proj
+
+
+def compute_team_rating_override(
+    engine: Engine,
+    models: TeamRatingModels,
+    player_id: int,
+    school_id: int,
+    target_season: int,
+    prior_season: int,
+    minutes_override: float,
+    usage_override: float | None = None,
+) -> dict | None:
+    """On-demand counterfactual for one pair with a coach-supplied minutes override.
+
+    Same build_candidate_roster -> build_roster_features -> predict_adj_o_d ->
+    compute_counterfactual pipeline scripts/run_team_rating_projection.py runs
+    for every (player, school) pair, scoped to a single school so it's cheap
+    enough to run on a live request. Returns None if the pair has no scored
+    playing_time_projections row yet.
+    """
+    candidate = load_candidate_context(engine, player_id, school_id, target_season)
+    if candidate is None:
+        return None
+    pt_row, cand_proj = candidate
+
+    ctx = load_single_school_context(engine, school_id, target_season, prior_season)
+    tier = _conference_tier(ctx["school_adj_em"], ctx["season_adj_ems"])
+    adj_tempo = 68.0
+    if not ctx["school_meta"].empty and pd.notna(ctx["school_meta"]["adj_tempo"].iloc[0]):
+        adj_tempo = float(ctx["school_meta"]["adj_tempo"].iloc[0])
+    school_name = (
+        str(ctx["school_meta"]["school_name"].iloc[0]) if not ctx["school_meta"].empty else ""
+    )
+
+    ps = ctx["prior_stats"].set_index("player_id") if not ctx["prior_stats"].empty else pd.DataFrame()
+    he = ctx["he_rapm"].set_index("player_id") if not ctx["he_rapm"].empty else pd.DataFrame()
+
+    roster_rows: list[dict] = []
+    for _, member in ctx["baseline_members"].iterrows():
+        pid = int(member["player_id"])
+        row: dict[str, Any] = {"player_id": pid}
+        if pid in ps.index:
+            ps_row = ps.loc[pid]
+            row["min_pct"] = float(ps_row.get("min_pct", 0) or 0)
+            row["usage_rate"] = float(ps_row.get("usage_rate", 20) or 20)
+            row["three_point_rate"] = float(ps_row.get("three_point_rate", 0.30) or 0.30)
+            row["off_reb_pct"] = float(ps_row.get("off_reb_pct", 0.25) or 0.25)
+            row["position"] = str(ps_row.get("position", "SG"))
+        else:
+            fill = _slot_fill(models.slot_baselines, tier, "SG")
+            row.update({
+                "min_pct": 8.0, "usage_rate": fill["usage_rate"],
+                "three_point_rate": fill["three_point_rate"],
+                "off_reb_pct": fill["off_reb_pct"], "position": "SG",
+            })
+        if pid in he.index:
+            row["off_adj_rapm"] = float(he.loc[pid, "off_adj_rapm"])
+            row["def_adj_rapm"] = float(he.loc[pid, "def_adj_rapm"])
+        else:
+            row["off_adj_rapm"] = np.nan
+            row["def_adj_rapm"] = np.nan
+        roster_rows.append(row)
+
+    rs_row = ctx["roster_state"].iloc[0] if not ctx["roster_state"].empty else None
+    returning_pct = _returning_minutes_pct(rs_row)
+    freshman_rows = build_freshman_prior_rows(
+        rs_row, tier, models.slot_baselines, school_name=school_name
+    )
+    roster_rows_with_freshmen = roster_rows + freshman_rows
+
+    baseline_info = {
+        "roster_rows": roster_rows_with_freshmen,
+        "tier": tier,
+        "adj_tempo": adj_tempo,
+        "returning_pct": returning_pct,
+    }
+    baseline_features = build_roster_features(
+        roster_rows_with_freshmen, tier, adj_tempo, returning_pct, models.slot_baselines
+    )
+
+    pt_override = pt_row.copy()
+    pt_override["expected_minutes"] = float(minutes_override)
+    if usage_override is not None:
+        pt_override["expected_usage"] = float(usage_override)
+
+    candidate_rows, cand_returning_pct = build_candidate_roster(
+        baseline_info, pt_override, cand_proj, models.slot_baselines
+    )
+    candidate_features = build_roster_features(
+        candidate_rows, tier, adj_tempo, cand_returning_pct, models.slot_baselines
+    )
+
+    delta = compute_counterfactual(baseline_features, candidate_features, models)
+    ci_lower, ci_upper = analytical_ci(
+        delta["delta_adj_em"], models, n_freshman_priors=len(freshman_rows)
+    )
+    delta["ci_lower"] = round(ci_lower, 3)
+    delta["ci_upper"] = round(ci_upper, 3)
+    delta["expected_minutes_override"] = float(minutes_override)
+    return delta
