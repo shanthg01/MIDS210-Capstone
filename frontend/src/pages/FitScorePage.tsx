@@ -477,7 +477,7 @@ function MinutesOverridePanel({
 
   return (
     <SectionPaper>
-      <Typography variant="h6" fontWeight={700} gutterBottom>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
         What if minutes changed?
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 3 }}>
@@ -517,10 +517,10 @@ function MinutesOverridePanel({
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 2, mt: 2 }}>
           {roleResult && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Role Fit at {minutes} MPG
               </Typography>
-              <Typography variant="h6" fontWeight={700} color={`${scoreColor(roleResult.override_role_fit)}.main`}>
+              <Typography variant="h6" color={`${scoreColor(roleResult.override_role_fit)}.main`} sx={{ fontWeight: 700 }}>
                 {roleResult.override_role_fit.toFixed(0)}
                 {roleDelta !== null && (
                   <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
@@ -532,13 +532,13 @@ function MinutesOverridePanel({
           )}
           {ratingResult && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Team AdjEM Impact at {minutes} MPG
               </Typography>
               <Typography
                 variant="h6"
-                fontWeight={700}
                 color={ratingResult.delta_adj_em >= 0 ? 'success.main' : 'error.main'}
+                sx={{ fontWeight: 700 }}
               >
                 {ratingResult.delta_adj_em >= 0 ? '+' : ''}{ratingResult.delta_adj_em.toFixed(1)} AdjEM
               </Typography>

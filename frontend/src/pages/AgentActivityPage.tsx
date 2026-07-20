@@ -76,10 +76,10 @@ export default function AgentActivityPage() {
   const events = eventsQuery.data?.events ?? [];
 
   return (
-    <Box maxWidth={1000}>
+    <Box sx={{ maxWidth: 1000 }}>
       <Box sx={{ mb: 3, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
         <Box>
-          <Typography variant="h5" fontWeight={700} gutterBottom>
+          <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
             Agent Activity
           </Typography>
           <Typography variant="body2" color="text.secondary">
