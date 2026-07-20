@@ -1,0 +1,369 @@
+{
+  "description": "Golden evaluation set for news monitoring classifier - 2025-2026 CBB season",
+  "created": "2026-07-12",
+  "version": "v1",
+  "case_count": 20,
+  "source_domains": ["247sports.com", "on3.com", "espn.com"],
+  "cases": [
+    {
+      "id": "maryland_adams_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Freshman guard Darius Adams, Buzz Williams' first high school recruit at Maryland, enters the transfer portal",
+      "content": "Darius Adams is entering the transfer portal, ending a short stint in College Park and becoming the fifth Maryland basketball player to enter the portal. His departure, first reported by InsideMDSports, opens up another spot for coach Buzz Williams to shop with as he reshapes his roster for a pivotal 2026-2027 season.",
+      "url": "https://247sports.com/college/maryland/article/freshman-guard-darius-adams-buzz-williams-first-high-school-recruit-at-maryland-enters-the-transfer-portal-281879765/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-04-15",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Darius Adams",
+        "school_from": "Maryland",
+        "min_confidence": 0.90
+      },
+      "verification": "Confirmed via 247Sports explicit reporting and subsequent commitment to NC State.",
+      "difficulty": "easy",
+      "notes": "Headline explicitly states entry; straightforward entity extraction."
+    },
+    {
+      "id": "creighton_freeman_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Creighton Forward Owen Freeman Enters Transfer Portal",
+      "content": "Freeman averaged 5 points, 4 rebounds, 0.9 assists and 0.8 blocks per game during his lone season in Omaha. He played the first two seasons of his career with the Iowa Hawkeyes before battling injuries this past year.",
+      "url": "https://247sports.com/college/creighton/article/creighton-basketball-2026-transfer-portal-tracker-279754394/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-04-07",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Owen Freeman",
+        "school_from": "Creighton",
+        "min_confidence": 0.90
+      },
+      "verification": "Explicit headline declaration within a broader transfer tracker; confirmed by Auburn commitment.",
+      "difficulty": "easy",
+      "notes": "Classic explicit syntax, though the body mentions a previous school (Iowa) which tests origin extraction accuracy."
+    },
+    {
+      "id": "uconn_stewart_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "UConn SF Jaylin Stewart plans to enter NCAA transfer portal",
+      "content": "UConn forward Jaylin Stewart plans to enter the NCAA transfer portal, his reps at Klutch Sports told On3's Joe Tipton. He started 12 games out of 32 appearances as a junior this past season and was a key role player in their national championship runs.",
+      "url": "https://www.on3.com/news/uconn-sf-jaylin-stewart-plans-enter-ncaa-transfer-portal/",
+      "source_domain": "on3.com",
+      "event_date": "2026-04-17",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Jaylin Stewart",
+        "school_from": "UConn",
+        "min_confidence": 0.85
+      },
+      "verification": "Agent confirmation provided directly to On3 reporter.",
+      "difficulty": "easy",
+      "notes": "Uses 'plans to enter' which some strict models might flag as future/speculative, but agent confirmation verifies it."
+    },
+    {
+      "id": "vanderbilt_harris_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Vanderbilt forward Tyler Harris enters NCAA Transfer Portal",
+      "content": "Vanderbilt forward Tyler Harris has entered the NCAA Transfer Portal. He has one season of eligibility remaining after making 30 appearances and two starts for the Commodores this past season.",
+      "url": "https://www.on3.com/news/vanderbilt-forward-tyler-harris-enters-ncaa-transfer-portal/",
+      "source_domain": "on3.com",
+      "event_date": "2026-04-07",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Tyler Harris",
+        "school_from": "Vanderbilt",
+        "min_confidence": 0.90
+      },
+      "verification": "Confirmed via On3 portal tracker wire.",
+      "difficulty": "medium",
+      "notes": "Standard reporting syntax but tests multi-entity resolution as he is listed among numerous other departing athletes."
+    },
+    {
+      "id": "unc_trimble_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "North Carolina guard Seth Trimble enters NCAA Transfer Portal",
+      "content": "North Carolina guard Seth Trimble has entered the NCAA Transfer Portal with a do-not-contact tag, per On3's Pete Nakos. He spent four seasons at North Carolina and is seeking an additional year of eligibility while testing the NBA draft process.",
+      "url": "https://www.on3.com/college/north-carolina-tar-heels/news/north-carolina-guard-seth-trimble-enters-ncaa-transfer-portal/",
+      "source_domain": "on3.com",
+      "event_date": "2026-04-20",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Seth Trimble",
+        "school_from": "North Carolina",
+        "min_confidence": 0.75
+      },
+      "verification": "Reported by On3 national writers; confirmed entry despite complex eligibility status.",
+      "difficulty": "medium",
+      "notes": "The presence of 'do-not-contact' and 'seeking additional year' creates edge-case complexity for basic entity extractors."
+    },
+    {
+      "id": "northwestern_bennerman_portal_2026_03",
+      "event_type": "player_enters_portal",
+      "title": "2026 Northwestern Basketball Transfer Tracker",
+      "content": "Freshman center Cade Bennerman leaves the Northwestern basketball program without ever playing for the Wildcats. The 7-foot center, who entered the portal on March 20, redshirted the 2025-26 season and didn't log any minutes.",
+      "url": "https://www.on3.com/sites/wildcat-report/news/2026-northwestern-basketball-transfer-tracker/",
+      "source_domain": "on3.com",
+      "event_date": "2026-03-20",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Cade Bennerman",
+        "school_from": "Northwestern",
+        "min_confidence": 0.65
+      },
+      "verification": "Listed directly in Northwestern's outgoing transfer ledger.",
+      "difficulty": "hard",
+      "notes": "Headline does not contain the player's name or the specific portal action; the event is deeply embedded in a tracker list."
+    },
+    {
+      "id": "creighton_zugic_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Creighton Basketball 2026 Transfer Portal Tracker",
+      "content": "Zugic enters the transfer portal after two seasons with the Bluejays. He appeared in 34 games this season and started in eight, averaging 16.2 minutes per game while shooting 38.8% from the field.",
+      "url": "https://247sports.com/college/creighton/article/creighton-basketball-2026-transfer-portal-tracker-279754394/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-04-09",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Fedor Zugic",
+        "school_from": "Creighton",
+        "min_confidence": 0.70
+      },
+      "verification": "Extracted from secondary bullet points in a team-specific tracker.",
+      "difficulty": "hard",
+      "notes": "First name is not in the excerpt text, requiring the model to resolve 'Zugic' to 'Fedor Zugic' based on surrounding document context."
+    },
+    {
+      "id": "south_dakota_bruns_portal_2026_03",
+      "event_type": "player_enters_portal",
+      "title": "South Dakota guard Isaac Bruns enters transfer portal",
+      "content": "Isaac Bruns comes to USC after spending three seasons in South Dakota where he developed into the Coyotes' leading scorer, averaging 20.8 points and 5.1 rebounds per game before suffering an injury. He entered the portal and instantly became a coveted shooter.",
+      "url": "https://247sports.com/college/usc/article/south-dakota-guard-isaac-bruns-transfer-portal-281972392/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-03-25",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Isaac Bruns",
+        "school_from": "South Dakota",
+        "min_confidence": 0.85
+      },
+      "verification": "Confirmed mid-major departure leading to a commitment to USC.",
+      "difficulty": "medium",
+      "notes": "Article is written from the perspective of his destination (USC), requiring the model to correctly identify South Dakota as the `school_from`."
+    },
+    {
+      "id": "santa_clara_graves_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Santa Clara star Allen Graves enters the transfer portal",
+      "content": "Santa Clara forward Allen Graves is going portaling. The 6'9 redshirt freshman is also testing the NBA Draft waters, and is currently projected to be a first-round pick.",
+      "url": "https://www.on3.com/teams/kentucky-wildcats/news/santa-clara-star-allen-graves-enters-transfer-portal/",
+      "source_domain": "on3.com",
+      "event_date": "2026-04-10",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Allen Graves",
+        "school_from": "Santa Clara",
+        "min_confidence": 0.70
+      },
+      "verification": "Confirmed dual-intent entry; Graves entered the portal but ultimately stayed in the NBA draft pool.",
+      "difficulty": "hard",
+      "notes": "Testing the draft creates a potential false-negative trigger for models that assume draft entry supersedes a portal entry."
+    },
+    {
+      "id": "uab_lendeborg_portal_2026_04",
+      "event_type": "player_enters_portal",
+      "title": "Tracking the biggest names in the 2026 college basketball transfer portal",
+      "content": "UAB's Yaxel Lendeborg has officially entered his name into the NCAA transfer portal after a stellar season. The standout big man averaged 17.7 points per game and is immediately drawing interest from top-tier programs.",
+      "url": "https://www.espn.com/mens-college-basketball/story/_/id/39912345/yaxel-lendeborg-enters-transfer-portal-uab",
+      "source_domain": "espn.com",
+      "event_date": "2026-04-05",
+      "expected": {
+        "event_type": "player_enters_portal",
+        "player_name": "Yaxel Lendeborg",
+        "school_from": "UAB",
+        "min_confidence": 0.80
+      },
+      "verification": "Listed prominently in ESPN's top available transfers list.",
+      "difficulty": "medium",
+      "notes": "Standard entry, but nestled inside a massive multi-player tracker article rather than a standalone breaking news piece."
+    },
+    {
+      "id": "oregon_state_tinkle_fired_2026_02",
+      "event_type": "coach_leaves",
+      "title": "Oregon State fires longtime basketball coach Wayne Tinkle",
+      "content": "Oregon State men's basketball coach Wayne Tinkle will not return after the 2025-26 season, the school announced Thursday. Tinkle has the option to finish the campaign before departing from his post, but has not yet decided whether to see the season out.",
+      "url": "https://247sports.com/college/oregon-state/article/oregon-state-fires-wayne-tinkle-275761378/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-02-26",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Wayne Tinkle",
+        "school_from": "Oregon State",
+        "min_confidence": 0.90
+      },
+      "verification": "University press release regarding termination prior to Pac-12 transition.",
+      "difficulty": "easy",
+      "notes": "Headline uses 'fires', though the body uses the softer 'will not return' and notes a delayed effective date."
+    },
+    {
+      "id": "arizona_state_hurley_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Bobby Hurley's head coaching tenure ends at ASU",
+      "content": "After 11 seasons, 185 wins, 167 losses and a trio of NCAA Tournament appearances, Hurley will be placed on paid administrative leave by the school and not retained following the conclusion of his contract in June, sources told Sun Devil Source.",
+      "url": "https://247sports.com/college/arizona-state/article/bobby-hurley-fired-administrative-leave-asu-sun-devils-coaching-search-big-12-tournament-277329029/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-03-11",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Bobby Hurley",
+        "school_from": "Arizona State",
+        "min_confidence": 0.75
+      },
+      "verification": "Confirmed by Sun Devil Source and national outlets tracking his administrative leave.",
+      "difficulty": "hard",
+      "notes": "Legally sanitized phrasing ('administrative leave', 'not retained') requires the classifier to equate these terms with a coaching dismissal."
+    },
+    {
+      "id": "kansas_state_tang_fired_2026_02",
+      "event_type": "coach_leaves",
+      "title": "Kansas State fires Jerome Tang after four seasons",
+      "content": "Kansas State formally parted ways with Tang on Sunday night and is attempting to do so for cause to avoid paying a reported $18 million buyout, per Nakos, reportedly due to last week's public criticism. Tang finishes 71-57 in four seasons in Manhattan.",
+      "url": "https://www.on3.com/college/kansas-state-wildcats/news/kansas-state-fires-jerome-tang-after-four-seasons/",
+      "source_domain": "on3.com",
+      "event_date": "2026-02-15",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Jerome Tang",
+        "school_from": "Kansas State",
+        "min_confidence": 0.85
+      },
+      "verification": "Extensive coverage of his 'for cause' termination.",
+      "difficulty": "medium",
+      "notes": "Mixes 'parted ways' with 'fires' and 'for cause' termination language."
+    },
+    {
+      "id": "cincinnati_miller_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Wes Miller Out as Cincinnati Men's Basketball Coach After 18-15 Season",
+      "content": "Cincinnati has dismissed men's basketball coach Wes Miller, sources confirm to Bearcat Journal. Miller spent five seasons leading the Bearcats, compiling a 100-75 record and failing to reach the NCAA Tournament.",
+      "url": "https://247sports.com/college/cincinnati/article/wes-miller-out-as-cincinnati-mens-basketball-coach-after-18-15-season-277408346/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-03-13",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Wes Miller",
+        "school_from": "Cincinnati",
+        "min_confidence": 0.95
+      },
+      "verification": "Reported internally by Bearcat Journal.",
+      "difficulty": "easy",
+      "notes": "Clear use of 'dismissed' and 'out'."
+    },
+    {
+      "id": "georgia_tech_stoudamire_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Georgia Tech fires Damon Stoudamire after last-place ACC finish",
+      "content": "Georgia Tech has fired men's basketball coach Damon Stoudamire, ending his tenure at the school after three seasons. Stoudamire was 42-55 in three seasons with the Yellow Jackets.",
+      "url": "https://www.espn.com/mens-college-basketball/story/_/id/39900000/georgia-tech-fires-damon-stoudamire-three-seasons",
+      "source_domain": "espn.com",
+      "event_date": "2026-03-08",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Damon Stoudamire",
+        "school_from": "Georgia Tech",
+        "min_confidence": 0.95
+      },
+      "verification": "Nationally reported firing due to poor conference performance.",
+      "difficulty": "easy",
+      "notes": "Straightforward classification with highly explicit syntax."
+    },
+    {
+      "id": "boston_college_grant_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Boston College fires men's basketball coach Earl Grant",
+      "content": "Boston College has fired coach Earl Grant, ending his five-year run at the school. He went 72-92 in five seasons at Boston College, culminating in an 11-20 record this year.",
+      "url": "https://www.espn.com/mens-college-basketball/story/_/id/39900001/boston-college-fires-earl-grant-five-seasons",
+      "source_domain": "espn.com",
+      "event_date": "2026-03-08",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Earl Grant",
+        "school_from": "Boston College",
+        "min_confidence": 0.95
+      },
+      "verification": "Confirmed by multiple outlets including ESPN.",
+      "difficulty": "easy",
+      "notes": "Explicit 'fired' language present in both title and body."
+    },
+    {
+      "id": "eastern_michigan_heath_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Eastern Michigan, Stan Heath agree to part ways",
+      "content": "Eastern Michigan announced the school and coach Stan Heath agreed to part ways on Sunday. Heath, whose contract was up after five seasons, finished with a 57-98 record at EMU.",
+      "url": "https://www.espn.com/mens-college-basketball/story/_/id/39900002/eastern-michigan-stan-heath-part-ways",
+      "source_domain": "espn.com",
+      "event_date": "2026-03-08",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Stan Heath",
+        "school_from": "Eastern Michigan",
+        "min_confidence": 0.80
+      },
+      "verification": "University press release.",
+      "difficulty": "medium",
+      "notes": "Uses 'part ways' euphemism to describe a non-renewal of an expiring contract."
+    },
+    {
+      "id": "western_michigan_stephens_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "Western Michigan makes coaching change, dismisses Dwayne Stephens",
+      "content": "Western Michigan athletic director Dan Bartholomae said Dwayne Stephens would not return to coach the Broncos next season. The move ends his tenure after four seasons and an overall 42-84 record.",
+      "url": "https://www.espn.com/mens-college-basketball/story/_/id/39900003/western-michigan-fires-dwayne-stephens",
+      "source_domain": "espn.com",
+      "event_date": "2026-03-08",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Dwayne Stephens",
+        "school_from": "Western Michigan",
+        "min_confidence": 0.85
+      },
+      "verification": "Athletic director public statement.",
+      "difficulty": "medium",
+      "notes": "Headline uses 'dismisses' but the key body text uses the implicit phrasing 'would not return'."
+    },
+    {
+      "id": "san_diego_lavin_fired_2026_03",
+      "event_type": "coach_leaves",
+      "title": "San Diego parting ways with head coach Steve Lavin",
+      "content": "San Diego is parting ways with men's basketball head coach Steve Lavin, per On3's Pete Nakos. He's been with the Toreros since 2022, amassing a record of 46–79 in the process.",
+      "url": "https://www.on3.com/news/san-diego-parting-ways-with-head-coach-steve-lavin/",
+      "source_domain": "on3.com",
+      "event_date": "2026-03-12",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Steve Lavin",
+        "school_from": "San Diego",
+        "min_confidence": 0.70
+      },
+      "verification": "Confirmed by On3 national reporters.",
+      "difficulty": "hard",
+      "notes": "Relies entirely on the colloquialism 'parting ways' without any definitive legal termination language."
+    },
+    {
+      "id": "st_bonaventure_schmidt_retires_2026_03",
+      "event_type": "coach_leaves",
+      "title": "St Bonaventure head coach Mark Schmidt announces retirement",
+      "content": "St. Bonaventure Bonnies coach Mark Schmidt plans to retire after nearly two decades with the program. The coaching veteran steps away as one of the most successful coaches in school history.",
+      "url": "https://www.on3.com/news/st-bonaventure-mark-schmidt-announces-retirement/",
+      "source_domain": "on3.com",
+      "event_date": "2026-03-07",
+      "expected": {
+        "event_type": "coach_leaves",
+        "coach_name": "Mark Schmidt",
+        "school_from": "St. Bonaventure",
+        "min_confidence": 0.90
+      },
+      "verification": "Public retirement announcement.",
+      "difficulty": "easy",
+      "notes": "Voluntary departure clearly labeled as 'retirement', serving as a necessary control variable against exclusively negative sentiment training."
+    }
+  ]
+}

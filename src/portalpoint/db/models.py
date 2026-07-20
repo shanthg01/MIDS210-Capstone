@@ -77,6 +77,8 @@ class Coach(Base):
     school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # head/assistant
     tenure_start: Mapped[Optional[date]] = mapped_column(Date)
+    tenure_end: Mapped[Optional[date]] = mapped_column(Date)
+    departure_date: Mapped[Optional[date]] = mapped_column(Date)
     twitter_handle: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -326,9 +328,9 @@ class TeamSystemProfile(Base):
     # Replace ARRAY(Float) with Vector(4) from pgvector.sqlalchemy when extension is enabled
     style_vector: Mapped[Optional[list]] = mapped_column(ARRAY(Float))
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
-    # Set by the news-monitoring agent's coach_departure tool (PR #50 / migration b1d3f5a7c9e2)
-    # when a coaching change is detected — signals that cached scheme fit scores may be stale.
-    stale_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
+    # Set true by news-monitoring agent when a coaching change is detected;
+    # cleared when M2 is re-run for this school/season.
+    stale_flag: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     stale_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -1065,7 +1067,19 @@ class PlayerTeamFitScore(Base):
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)
     role_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
     program_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
-    # Weights used for this computation (may differ from defaults if user customized)
+    # Raw model columns above remain untouched for diagnostics. The calibration
+    # job writes the shared-scale presentation/ranking values below.
+    calibrated_scheme_fit: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_gap_match: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_role_fit: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_program_fit: Mapped[Optional[float]] = mapped_column(Float)
+    overall_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    component_confidences: Mapped[Optional[dict]] = mapped_column(JSONB)
+    data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
+    calibration_version: Mapped[Optional[str]] = mapped_column(String(40))
+    # Legacy raw-writer weights retained for compatibility. fit-cal-v1 rewrites
+    # the active canonical weights; user customization is stored separately and
+    # produces personalized_fit at request time.
     weight_gap: Mapped[float] = mapped_column(Float, nullable=False, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
     weight_role: Mapped[float] = mapped_column(Float, nullable=False, default=0.25, server_default=text("0.25"))
@@ -1184,6 +1198,7 @@ class PlayingTimeProjection(Base):
     opportunity_drivers: Mapped[Optional[dict]] = mapped_column(JSONB)
     data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
     scenario_overrides: Mapped[Optional[dict]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     role_fit: Mapped[float] = mapped_column(Float, nullable=False)
     model_version: Mapped[str] = mapped_column(String(40), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1242,6 +1257,38 @@ class TeamRatingProjection(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TransferSuccessScore(Base):
+    __tablename__ = "transfer_success_scores"
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "to_school_id", "season", "model_version",
+            name="uq_transfer_success_score",
+        ),
+        Index("ix_transfer_success_player_season", "player_id", "season"),
+        Index("ix_transfer_success_school_season", "to_school_id", "season"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
+    to_school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    player_cluster: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_offense_cluster_id: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_defense_cluster_id: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    team_cluster_label: Mapped[Optional[str]] = mapped_column(String(120))
+    success_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    success_tier: Mapped[Optional[str]] = mapped_column(String(20))
+    cell_n: Mapped[Optional[float]] = mapped_column(Float)
+    shrinkage_w: Mapped[Optional[float]] = mapped_column(Float)
+    cluster_success_rate: Mapped[Optional[float]] = mapped_column(Float)
+    cell_success_rate: Mapped[Optional[float]] = mapped_column(Float)
+    explanation: Mapped[Optional[str]] = mapped_column(Text)
+    similar_transfers: Mapped[Optional[list]] = mapped_column(JSONB)
+    model_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # ---------------------------------------------------------------------------
 # Layer 5 — User
 # ---------------------------------------------------------------------------
@@ -1257,6 +1304,10 @@ class User(Base):
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # First admin/role flag in this codebase (PR #64 review) — gates the
+    # news-monitoring agent run endpoint. No self-service promotion; set
+    # directly in the DB for whoever operates the agent.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1271,16 +1322,16 @@ class UserPreference(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
-    # Importance weights (1-10 scale) for Program Fit sub-components
+    # Relative personalized-ranking priorities (1-10 scale).
     importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7, server_default=text("7"))
     importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     # Fit component weights (must sum to 1.0)
-    weight_gap: Mapped[float] = mapped_column(Float, default=0.20)
-    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30)
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
     weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
-    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
     # Flexible filters stored as JSONB (desired_major, regions, conferences, enrollment range)
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1309,10 +1360,10 @@ class UserPreferenceProfile(Base):
     importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
-    weight_gap: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
-    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
     weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
-    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1364,4 +1415,69 @@ class AuditLog(Base):
     resource_id: Mapped[Optional[int]] = mapped_column(Integer)
     ip_address: Mapped[Optional[str]] = mapped_column(String(45))   # supports IPv6
     user_agent: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Program Events (news-monitoring agent write target)
+# ---------------------------------------------------------------------------
+
+class ProgramEvent(Base):
+    """Generic event log written by the news-monitoring agent.
+
+    Deliberately broader than transfer_portal_events (which stays
+    transfer-specific and is managed by the deterministic ETL pipeline).
+    The agent writes here first, then feeds transfer_portal_events for
+    portal-entry events so sync_portal_candidate_flags() stays authoritative.
+    """
+    __tablename__ = "program_events"
+    __table_args__ = (
+        Index("ix_program_events_school_date", "school_id", "event_date"),
+        Index("ix_program_events_player", "player_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_type: Mapped[str] = mapped_column(
+        String(50), nullable=False,
+        # transfer_entry, transfer_commitment, coaching_hire, coach_departed,
+        # injury, suspension, nil_deal, recruiting_decommit, recruiting_commitment
+    )
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))
+    coach_id: Mapped[Optional[int]] = mapped_column(ForeignKey("coaches.id"))
+    event_date: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    raw_text: Mapped[Optional[str]] = mapped_column(Text)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    match_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'matched'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProgramEventReviewQueue(Base):
+    """Staging area for sub-threshold or ambiguous program events.
+
+    Mirrors program_events schema but holds events awaiting human confirmation
+    before promotion.  Mirrors transfer_portal_events.match_status='ambiguous'
+    pattern already established in the deterministic ETL pipeline.
+    """
+    __tablename__ = "program_events_review_queue"
+    __table_args__ = (
+        Index("ix_peq_school_date", "school_id", "event_date"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
+    player_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("players.id"))
+    coach_id: Mapped[Optional[int]] = mapped_column(ForeignKey("coaches.id"))
+    event_date: Mapped[Optional[date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    raw_text: Mapped[Optional[str]] = mapped_column(Text)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    review_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

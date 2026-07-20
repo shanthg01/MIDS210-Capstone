@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage';
 import OverviewPage from './pages/OverviewPage';
 import GlossaryPage from './pages/GlossaryPage';
 import RosterImpactPage from './pages/RosterImpactPage';
+import AgentActivityPage from './pages/AgentActivityPage';
 
 const theme = createTheme({
   palette: {
@@ -313,6 +314,7 @@ export default function App() {
                   <Route path="/compare" element={<ComparePage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/roster-impact" element={<RosterImpactPage />} />
+                  <Route path="/agent-activity" element={<AgentActivityPage />} />
                 </Route>
               </Route>
 

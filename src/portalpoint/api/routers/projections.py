@@ -1,11 +1,26 @@
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import text
 
 from portalpoint.api.deps import CurrentUser
-from portalpoint.api.schemas.projection import RosterImpactItem, RosterImpactResponse, TeamRatingProjectionResponse
+from portalpoint.api.schemas.projection import (
+    RosterImpactItem,
+    RosterImpactResponse,
+    TeamRatingOverrideRequest,
+    TeamRatingOverrideResponse,
+    TeamRatingProjectionResponse,
+)
 from portalpoint.db.session import AsyncSessionLocal
+from portalpoint.modeling.io import get_sync_engine
+from portalpoint.modeling.mlflow_helpers import setup_mlflow
+from portalpoint.modeling.team_rating_projection import (
+    compute_team_rating_override,
+    load_champion_models,
+)
 
 router = APIRouter(prefix="/api/projections", tags=["projections"])
+
+_MLFLOW_EXPERIMENT_NAME = "team-rating-projection"
 
 _TOP_SQL = """
 WITH user_school AS (
@@ -152,4 +167,62 @@ async def get_team_rating_projection(
         candidate_usage_role=row.get("candidate_usage_role"),
         explanation=row.get("explanation"),
         model_version=str(row["model_version"]),
+    )
+
+
+def _run_team_rating_override(body: TeamRatingOverrideRequest) -> dict | None:
+    """Blocking work (sync DB + MLflow artifact download) — call via threadpool."""
+    engine = get_sync_engine()
+    client = setup_mlflow(_MLFLOW_EXPERIMENT_NAME)
+    models = load_champion_models(client)
+    prior_season = body.prior_season if body.prior_season is not None else body.season - 1
+    return compute_team_rating_override(
+        engine,
+        models,
+        player_id=body.player_id,
+        school_id=body.school_id,
+        target_season=body.season,
+        prior_season=prior_season,
+        minutes_override=body.minutes_override,
+        usage_override=body.usage_override,
+    )
+
+
+@router.post("/team-rating/override", response_model=TeamRatingOverrideResponse)
+async def override_team_rating_projection(
+    current_user: CurrentUser,
+    body: TeamRatingOverrideRequest,
+) -> TeamRatingOverrideResponse:
+    """Coach-supplied minutes what-if for one (player, school) pair.
+
+    Rebuilds this school's roster feature vector with the candidate's minutes
+    overridden and re-runs the persisted @champion Ridge off/def models — same
+    pipeline scripts/run_team_rating_projection.py runs for every pair, scoped
+    to one school so it's cheap enough for a live request. Requires a scored
+    playing_time_projections row for the pair (same hard gate the batch script
+    enforces)."""
+    delta = await run_in_threadpool(_run_team_rating_override, body)
+    if delta is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No playing-time projection found for player {body.player_id} at school "
+                f"{body.school_id} in season {body.season} — run playing-time projection first."
+            ),
+        )
+    return TeamRatingOverrideResponse(
+        player_id=str(body.player_id),
+        school_id=body.school_id,
+        season=body.season,
+        minutes_override=body.minutes_override,
+        baseline_adj_o=delta["baseline_adj_o"],
+        baseline_adj_d=delta["baseline_adj_d"],
+        baseline_adj_em=delta["baseline_adj_em"],
+        projected_adj_o=delta["projected_adj_o"],
+        projected_adj_d=delta["projected_adj_d"],
+        projected_adj_em=delta["projected_adj_em"],
+        delta_adj_o=delta["delta_adj_o"],
+        delta_adj_d=delta["delta_adj_d"],
+        delta_adj_em=delta["delta_adj_em"],
+        confidence_interval=(delta["ci_lower"], delta["ci_upper"]),
     )

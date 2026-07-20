@@ -44,7 +44,15 @@ MODEL_VERSION = "rec-v1.2"
 # The join below matches season directly; a `ptf.season + 1` offset
 # (destination_projection.py's convention, a *different* pair of tables)
 # returns zero rows here.
-CANDIDATE_SQL = """
+# Destination-mode player_projections join (issue #61: "include player
+# projection data in the dashboard view") — pinned to the known production
+# model_version, same convention PLAYING_TIME_MODEL_VERSION uses elsewhere,
+# rather than a priority-list/DISTINCT ON (there's exactly one destination
+# model in production today; add priority-list resolution here if/when a
+# second one exists).
+DESTINATION_PROJECTION_MODEL_VERSION = "player-destination-proj-v1"
+
+CANDIDATE_SQL = f"""
 SELECT
     ptf.player_id,
     ptf.school_id,
@@ -55,10 +63,10 @@ SELECT
     ptf.role_fit,
     ptf.overall_fit,
     ptf.is_portal_candidate,
-    trp.delta_adj_em
-    -- future — uncomment when Model 5 (predictions) is ready:
-    -- , pr.predicted_per_change  AS player_projection
-    -- , pr.confidence            AS data_confidence
+    trp.delta_adj_em,
+    pr.value_per_100,
+    pr.projected_minutes,
+    pr.projected_usage
 FROM player_team_fit_scores ptf
 JOIN players p
     ON p.id = ptf.player_id
@@ -67,9 +75,12 @@ LEFT JOIN team_rating_projections trp
    AND trp.school_id  = ptf.school_id
    AND trp.season     = ptf.season
    AND trp.expires_at > now()
--- future — uncomment when Model 5 ready:
--- LEFT JOIN predictions pr
---     ON pr.player_id = ptf.player_id AND pr.school_id = ptf.school_id
+LEFT JOIN player_projections pr
+    ON pr.player_id       = ptf.player_id
+   AND pr.school_id       = ptf.school_id
+   AND pr.season          = ptf.season
+   AND pr.projection_mode = 'destination'
+   AND pr.model_version   = '{DESTINATION_PROJECTION_MODEL_VERSION}'
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
   AND ptf.is_portal_candidate = true

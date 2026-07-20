@@ -80,11 +80,14 @@ export default function RecommendationCard({ item }: Props) {
           </Box>
 
           <Box sx={{ textAlign: 'right', ml: 1, flexShrink: 0 }}>
-            <Typography variant="h4" color={overallColor(item.overall_fit)} sx={{ fontWeight: 800, lineHeight: 1 }}>
-              {Math.round(item.overall_fit)}
+            <Typography variant="h4" color={overallColor(item.personalized_fit)} sx={{ fontWeight: 800, lineHeight: 1 }}>
+              {Math.round(item.personalized_fit)}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Fit Score
+              Personalized Fit
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              Overall {Math.round(item.overall_fit)}
             </Typography>
           </Box>
         </Box>

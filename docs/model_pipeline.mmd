@@ -1,0 +1,146 @@
+%%{init: {"flowchart": {"rankSpacing": 60, "nodeSpacing": 30}}}%%
+flowchart TD
+
+    %% ── Raw DB tables consumed as inputs ──────────────────────────────────────
+    PSS[(player_season_stats\nbarttorvik)]
+    TSS[(team_season_stats\nbarttorvik)]
+    HEPS[(hoop_explorer_player_stats\nRAPM · pos_confidence · play-type)]
+    HETS[(hoop_explorer_team_stats\ntrans/scramble · assisted%)]
+    PGL[(hoopr_player_game_logs\ngame-level box scores 2020–2026)]
+    TPE[(transfer_portal_events\n247sports raw staging)]
+    TRF[(transfers\npromoted + matched)]
+    RSF[(roster_state_features\nreturning/departing/incoming\nby position · skill group)]
+
+    %% ── Feature engineering ────────────────────────────────────────────────────
+    FE["Feature Engineering\nfeature_eng_m1_m2_m3.ipynb"]
+    PFP[/"player_features.parquet\nS3: raw/features/"/]
+    TSV[/"team_style_vectors.parquet\nS3: raw/features/"/]
+
+    PSS & TSS & HEPS & HETS --> FE
+    FE --> PFP & TSV
+
+    %% ── M1: Player Clustering ──────────────────────────────────────────────────
+    M1["M1 · Player Clustering\nK-Means k=9\nkmeans-k9-v1-2026"]
+    PA[(player_archetypes\n18770 rows\narchetype_label · confidence)]
+    MLF_M1(["MLflow\nplayer-clustering\n@champion"])
+
+    PFP --> M1
+    M1 --> PA
+    M1 --> MLF_M1
+
+    %% ── M2: Team Clustering ────────────────────────────────────────────────────
+    M2["M2 · Team System Clustering\nK-Means two-scaler off/def\nteam-k9-v2-2026"]
+    TSP[(team_system_profiles\n2158 rows\nsystem_label · off/def cluster)]
+    MLF_M2(["MLflow\nteam-clustering\n@champion"])
+
+    TSV --> M2
+    M2 --> TSP
+    M2 --> MLF_M2
+
+    %% ── M3: Scheme Fit ─────────────────────────────────────────────────────────
+    M3["M3 · Scheme Fit Scorer\nCosine sim 5-dim style vector\nscheme-cos-v3 · all-pairs ~9.7M\nfull-season delete+rebuild"]
+    PTFS_SF[/"player_team_fit_scores\n.scheme_fit written"/]
+    MLF_M3(["MLflow\nscheme-fit-scorer\n@champion"])
+
+    PSS & HEPS & PA & TSP --> M3
+    HETS --> M3
+    M3 --> PTFS_SF
+    M3 --> MLF_M3
+
+    %% ── Gap Matching ───────────────────────────────────────────────────────────
+    GM["Gap Matching\nSoft-weighted cosine\nRoster gap vector · departure-aware\ngap-cos-v3 · all-pairs\nLayers onto existing scheme_fit rows"]
+    PTFS_GM[/"player_team_fit_scores\n.gap_match + .is_portal_candidate\nwritten / synced"/]
+    MLF_GM(["MLflow\ngap-matching-scorer\n@champion"])
+
+    PTFS_SF --> GM
+    RSF & TRF & PSS & PA --> GM
+    GM --> PTFS_GM
+    GM --> MLF_GM
+
+    %% ── News / Portal Agent ────────────────────────────────────────────────────
+    AGT["News / Portal Agent\nIngest: VerbalCommits · beat writers\n  coaching & staffing news\nClassify/Extract: LLM  free-text\nResolve/Dedup: fuzzy _match_player()\nAlerts: portal entry · coaching change"]
+
+    TPE --> AGT
+    AGT -->|"sync_portal_candidate_flags()\nis_portal_candidate flag"| PTFS_GM
+    AGT -->|"--include-player-ids override\ntargeted one-off re-score"| GM
+
+    %% ── M8 Phase 0: Player Projection ─────────────────────────────────────────
+    M8P0["M8 · Player Projection  Phase 0\nEmpirical-Bayes shrinkage\n+ Ridge value model vs HE RAPM\nplayer-projection-shrinkage-v1\n27047 player-seasons 2021–2026"]
+    PP_NEU[/"player_projections\nprojection_mode = neutral\nmodel_version = shrinkage-v1"/]
+    MLF_P0(["MLflow\nplayer-projection\n@champion = shrinkage-v1"])
+
+    PSS & HEPS & PA --> M8P0
+    M8P0 --> PP_NEU
+    M8P0 --> MLF_P0
+
+    %% ── M8 Phase 2a: Cross-season Kalman ──────────────────────────────────────
+    M8P2["M8 · Player Projection  Phase 2a\nScalar Kalman per skill  Phase 1\n+ Season-grain Kalman Phase 2a\nCross-season persistence rho\nDrift: dev-curve · transfer · tier\nplayer-projection-phase2a-v1\nPhase 2a fcast → player-proj-phase2a-fcast-v1"]
+    PP_P2[/"player_projections\nprojection_mode = neutral\nmodel_version = phase2a-v1\nfcast variant for M9 input"/]
+    MLF_P2(["MLflow\nplayer-projection\nphase2a-v1 = Staging\nDelta +1.0% vs champion"])
+
+    PGL & PP_NEU & PSS --> M8P2
+    M8P2 --> PP_P2
+    M8P2 --> MLF_P2
+
+    %% ── M4: Playing Time ───────────────────────────────────────────────────────
+    M4["M4 · Playing Time Predictor\nHistGradientBoosting  minutes + usage + CI\n12-table INFERENCE_SQL CTE\nschool-chunk-size 365\nplaying-time-rotation-v2\n1.66M rows  1253 candidates x 365 schools"]
+    PT[/"playing_time_projections\nexpected_minutes · CI · usage_role\nstarter/rotation probability"/]
+    PTFS_RF[/"player_team_fit_scores\n.role_fit synced back"/]
+    MLF_M4(["MLflow\nplaying-time-rotation\n@champion"])
+
+    PTFS_GM & PP_NEU & PGL & RSF & HEPS & TSS & TRF --> M4
+    M4 --> PT
+    M4 --> PTFS_RF
+    M4 --> MLF_M4
+
+    %% ── M9: Destination Projection ─────────────────────────────────────────────
+    M9["M9 · Destination-Adjusted Projection\n4-delta adapter over Phase 2a fcast neutral\nD1 Role/Usage  Ridge on 2420 transfer outcomes\nD2 Style/Skill Fit  6 rule interactions\nD3 Roster Context  piecewise-linear gap_match\nD4 Competition Tier  4x4 source/dest matrix\nplayer-destination-proj-v1\n454790 rows  1253 candidates x 365 schools"]
+    PP_DEST[/"player_projections\nprojection_mode = destination\n454790 rows  season 2027"/]
+    MLF_M9(["MLflow\nplayer-destination-proj\nv3 Staging  Delta +2.5% vs champion"])
+
+    PT --> M9
+    PP_P2 --> M9
+    PTFS_GM --> M9
+    RSF & PSS --> M9
+    M9 --> PP_DEST
+    M9 --> MLF_M9
+
+    %% ── M6: Team Rating Projection ─────────────────────────────────────────────
+    M6["M6 · Team Rating Projection\nRoster-counterfactual Ridge\nOff + Def models vs BartTorvik adj_o/adj_d\n14 ROSTER_FEATURES · 2158 school-seasons\nteam-roster-proj-v1\n457345 rows  1253 candidates x 365 schools"]
+    TRP[/"team_rating_projections\ndelta_adj_em · off/def CI"/]
+    MLF_M6(["MLflow\nteam-rating-scorer\nStaging"])
+
+    PP_NEU & RSF & PA & TSS --> M6
+    M6 --> TRP
+    M6 --> MLF_M6
+
+    %% ── M7: Recommendation Engine (not built) ──────────────────────────────────
+    M7["M7 · Recommendation Engine\nSVD + content + fit composite\nNeeds all 4 fit components live\n❌ Not started"]
+    REC[/"recommendations table\n❌ stub"/]
+
+    PTFS_RF --> M7
+    PP_DEST --> M7
+    TRP --> M7
+    M7 --> REC
+
+    %% ── M5: Transfer Success Predictor (not built) ─────────────────────────────
+    M5["M5 · Transfer Success Predictor\nXGBoost  post-transfer outcome\n❌ Not started"]
+    PRED[/"predictions table\n❌ stub"/]
+
+    PP_DEST & TRF & PSS --> M5
+    M5 --> PRED
+
+    %% ── API surfaces ────────────────────────────────────────────────────────────
+    API["FastAPI\nGET /api/players/{id}/projection\nGET /api/players/{id}/playing-time\nGET /api/fit-scores\nGET /api/projections/team-rating\nGET /api/recommendations"]
+
+    PP_DEST & PP_NEU & PTFS_RF & TRP & REC --> API
+
+    %% ── Styles ──────────────────────────────────────────────────────────────────
+    style M7  fill:#f5f5f5,stroke:#ccc,color:#999
+    style M5  fill:#f5f5f5,stroke:#ccc,color:#999
+    style REC fill:#f5f5f5,stroke:#ccc,color:#999
+    style PRED fill:#f5f5f5,stroke:#ccc,color:#999
+    style AGT fill:#fff8e1,stroke:#f9a825,color:#333
+    style MLF_P2 fill:#fff3e0,stroke:#fb8c00,color:#333
+    style MLF_M9 fill:#fff3e0,stroke:#fb8c00,color:#333
+    style MLF_M6 fill:#fff3e0,stroke:#fb8c00,color:#333

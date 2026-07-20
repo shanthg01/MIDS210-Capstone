@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Box,
   Typography,
@@ -10,13 +11,19 @@ import {
   Breadcrumbs,
   Link,
   Tooltip,
+  Slider,
+  CircularProgress,
 } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
-import { getPlayer, getPlayerProjection } from '../api/players';
-import type { TeamRatingProjectionResponse } from '../types/api';
+import { getFitScore, getTeamRatingProjection, overrideTeamRating } from '../api/fitScores';
+import { getPlayer, getPlayerProjection, overridePlayingTime } from '../api/players';
+import type {
+  PlayingTimeOverrideResponse,
+  TeamRatingOverrideResponse,
+  TeamRatingProjectionResponse,
+} from '../types/api';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
@@ -182,6 +189,8 @@ function OverallPanel({
   scheme,
   role,
   program,
+  personalized,
+  confidence,
   modelVersion,
 }: {
   overall: number;
@@ -189,6 +198,8 @@ function OverallPanel({
   scheme: number;
   role: number;
   program: number;
+  personalized: number | null;
+  confidence: number;
   modelVersion: string;
 }) {
   const color = scoreColor(overall);
@@ -208,6 +219,10 @@ function OverallPanel({
           /100
         </Typography>
       </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Score confidence: {Math.round(confidence * 100)}%
+        {personalized !== null && ` · Personalized Fit: ${Math.round(personalized)}/100`}
+      </Typography>
       <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
           {[
@@ -415,6 +430,126 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
   );
 }
 
+// ── Minutes override ("what if this player got more/fewer minutes?", issue #61) ──
+
+function MinutesOverridePanel({
+  playerId,
+  schoolId,
+  storedMinutes,
+  teamRatingSeason,
+}: {
+  playerId: string;
+  schoolId: number;
+  storedMinutes: number;
+  teamRatingSeason: number | null;
+}) {
+  const [minutes, setMinutes] = useState(storedMinutes);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [roleResult, setRoleResult] = useState<PlayingTimeOverrideResponse | null>(null);
+  const [ratingResult, setRatingResult] = useState<TeamRatingOverrideResponse | null>(null);
+
+  async function runOverride(value: number) {
+    setPending(true);
+    setError('');
+    try {
+      const [role, rating] = await Promise.all([
+        overridePlayingTime(playerId, { school_id: schoolId, minutes_override: value }),
+        teamRatingSeason !== null
+          ? overrideTeamRating({
+              player_id: playerId,
+              school_id: schoolId,
+              season: teamRatingSeason,
+              minutes_override: value,
+            })
+          : Promise.resolve(null),
+      ]);
+      setRoleResult(role);
+      setRatingResult(rating);
+    } catch {
+      setError('Could not compute this scenario — no scored projection for this pair yet.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const roleDelta = roleResult ? roleResult.override_role_fit - roleResult.stored_role_fit : null;
+
+  return (
+    <SectionPaper>
+      <Typography variant="h6" fontWeight={700} gutterBottom>
+        What if minutes changed?
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 3 }}>
+        Drag to see how Role Fit and Team Rating impact change under a different minutes projection.
+        This doesn't change the stored scores — it's a live scenario check.
+      </Typography>
+
+      <Box sx={{ px: 1.5, mb: 1 }}>
+        <Slider
+          value={minutes}
+          min={0}
+          max={40}
+          step={1}
+          marks={[
+            { value: 0, label: '0' },
+            { value: 20, label: '20' },
+            { value: 40, label: '40' },
+          ]}
+          valueLabelDisplay="on"
+          valueLabelFormat={(v) => `${v} MPG`}
+          onChange={(_, v) => setMinutes(v as number)}
+          onChangeCommitted={(_, v) => runOverride(v as number)}
+          disabled={pending}
+        />
+      </Box>
+
+      {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
+
+      {pending && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+          <CircularProgress size={16} />
+          <Typography variant="caption" color="text.secondary">Recomputing…</Typography>
+        </Box>
+      )}
+
+      {!pending && (roleResult || ratingResult) && (
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 2, mt: 2 }}>
+          {roleResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Role Fit at {minutes} MPG
+              </Typography>
+              <Typography variant="h6" fontWeight={700} color={`${scoreColor(roleResult.override_role_fit)}.main`}>
+                {roleResult.override_role_fit.toFixed(0)}
+                {roleDelta !== null && (
+                  <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    ({roleDelta >= 0 ? '+' : ''}{roleDelta.toFixed(1)} vs. stored {roleResult.stored_role_fit.toFixed(0)})
+                  </Typography>
+                )}
+              </Typography>
+            </Box>
+          )}
+          {ratingResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Team AdjEM Impact at {minutes} MPG
+              </Typography>
+              <Typography
+                variant="h6"
+                fontWeight={700}
+                color={ratingResult.delta_adj_em >= 0 ? 'success.main' : 'error.main'}
+              >
+                {ratingResult.delta_adj_em >= 0 ? '+' : ''}{ratingResult.delta_adj_em.toFixed(1)} AdjEM
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      )}
+    </SectionPaper>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function FitScorePage() {
@@ -491,17 +626,12 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
-  // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
-  // changes — this average is just how this page's headline is presented.
+  // The calibrated Scheme score is the canonical headline. Keep the raw HE
+  // play-type score in the explanation below; it is not on the calibrated scale.
   const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
-  const schemeDisplay = hasPlayType
-    ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
-    : fit.scheme_fit;
+  const schemeDisplay = fit.scheme_fit;
 
-  // buildFitInsight's strongest/weakest narrative sits right next to the Overall
-  // panel, which already shows schemeDisplay for Scheme — pass the same blended
-  // value in so the two don't disagree on the page (overall_fit itself is untouched).
-  const fitInsight = buildFitInsight({ ...fit, scheme_fit: schemeDisplay });
+  const fitInsight = buildFitInsight(fit);
   if (playerProjectionQuery.data) {
     fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
   }
@@ -584,22 +714,23 @@ export default function FitScorePage() {
         scheme={schemeDisplay}
         role={fit.role_fit}
         program={fit.program_fit}
+        personalized={fit.personalized_fit}
+        confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown — headline is display-only average of Shot Distribution
-          + Play Type match when both exist; fit.scheme_fit itself (used by Overall
-          Fit/ranking elsewhere) is untouched, always just the shot-distribution cosine. */}
+      {/* Scheme Fit breakdown — headline is calibrated; the category scores
+          below remain raw model diagnostics. */}
       <SectionPaper>
         <ScoreHeader
           label="Scheme Fit"
           score={schemeDisplay}
-          weight="30%"
+          weight="25%"
           component="scheme_fit"
           headlineNote={
             hasPlayType
-              ? 'Average of Shot Distribution Match and Play Type Match below.'
-              : 'Shot Distribution Match only — no Play Type data available for this pair.'
+              ? 'Calibrated shot-distribution fit; Play Type Match is supporting context below.'
+              : 'Calibrated shot-distribution fit; no Play Type data available for this pair.'
           }
         />
         <Divider sx={{ mb: 2 }} />
@@ -610,7 +741,7 @@ export default function FitScorePage() {
 
         <SchemeCategoryHeader
           label="Shot Distribution Match"
-          score={fit.scheme_fit}
+          score={fit.raw_components.scheme_fit}
           note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
         />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
@@ -690,9 +821,16 @@ export default function FitScorePage() {
         </Box>
       </SectionPaper>
 
+      <MinutesOverridePanel
+        playerId={playerId}
+        schoolId={schoolId!}
+        storedMinutes={fit.breakdown.role_fit.projected_minutes}
+        teamRatingSeason={proj?.season ?? null}
+      />
+
       {/* Gap Match breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="20%" component="gap_match" />
+        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="30%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
@@ -753,7 +891,7 @@ export default function FitScorePage() {
 
       {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
+        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
         <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>

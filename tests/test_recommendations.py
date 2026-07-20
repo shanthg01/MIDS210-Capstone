@@ -10,7 +10,10 @@ def test_requires_auth(client):
 
 
 def test_returns_200(client, H, user_id):
-    assert client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).status_code == 200
+    assert (
+        client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).status_code
+        == 200
+    )
 
 
 def test_missing_user_id_returns_422(client, H):
@@ -25,39 +28,60 @@ def test_response_schema(client, H, user_id):
 
 
 def test_returns_ten_items(client, H, user_id):
-    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ]
     assert len(items) == 10
 
 
 def test_ranks_are_sequential(client, H, user_id):
-    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ]
     assert [i["rank"] for i in items] == list(range(1, 11))
 
 
-def test_sorted_by_overall_fit_descending(client, H, user_id):
+def test_sorted_by_personalized_fit_descending(client, H, user_id):
     fits = [
-        i["overall_fit"]
-        for i in client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+        i["personalized_fit"]
+        for i in client.get(
+            f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H
+        ).json()["recommendations"]
     ]
     assert fits == sorted(fits, reverse=True)
 
 
 def test_item_schema(client, H, user_id):
-    item = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"][0]
-    for field in ("player_id", "player_name", "position", "overall_fit", "components", "reasoning", "is_portal_candidate"):
+    item = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ][0]
+    for field in (
+        "player_id",
+        "player_name",
+        "position",
+        "overall_fit",
+        "personalized_fit",
+        "components",
+        "reasoning",
+        "is_portal_candidate",
+    ):
         assert field in item
 
 
 def test_is_portal_candidate_always_true(client, H, user_id):
     # CANDIDATE_SQL already filters WHERE ptf.is_portal_candidate = true, so
     # every returned item should carry that through as true.
-    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ]
     for item in items:
         assert item["is_portal_candidate"] is True
 
 
 def test_component_scores_in_range(client, H, user_id):
-    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ]
     for item in items:
         assert 0 <= item["overall_fit"] <= 100
         for key in ("gap_match", "scheme_fit", "role_fit", "team_impact_fit"):
@@ -65,7 +89,9 @@ def test_component_scores_in_range(client, H, user_id):
 
 
 def test_reasoning_nonempty(client, H, user_id):
-    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()["recommendations"]
+    items = client.get(f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H).json()[
+        "recommendations"
+    ]
     for item in items:
         assert len(item["reasoning"]) > 0
 

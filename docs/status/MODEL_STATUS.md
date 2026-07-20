@@ -23,7 +23,7 @@ This is the fastest handoff table for model owners. "MVP" means required before 
 | M4 Role Fit / Playing Time | Complete — `playing-time-rotation-v2` in production. Full all-school 2027 all-pairs write done: 457,345 rows across 365 schools, 1,253 portal candidates. Minutes RMSE=5.58, interval coverage=0.87. Real efficiency bug fixed: default chunk-size 25 was re-evaluating 6 player-side CTEs 15x per chunk (15x redundant CTE work); changed default to 365 (all schools in one query). `role_fit` synced into `player_team_fit_scores` for 2027. | Add scenario controls for minutes/usage/displaced players; improve high-minute/high-usage tail recall and interval calibration; add richer team-style interactions. | [`../models/playing_time_rotation_model_plan.md`](../models/playing_time_rotation_model_plan.md); [`../../scripts/run_playing_time.py`](../../scripts/run_playing_time.py); [`../../src/portalpoint/modeling/playing_time.py`](../../src/portalpoint/modeling/playing_time.py) |
 | M9 Destination-Adjusted Projection | Complete baseline — P0-P3 fixes applied + re-run 2026-07-01. 454,790 rows, target_season=2027, 2,420 training rows (↑ from 2,125), CV total_resid_std=2.892 (↓ from 2.967). MLflow v3 Staging (Δ=+2.5% vs @champion v2). **P0 box-score basis fixed:** `*_per_40` fields now scaled by `minutes/40`, not `possessions/100`. Cohort validation (P3) logged: tier_down strongest (Spearman=0.402), tier_same weakest (0.153). Known remaining gap: `estimate_usage_value_coef` returns fallback 1.5 every run (zero-overlap bug). Value deltas production-ready; per-game box stats should be validated against named-player checklist before coach-facing exposure. | Fit style/skill delta empirically (biggest R² gain); fix usage-coef zero-overlap; position-specific competition tier effects; barttorvik as secondary RAPM label; add eligibility/timing features. Full roadmap in `../models/destination_projection_plan.md` §19-20. | [`../models/destination_projection_plan.md`](../models/destination_projection_plan.md); [`../../scripts/run_destination_projection.py`](../../scripts/run_destination_projection.py); [`../../src/portalpoint/modeling/destination_projection.py`](../../src/portalpoint/modeling/destination_projection.py) |
 | Program Fit | **Descoped from active roadmap (product decision, 2026-07-11).** Not started, and not currently planned — not blocking Recommendation Engine or fit-score work. | None — deprioritized. If revisited: define MVP proxies/data for NIL, geography, academics, and program constraints; implement MAUT-style calculator for `program_fit`. | Replace proxies with better public/partner data; expose configurable program priorities and learn from feedback. | [`../models/program_fit_model_plan.md`](../models/program_fit_model_plan.md); `APPLICATION_STATUS.md` |
-| M5 Transfer Success | Not started. | Define outcome label and historical transfer training set; build first predictor writing to `predictions`. | Add confidence/risk explanations and calibration monitoring. | `notebooks/models/` future notebook |
+| M5 Transfer Success | ✅ `transfer-success-eb-v1` (PR #48, model layer merged 2026-07-19) — empirical-Bayes shrinkage over `(player_cluster, team_offense_cluster_id, team_defense_cluster_id)` cells, time-decay weighted (`DECAY_LAMBDA=0.9`), success labeled against destination-adjusted projection baseline (`value_per_100`, PER-improvement fallback). Writes `transfer_success_scores`. **API wiring done same day (2026-07-19):** `predictions.py`/`comparison.py` now query real rows via `api/services/prediction_service.py` (real/stub split, same pattern as `fit_score_service.py`); `schemas/prediction.py` reshaped to the model's real output (`success_probability`/`success_tier`/`explanation`/`similar_transfers` — no SHAP fields, this isn't a tree model). 14 new pure-unit tests in `tests/test_transfer_success.py`. | Not yet run against the live/shared RDS — `scripts/run_transfer_success.py --phase both` still needs a real execution to populate `transfer_success_scores` for the current portal season; MODEL_STATUS should be re-checked after that run for real row counts/Brier score. | [`../../scripts/run_transfer_success.py`](../../scripts/run_transfer_success.py); [`../../src/portalpoint/modeling/transfer_success.py`](../../src/portalpoint/modeling/transfer_success.py); [`../../notebooks/models/transfer_success.ipynb`](../../notebooks/models/transfer_success.ipynb) |
 | M6 Team Rating Projection | ✅ `team-roster-proj-v1` (2026-07-02, rerun 2026-07-11) — **457,345 rows live, PR #49 merged to `main` (2026-07-11)** (1,253 portal candidates × 365 D1 schools, target_season=2027). 3-fold CV: em_rmse 1.760/1.965/1.834, off_r2=0.973/0.970/0.976, def_r2=0.950/0.943/0.947. Two Ridge models (off/def) on 14 ROSTER_FEATURES vs BartTorvik adj_o/adj_d. All follow-up fixes landed (Ajay's PR review): source-season team/roster context, real candidate position/3PT/reb from prior stats, scaled explanation attribution, API season+expiry filtering, CI variance from both off/def residuals. **Freshman Prior v2** (2026-07-11, commit f7d9b6a): tier-calibrated base priors (`FRESHMAN_MIN_PCT_BY_TIER`), elite-recruiting-program flag (~15 schools, 1.5× multiplier), position-aware opportunity weighting (open_min/15 clamped [1/3, 1.5]), CI widening per freshman prior (`+0.4` variance/player), per-school audit dict logged to MLflow as `freshman_prior_audit.json`. MLflow `@champion` alias registered (v1). **Known issues:** CI width is constant per global `off_resid_std` (player-specific CI not yet added); 38% of rows have negative delta (expected from minimal-minutes candidates — documented open item); fold 3 off/def RMSE spike (4.8) from RAPM coverage gaps cancels in AdjEM (1.83). Freshman Prior v2 priors not yet applied to live rows (needs rerun). | Rerun script to apply Freshman Prior v2 to live rows; scale CI by player-specific uncertainty (`n_known_players`, minutes CI); diagnose fold 3 RAPM coverage gap. **Now unblocked for M7 integration — see Recommendation Engine row.** | [`../models/team_rating_projection_plan.md`](../models/team_rating_projection_plan.md) |
 | M7 Recommendation Engine | ✅ `rec-v1.2` (2026-07-11), **API wired 2026-07-15.** 2-stage engine (Top-50 vectorized rank → Top-10 preference re-rank, Stage 1 in Python) on real `scheme_fit`/`gap_match`/`role_fit`/`team_impact_fit` (M6 `delta_adj_em`, normalized 0-100). `/api/recommendations` now computes live per request instead of serving `_STUB_SCORES` — confirmed via git history that stub had never been replaced on any branch. `CANDIDATE_SQL`/`MODEL_VERSION` moved from `scripts/run_recommendations.py` into `modeling/recommendations.py` (the packaged module `scripts/` isn't) so the API and batch script share one source. Added ownership check + `FitComponents.program_fit` → `team_impact_fit` in this response (engine has no program_fit signal). | None — done. | Add collaborative signals, shortlist feedback loops, explanation-aware ranking, user-adjustable `weight_team_rating`, CI-aware confidence discount. | [`../models/recommendation_engine_plan.md`](../models/recommendation_engine_plan.md); `APPLICATION_STATUS.md` |
 
@@ -43,7 +43,7 @@ Immediate modeling order:
 ✅ Recommendation Engine v1.2    (scheme+gap+role+team_impact_fit ranking; M6 delta_adj_em wired in and run for real, 2026-07-11)
 ✅ /api/recommendations wiring   (computes live per request now, 2026-07-15 — was a hardcoded stub since the original scaffold)
 ✳️ Program Fit                    (descoped from active roadmap, 2026-07-11 — not blocking anything below)
-→  fit_scores.py full scoring    (decide whether to reweight overall_fit to 3 real components now that program_fit is descoped)
+✅ fit_scores.py calibrated scoring (`fit-cal-v1` code + migration; shared DB backfill pending) — Scheme 25%, Gap 30%, Role 25%, Program Fit 20% (still the descoped stub)
 ```
 
 ---
@@ -55,20 +55,26 @@ PortalPoint is program-facing: coaching staffs evaluate transfer players for fit
 1. `scheme_fit` - player shot profile vs team shot profile.
 2. `gap_match` - player skills vs roster needs.
 3. `role_fit` - projected opportunity / rotation fit.
-4. `program_fit` - program constraints and preferences.
+4. `program_fit` - program constraints and preferences (descoped placeholder).
 
 Current composite state:
 
 ```text
-overall_fit = weighted(scheme_fit, gap_match, role_fit, program_fit)
+weighted_fit = 0.25*scheme_fit + 0.30*gap_match + 0.25*role_fit + 0.20*program_fit
+overall_fit = school_relative_calibration(weighted_fit)
 ```
 
-`scheme_fit`, `gap_match`, and 2027 `role_fit` are real where the relevant model
-rows exist. `program_fit` is still the 50.0 placeholder — **Program Fit is
-descoped from the active roadmap (2026-07-11)**, so this is no longer "pending
-a model," it's an accepted product decision. `overall_fit` should still be
-treated as partial/compressed until either Program Fit is revisited or the
-formula is deliberately reweighted to 3 real components (not yet decided).
+`fit-cal-v1` converts the four raw signals to a comparable school-relative
+candidate scale, shrinks low-confidence information toward neutral 50, and
+persists canonical Overall Fit. Program Fit remains the 50.0 descoped
+placeholder — calibrating a constant collapses everyone to 50, so its 20%
+weight is real but currently inert until/unless real NIL/geography/academic
+proxy data lands. This canonical formula is intentionally separate from the
+Recommendation Engine's own `team_impact_fit`-based ranking (`rec-v1.2`,
+scheme=0.25/gap=0.30/role=0.25/team_impact_fit=0.20), which predates this
+change and is unaffected by it. Code and migration are complete; the shared
+2027 database backfill is a separate operational step. See
+`../models/fit_score_calibration.md`.
 
 ---
 
@@ -429,9 +435,9 @@ CI: analytical Gaussian approximation (`delta ± 1.28×sqrt(2×(off_resid_std² 
 | 4a | Neutral Player Projection | ✅ Phase 2a next-season forecast production API default; Phase 0 v2 retained as baseline comparator | player game logs or season-level fallback, HE impact labels | `player_projections` (`player-proj-phase2a-fcast-v1` production rows; `player-projection-shrinkage-v2` / `player-projection-phase2a-v2` comparators) |
 | 4b | Destination-Adjusted Player Projection | ✅ Complete baseline; `player-destination-proj-v1` writes destination-mode `player_projections` rows | neutral player projection + role/minutes outputs | destination projection rows/artifacts |
 | - | Program Fit Calculator | **Descoped from active roadmap (2026-07-11)** | user preferences, NIL/location/academic proxies | `player_team_fit_scores.program_fit` |
-| 5 | Transfer Success Predictor | Not started | historical transfers/outcomes (`transfers` now populated for season 2026 — full 2020-2026 backfill pending) | `predictions` |
+| 5 | Transfer Success Predictor | ✅ `transfer-success-eb-v1` (PR #48, 2026-07-19); `predictions.py`/`comparison.py` wired to real rows same day. Not yet run against live/shared RDS. | historical transfers/outcomes (`transfers`) | `transfer_success_scores` |
 | 6 | Team Rating Projection | ✅ `team-roster-proj-v1`; PR #49 merged to `main` (2026-07-11) | shared roster baseline + player projection + role/minutes | `team_rating_projections` |
-| 7 | Recommendation Engine | ✅ `rec-v1.2`; M6 macro signal wired in and run for real (2026-07-11); API endpoint still stubbed | scheme/gap/role/team_impact_fit all real (plan: `../models/recommendation_engine_plan.md`); program/projection deferred (program_fit descoped) | `recommendations` |
+| 7 | Recommendation Engine | ✅ `rec-v1.2`; M6 macro signal wired in and run for real (2026-07-11); `/api/recommendations` wired to the live engine 2026-07-15 (confirmed real, not the docs' prior stale "stub" note) | scheme/gap/role/team_impact_fit all real (plan: `../models/recommendation_engine_plan.md`); program/projection deferred (program_fit descoped) | `recommendations` |
 
 Critical path:
 
@@ -447,14 +453,16 @@ Critical path:
 ✅ Recommendation Engine v1 script
 ✅ Team Rating Projection PR #49 merged to main
 ✅ Recommendation Engine v1.2 (M6 team_rating_delta macro signal wired in + run for real, 2026-07-11, see ../models/recommendation_engine_plan.md)
+✅ /api/recommendations wiring   (computes live per request, 2026-07-15 — was a hardcoded stub since the original scaffold)
+✅ Transfer Success model + API  (transfer-success-eb-v1, PR #48 2026-07-19; predictions.py/comparison.py wired same day)
 ✳️ Program Fit — descoped, not on this path
   -> fit_scores.py full scoring (reweight decision pending, program_fit descoped)
-  -> Recommendation/API v2 (wire /api/recommendations to real recommendations rows)
+  -> Transfer Success live run (scripts/run_transfer_success.py against shared RDS — not yet executed)
 ```
 
 Parallel work:
 
-- Transfer Success Predictor can start once historical transfer/outcome labels are ready.
+- Transfer Success Predictor: model + API wiring done (2026-07-19); remaining work is a real run against the shared RDS to populate `transfer_success_scores`.
 - Team Rating Projection is merged and ready for M7 to consume — see `../models/recommendation_engine_plan.md`.
 
 ---

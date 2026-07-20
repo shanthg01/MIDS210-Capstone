@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
 
 class FitWeights(BaseModel):
-    """User-adjustable component weights.
+    """User-adjustable Personalized Fit weights.
 
-    Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25.
+    Canonical Overall Fit always uses these defaults. User changes produce a
+    separate ``personalized_fit`` rather than redefining Overall Fit.
     """
-    gap: float = Field(default=0.20, ge=0.0, le=1.0)
-    scheme: float = Field(default=0.30, ge=0.0, le=1.0)
+
+    gap: float = Field(default=0.30, ge=0.0, le=1.0)
+    scheme: float = Field(default=0.25, ge=0.0, le=1.0)
     role_fit: float = Field(default=0.25, ge=0.0, le=1.0)
-    program_fit: float = Field(default=0.25, ge=0.0, le=1.0)
+    program_fit: float = Field(default=0.20, ge=0.0, le=1.0)
+
+
+class CosineFeatureContribution(BaseModel):
+    feature: str
+    contribution: float
+    calibrated_contribution: float | None = None
 
 
 class SchemeBreakdown(BaseModel):
@@ -25,6 +34,10 @@ class SchemeBreakdown(BaseModel):
     # player and team have HE coverage; None otherwise, never fabricated.
     he_scheme_fit: float | None = None
     he_breakdown: dict[str, float] | None = None
+    cosine_contributions: list[CosineFeatureContribution] | None = None
+    cosine_score_adjustment: float | None = None
+    he_cosine_contributions: list[CosineFeatureContribution] | None = None
+    he_cosine_score_adjustment: float | None = None
 
 
 class RoleFitBreakdown(BaseModel):
@@ -55,7 +68,13 @@ class GapMatchBreakdown(BaseModel):
     # largest first — real model output (gap_matching.py's top_gap_features),
     # replaces the old uniqueness_bonus/redundancy_penalty fields, which were
     # never actually computed (always hardcoded to 0.0).
-    top_gap_features: list[GapFeatureGap] = []
+    top_gap_features: list[GapFeatureGap] = Field(default_factory=list)
+    raw_gap_match: float | None = Field(default=None, ge=0, le=100)
+    calibrated_gap_match: float | None = Field(default=None, ge=0, le=100)
+    cosine_contributions: list[CosineFeatureContribution] | None = None
+    raw_score_adjustment: float | None = None
+    reliability_baseline_contribution: float | None = None
+    calibrated_score_adjustment: float | None = None
 
 
 class ProgramFitBreakdown(BaseModel):
@@ -64,6 +83,20 @@ class ProgramFitBreakdown(BaseModel):
     academic_score: float = Field(..., ge=0, le=100)
     cultural_score: float = Field(..., ge=0, le=100)
     nil_budget_alignment: float
+
+
+class RawFitComponents(BaseModel):
+    gap_match: float = Field(..., ge=0, le=100)
+    scheme_fit: float = Field(..., ge=0, le=100)
+    role_fit: float = Field(..., ge=0, le=100)
+    program_fit: float = Field(..., ge=0, le=100)
+
+
+class ComponentConfidences(BaseModel):
+    gap_match: float = Field(..., ge=0, le=1)
+    scheme_fit: float = Field(..., ge=0, le=1)
+    role_fit: float = Field(..., ge=0, le=1)
+    program_fit: float = Field(..., ge=0, le=1)
 
 
 class FitBreakdown(BaseModel):
@@ -77,14 +110,21 @@ class FitScoreResponse(BaseModel):
     player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int
     overall_fit: float = Field(..., ge=0, le=100)
+    personalized_fit: float | None = Field(default=None, ge=0, le=100)
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
     program_fit: float = Field(..., ge=0, le=100)
+    raw_components: RawFitComponents
+    component_confidences: ComponentConfidences
+    overall_confidence: float = Field(..., ge=0, le=1)
+    data_quality_flags: dict[str, bool | str] = Field(default_factory=dict)
     breakdown: FitBreakdown
     weights_used: FitWeights
+    personalized_weights: FitWeights | None = None
     computed_at: datetime
     model_version: str
+    calibration_version: str | None = None
     cache_hit: bool = False
     # True if the player has a matched Entered/Committed transfer_portal_events
     # row for this season — distinguishes "available recruit" from a generic
@@ -100,8 +140,7 @@ class FitScoreResponse(BaseModel):
     # player has a stale player_season_stats row but is absent from the latest
     # roster outlook.
     is_roster_baseline_member: bool = False
-    # Gate 7 (PR #50 / migration b1d3f5a7c9e2): set when the news-monitoring
-    # agent detects a coaching change at this school — signals cached scheme
-    # fit scores may no longer reflect the current system.
+    # True when the news-monitoring agent detected a coaching change at school_id
+    # and M2 team_system_profiles has not yet been re-run for this school/season.
     scheme_fit_stale: bool = False
-    scheme_fit_stale_reason: str | None = None
+    scheme_fit_stale_reason: Optional[str] = None

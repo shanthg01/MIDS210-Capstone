@@ -61,6 +61,7 @@ from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine, text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
+from portalpoint.modeling.explainability import shrinkage_weight
 from portalpoint.modeling.io import find_repo_root
 
 log = logging.getLogger(__name__)
@@ -258,6 +259,9 @@ def shrink_skills(
     prior_*, and _weight columns; does not mutate the input frame."""
     out = df.copy()
     out["_weight"] = sample_weight(df["games_played"], df["min_pct"])
+    out["_observed_weight_fraction"] = shrinkage_weight(k, out["_weight"].to_numpy())
+    out["_prior_weight_fraction"] = 1.0 - out["_observed_weight_fraction"]
+    out["_prior_strength"] = float(k)
     for skill, col in SKILL_COLUMNS.items():
         prior = _skill_prior(df, col, season_col, position_col)
         raw = df[col].fillna(prior)
@@ -268,10 +272,25 @@ def shrink_skills(
     return out
 
 
-def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list[str] = RAW_RATE_SKILLS) -> pd.DataFrame:
-    """Within-season percentile rank (0-100) per shrunk skill. Percentile
+def skill_percentiles(
+    df: pd.DataFrame,
+    season_col: str = "season",
+    skills: list[str] = RAW_RATE_SKILLS,
+    position_col: str | None = None,
+) -> pd.DataFrame:
+    """Percentile rank (0-100) per shrunk skill, within season (default) or
+    within season x position when `position_col` is given. Percentile
     direction is flipped for turnover_avoidance (and any other
     `INVERTED_SKILLS` member) so 100 always means "better".
+
+    `position_col` defaults to None (season-only, original behavior) for
+    backward compatibility with every existing caller/stored row — issue #61
+    asked for position-scoped percentiles ("relative to which position?"),
+    but that's an opt-in the caller must request explicitly, not a silent
+    default change to already-written `player_projections` rows. When given,
+    rows with an unmapped position (`he.pos_class` is nullable) fall back to
+    the season-only percentile, same fallback convention `_skill_prior` uses
+    for the shrinkage prior itself.
 
     `skills` defaults to the Shrinkage Baseline's `RAW_RATE_SKILLS` (10) for
     backward compatibility, but the Cross-Season state frame has 11 (master
@@ -285,7 +304,13 @@ def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list
     `pctile_foul_discipline`)."""
     out = df.copy()
     for skill in skills:
-        pct = df.groupby(season_col)[f"skill_{skill}"].rank(pct=True) * 100
+        col = f"skill_{skill}"
+        season_pct = df.groupby(season_col)[col].rank(pct=True) * 100
+        if position_col is not None:
+            pct = df.groupby([season_col, position_col])[col].rank(pct=True) * 100
+            pct = pct.fillna(season_pct)
+        else:
+            pct = season_pct
         if skill in INVERTED_SKILLS:
             pct = 100 - pct
         out[f"pctile_{skill}"] = pct.round(1)
@@ -546,6 +571,11 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
             "prior_skill_estimate": {s: round(float(r[f"prior_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "observed_performance_signal": {s: round(float(r[f"raw_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "sample_size_weight": round(float(r["_weight"]), 2),
+            "shrinkage": {
+                "observed_data_weight": round(float(r["_observed_weight_fraction"]), 4),
+                "prior_weight": round(float(r["_prior_weight_fraction"]), 4),
+                "prior_strength": round(float(r["_prior_strength"]), 4),
+            },
             "skill_state_direction": {
                 s: "higher_is_better" if s not in INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
                 for s in RAW_RATE_SKILLS

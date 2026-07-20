@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PortalPoint — Model Flow (Neural Network View)</title>
+<style>
+  :root {
+    --bg: #0c0e14;
+    --bg-card: #14171f;
+    --bg-node: #1c2030;
+    --text: #e2e4eaee;
+    --text-sec: #b0b4c0;
+    --text-dim: #6b7084;
+    --stroke: #2a2e3c;
+    --accent: #5a9ee6;
+
+    --c-ingest: #88bede;
+    --c-agent: #e89868;
+    --c-feature: #9ea2b8;
+    --c-cluster: #a898f0;
+    --c-fit: #58c888;
+    --c-proj: #80bef0;
+    --c-user: #f0c850;
+    --c-output: #c898c0;
+    --c-planned: #4a4e5c;
+
+    --done: #48a870;
+    --proto: #d0875a;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    width: 1200px;
+    margin: 0 auto;
+    padding: 20px 24px 16px;
+  }
+  .header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 2px; }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  .header .sub { font-size: 12px; color: var(--text-sec); }
+
+  /* Legend bar */
+  .legend-bar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 10px; padding: 6px 0;
+  }
+  .leg { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-sec); }
+  .leg-dot { width: 8px; height: 8px; border-radius: 2px; }
+  .leg-sep { flex: 1; }
+  .status-leg { display: flex; gap: 10px; align-items: center; }
+  .s-dot { width: 6px; height: 6px; border-radius: 3px; }
+
+  /* Diagram */
+  .diagram { overflow-x: auto; margin-bottom: 12px; }
+
+  /* Bottom panels */
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .panel-hdr {
+    padding: 8px 14px 6px;
+    font-size: 12px; font-weight: 600;
+    border-bottom: 1px solid var(--stroke);
+    color: var(--text);
+  }
+  .panel-body { padding: 8px 14px 10px; }
+
+  /* Question stack */
+  .qr { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .qn {
+    width: 17px; height: 17px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; color: var(--bg); flex-shrink: 0;
+  }
+  .qt { flex: 1; font-size: 11px; line-height: 1.3; }
+  .qp {
+    font-size: 9px; font-weight: 500; padding: 1px 6px; border-radius: 8px;
+    background: rgba(255,255,255,0.07); color: var(--text-sec); white-space: nowrap;
+  }
+
+  /* Weights */
+  .wd { color: var(--text-sec); font-size: 11px; margin-bottom: 8px; line-height: 1.4; }
+  .wg { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 12px; align-items: center; }
+  .wh { font-size: 9px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; }
+  .wn { font-weight: 500; font-size: 11px; }
+  .wv { font-family: "SF Mono", Consolas, monospace; color: var(--accent); font-size: 11px; }
+  .wp { font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 6px; }
+  .wp.r { background: rgba(72,168,112,0.18); color: #6ad098; }
+  .wp.s { background: rgba(232,184,72,0.18); color: #e8b848; }
+  .wdiv { grid-column: 1/-1; border: none; border-top: 1px solid var(--stroke); margin: 2px 0; }
+  .wf { font-size: 10px; color: var(--text-dim); font-family: "SF Mono", Consolas, monospace; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PortalPoint Model Flow</h1>
+  <span class="sub">End-to-end pipeline: data ingestion through recommendation engine</span>
+</div>
+
+<div class="legend-bar">
+  <div class="leg"><div class="leg-dot" style="background:var(--c-ingest)"></div>Ingestion</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-agent)"></div>Agent</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-feature)"></div>Feature</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-cluster)"></div>Clustering</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-fit)"></div>Fit Scoring</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-proj)"></div>Projection</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-output)"></div>Output</div>
+  <div class="leg"><div class="leg-dot" style="background:var(--c-user)"></div>User</div>
+  <div class="leg-sep"></div>
+  <div class="status-leg">
+    <div class="s-dot" style="background:var(--done)"></div><span style="font-size:9px;color:var(--text-sec)">Done</span>
+    <div class="s-dot" style="background:var(--proto)"></div><span style="font-size:9px;color:var(--text-sec)">Proto</span>
+    <div class="s-dot" style="background:var(--c-planned)"></div><span style="font-size:9px;color:var(--text-sec)">Planned</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     NEURAL NETWORK DIAGRAM (SVG, left-to-right flow)
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="diagram">
+<svg viewBox="0 0 1152 400" width="1152" height="400" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <!-- Glow filter for nodes -->
+  <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+    <feGaussianBlur stdDeviation="3" result="blur"/>
+    <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+  </filter>
+  <!-- Node shadow with colored glow for contrast -->
+  <filter id="ns" x="-15%" y="-15%" width="130%" height="130%">
+    <feDropShadow dx="0" dy="1" stdDeviation="4" flood-color="#000" flood-opacity="0.5"/>
+  </filter>
+</defs>
+
+<!-- Layer labels -->
+<text x="68"  y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">INPUT</text>
+<text x="248" y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">PROCESS</text>
+<text x="428" y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">MODELS</text>
+<text x="618" y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">SCORING</text>
+<text x="808" y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">COMPOSITE</text>
+<text x="998" y="16" text-anchor="middle" font-size="9" font-weight="600" fill="#8890a8">DELIVERY</text>
+
+<!-- Vertical layer lines (subtle) -->
+<line x1="158" y1="24" x2="158" y2="390" stroke="#252a38" stroke-width="1"/>
+<line x1="338" y1="24" x2="338" y2="390" stroke="#252a38" stroke-width="1"/>
+<line x1="524" y1="24" x2="524" y2="390" stroke="#252a38" stroke-width="1"/>
+<line x1="714" y1="24" x2="714" y2="390" stroke="#252a38" stroke-width="1"/>
+<line x1="904" y1="24" x2="904" y2="390" stroke="#252a38" stroke-width="1"/>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     CONNECTIONS (drawn first so nodes sit on top)
+     Bezier curves for the neural-network "synapse" look.
+     ════════════════════════════════════════════════════════════════════ -->
+
+<!-- L0 → L1: Ingest → Feature Eng -->
+<path d="M133,56  C180,56  198,110 243,110" stroke="var(--c-ingest)" stroke-width="1.3" fill="none" opacity="0.45"/>
+<path d="M133,110 C180,110 198,110 243,110" stroke="var(--c-ingest)" stroke-width="1.3" fill="none" opacity="0.45"/>
+<path d="M133,164 C180,164 198,130 243,120" stroke="var(--c-ingest)" stroke-width="1.3" fill="none" opacity="0.45"/>
+
+<!-- L0 → L1: Ingest → Roster Baseline -->
+<path d="M133,218 C180,218 198,220 243,220" stroke="var(--c-ingest)" stroke-width="1.3" fill="none" opacity="0.45"/>
+<path d="M133,272 C180,272 198,230 243,225" stroke="var(--c-ingest)" stroke-width="1.3" fill="none" opacity="0.45"/>
+
+<!-- L0 → L1: 247Sports + News Agent → is_portal_candidate -->
+<path d="M133,218 C180,218 198,310 243,320" stroke="var(--c-ingest)" stroke-width="1.2" fill="none" opacity="0.4"/>
+<path d="M133,326 C180,326 198,322 243,322" stroke="var(--c-agent)" stroke-width="1.8" fill="none" opacity="0.65"/>
+
+<!-- L1 → L2: Feature Eng → M1, M2 -->
+<path d="M313,110 C360,110 370,75  423,75"  stroke="var(--c-feature)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<path d="M313,110 C360,110 370,145 423,145" stroke="var(--c-feature)" stroke-width="1.3" fill="none" opacity="0.5"/>
+
+<!-- L1 → L2: Feature Eng → Player Proj -->
+<path d="M313,115 C360,115 370,215 423,215" stroke="var(--c-feature)" stroke-width="1.3" fill="none" opacity="0.5"/>
+
+<!-- L1 → L2: hoopR → Player Proj -->
+<path d="M133,164 C260,164 370,215 423,215" stroke="var(--c-ingest)" stroke-width="1" fill="none" opacity="0.3"/>
+
+<!-- L1 → L2: Roster Baseline → (downstream) -->
+<path d="M313,220 C360,220 370,285 423,285" stroke="var(--c-feature)" stroke-width="1" fill="none" opacity="0.35"/>
+
+<!-- L2 → L3: M1 → Scheme, Gap -->
+<path d="M493,75  C540,75  555,66  613,66"  stroke="var(--c-cluster)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<path d="M493,75  C540,75  555,136 613,136" stroke="var(--c-cluster)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L2 → L3: M2 → Scheme -->
+<path d="M493,145 C540,145 555,70  613,70"  stroke="var(--c-cluster)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L2 → L3: Roster Baseline → Gap -->
+<path d="M313,220 C420,220 555,145 613,140" stroke="var(--c-feature)" stroke-width="1" fill="none" opacity="0.3"/>
+
+<!-- L2 → L3: Player Proj → Playing Time -->
+<path d="M493,215 C540,215 555,216 613,216" stroke="var(--c-proj)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L2 → L3: Player Proj → Dest Proj -->
+<path d="M493,220 C540,220 555,286 613,286" stroke="var(--c-proj)" stroke-width="1.3" fill="none" opacity="0.5"/>
+
+<!-- L2 → L3: Roster Baseline → Playing Time -->
+<path d="M313,225 C420,225 555,220 613,218" stroke="var(--c-feature)" stroke-width="1" fill="none" opacity="0.3"/>
+
+<!-- L3 → L3: Scheme/Gap → Playing Time (context, subtle) -->
+<path d="M688,70  C700,70  700,200 688,210" stroke="var(--c-fit)" stroke-width="0.8" fill="none" opacity="0.3" stroke-dasharray="3,3"/>
+<path d="M688,140 C698,140 698,205 688,210" stroke="var(--c-fit)" stroke-width="0.8" fill="none" opacity="0.3" stroke-dasharray="3,3"/>
+
+<!-- L3 → L3: Playing Time → Dest Proj -->
+<path d="M688,220 C698,220 698,280 688,282" stroke="var(--c-proj)" stroke-width="1" fill="none" opacity="0.4"/>
+
+<!-- L3 → L4: Scheme → Fit Score -->
+<path d="M693,66  C740,66  755,105 803,105" stroke="var(--c-fit)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L3 → L4: Gap → Fit Score -->
+<path d="M693,136 C740,136 755,110 803,110" stroke="var(--c-fit)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L3 → L4: Playing Time → Fit Score (role_fit) -->
+<path d="M693,216 C740,216 755,120 803,118" stroke="var(--c-proj)" stroke-width="1.3" fill="none" opacity="0.5"/>
+<!-- L3 → L4: Program Fit → Fit Score -->
+<path d="M803,215 C790,215 790,125 803,120" stroke="var(--c-fit)" stroke-width="0.9" fill="none" opacity="0.3" stroke-dasharray="3,3"/>
+
+<!-- L3 → L4: Dest Proj → Team Rating -->
+<path d="M693,286 C740,286 755,305 803,305" stroke="var(--c-proj)" stroke-width="1.3" fill="none" opacity="0.5"/>
+
+<!-- is_portal_candidate → downstream consumers -->
+<!-- → Playing Time (scopes candidate pool) -->
+<path d="M313,322 C460,322 555,225 613,222" stroke="var(--c-fit)" stroke-width="1.1" fill="none" opacity="0.38" stroke-dasharray="3,3"/>
+<!-- → Destination Projection (WHERE is_portal_candidate = true) -->
+<path d="M313,325 C460,325 555,292 613,290" stroke="var(--c-fit)" stroke-width="1.1" fill="none" opacity="0.38" stroke-dasharray="3,3"/>
+<!-- → Rec Engine (CANDIDATE_SQL availability filter — primary consumer) -->
+<path d="M313,330 C560,360 880,220 933,175" stroke="var(--c-fit)" stroke-width="1.4" fill="none" opacity="0.5"/>
+<!-- → API + Frontend (available_only query param) -->
+<path d="M313,334 C580,374 900,270 933,252" stroke="var(--c-fit)" stroke-width="1.1" fill="none" opacity="0.38" stroke-dasharray="3,3"/>
+
+<!-- L4 → L5: Fit Score → Rec Engine -->
+<path d="M873,110 C920,110 930,150 933,160" stroke="var(--c-output)" stroke-width="1.5" fill="none" opacity="0.55"/>
+<!-- L4 → L5: Team Rating → Rec Engine -->
+<path d="M873,305 C920,305 930,180 933,175" stroke="var(--c-proj)" stroke-width="1" fill="none" opacity="0.35" stroke-dasharray="3,3"/>
+<!-- L3 → L5: Dest Proj → Rec Engine -->
+<path d="M693,290 C780,290 900,180 933,172" stroke="var(--c-proj)" stroke-width="1.1" fill="none" opacity="0.4"/>
+
+<!-- L5: User → Rec Engine (weights) -->
+<path d="M1063,310 C1040,310 960,190 998,175" stroke="var(--c-user)" stroke-width="1.8" fill="none" opacity="0.6"/>
+<!-- L5: Rec Engine → API -->
+<path d="M1003,175 C1020,220 1030,240 1063,245" stroke="var(--c-output)" stroke-width="1.5" fill="none" opacity="0.55"/>
+<!-- L5: API → User (feedback) -->
+<path d="M1063,255 C1050,280 1050,295 1063,305" stroke="var(--c-user)" stroke-width="1" fill="none" opacity="0.35" stroke-dasharray="4,3"/>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     NODES (drawn on top of connections)
+     Pill-shaped rounded rectangles per layer
+     ════════════════════════════════════════════════════════════════════ -->
+
+<!-- L0: Data Sources -->
+<g filter="url(#ns)">
+  <rect x="8"  y="42"  width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-ingest)" stroke-width="1.2"/>
+  <text x="68"  y="60"  text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">BartTorvik</text>
+  <circle cx="120" cy="48" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="8"  y="96"  width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-ingest)" stroke-width="1.2"/>
+  <text x="68"  y="114" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Hoop Explorer</text>
+  <circle cx="120" cy="102" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="8"  y="150" width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-ingest)" stroke-width="1.2"/>
+  <text x="68"  y="168" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">hoopR ESPN</text>
+  <circle cx="120" cy="156" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="8"  y="204" width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-ingest)" stroke-width="1.2"/>
+  <text x="68"  y="222" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">247Sports</text>
+  <circle cx="120" cy="210" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="8"  y="258" width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-ingest)" stroke-width="1.2"/>
+  <text x="68"  y="276" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Roster Snapshots</text>
+  <circle cx="120" cy="264" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="8"  y="312" width="120" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-agent)" stroke-width="1.8"/>
+  <text x="68"  y="330" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--c-agent)">News Agent</text>
+  <circle cx="120" cy="318" r="3" fill="var(--proto)"/>
+</g>
+
+<!-- Sublabels for input layer -->
+<text x="68" y="362" text-anchor="middle" font-size="8" fill="var(--text-dim)">5 sources + 1 agent</text>
+
+<!-- L1: Processing -->
+<g filter="url(#ns)">
+  <rect x="183" y="96"  width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-feature)" stroke-width="1.2"/>
+  <text x="246" y="114" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Feature Engineering</text>
+  <circle cx="301" cy="102" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="183" y="206" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-feature)" stroke-width="1.2"/>
+  <text x="246" y="224" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Roster Baseline</text>
+  <circle cx="301" cy="212" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="180" y="308" width="132" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-fit)" stroke-width="1.2"/>
+  <text x="246" y="326" text-anchor="middle" font-size="9" font-weight="600" fill="var(--c-fit)">is_portal_candidate</text>
+  <circle cx="304" cy="314" r="3" fill="var(--done)"/>
+</g>
+
+<!-- L2: Models -->
+<g filter="url(#ns)">
+  <rect x="363" y="60"  width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-cluster)" stroke-width="1.2"/>
+  <text x="426" y="78"  text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">M1 Player Cluster</text>
+  <circle cx="481" cy="66" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="363" y="130" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-cluster)" stroke-width="1.2"/>
+  <text x="426" y="148" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">M2 Team Cluster</text>
+  <circle cx="481" cy="136" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="363" y="200" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-proj)" stroke-width="1.2"/>
+  <text x="426" y="218" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Player Projection</text>
+  <circle cx="481" cy="206" r="3" fill="var(--done)"/>
+</g>
+<!-- sublabel -->
+<text x="426" y="250" text-anchor="middle" font-size="7.5" fill="var(--text-dim)">Ph0 + Ph2a Kalman</text>
+
+<!-- Hidden-layer connector dots (neural net aesthetic) -->
+<g filter="url(#ns)">
+  <rect x="363" y="270" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-feature)" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="426" y="288" text-anchor="middle" font-size="8.5" fill="var(--text-dim)">roster gap vectors</text>
+</g>
+
+<!-- L3: Scoring -->
+<g filter="url(#ns)">
+  <rect x="553" y="52"  width="136" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-fit)" stroke-width="1.2"/>
+  <text x="621" y="70"  text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">M3 Scheme Fit</text>
+  <circle cx="681" cy="58" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="553" y="122" width="136" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-fit)" stroke-width="1.2"/>
+  <text x="621" y="140" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Gap Matching</text>
+  <circle cx="681" cy="128" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="553" y="202" width="136" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-proj)" stroke-width="1.2"/>
+  <text x="621" y="220" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Playing Time / Role</text>
+  <circle cx="681" cy="208" r="3" fill="var(--done)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="553" y="272" width="136" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-proj)" stroke-width="1.2"/>
+  <text x="621" y="290" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Destination Proj</text>
+  <circle cx="681" cy="278" r="3" fill="var(--done)"/>
+</g>
+
+<!-- L4: Composite -->
+<g filter="url(#ns)">
+  <rect x="743" y="96"  width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-output)" stroke-width="1.2"/>
+  <text x="806" y="114" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">Fit Score</text>
+  <circle cx="861" cy="102" r="3" fill="var(--done)"/>
+</g>
+<!-- sublabel -->
+<text x="806" y="138" text-anchor="middle" font-size="7.5" fill="var(--text-dim)">overall_fit composite</text>
+
+<g filter="url(#ns)">
+  <rect x="743" y="200" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-fit)" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="806" y="218" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text-dim)">Program Fit</text>
+  <circle cx="861" cy="206" r="3" fill="var(--c-planned)"/>
+</g>
+<g filter="url(#ns)">
+  <rect x="743" y="290" width="126" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-proj)" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="806" y="308" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text-dim)">Team Rating Proj</text>
+  <circle cx="861" cy="296" r="3" fill="var(--c-planned)"/>
+</g>
+
+<!-- L5: Delivery -->
+<g filter="url(#ns)">
+  <rect x="933" y="150" width="136" height="32" rx="16" fill="var(--bg-node)" stroke="var(--c-output)" stroke-width="1.5"/>
+  <text x="1001" y="170" text-anchor="middle" font-size="10" font-weight="700" fill="var(--text)">Rec Engine</text>
+  <circle cx="1061" cy="157" r="3" fill="var(--done)"/>
+</g>
+<text x="1001" y="198" text-anchor="middle" font-size="7.5" fill="var(--text-dim)">Top-50 → Top-10</text>
+
+<g filter="url(#ns)">
+  <rect x="933" y="232" width="136" height="28" rx="14" fill="var(--bg-node)" stroke="var(--c-output)" stroke-width="1.2"/>
+  <text x="1001" y="250" text-anchor="middle" font-size="9.5" font-weight="600" fill="var(--text)">API + Frontend</text>
+  <circle cx="1061" cy="238" r="3" fill="var(--done)"/>
+</g>
+
+<g filter="url(#ns)">
+  <rect x="933" y="296" width="136" height="32" rx="16" fill="var(--bg-node)" stroke="var(--c-user)" stroke-width="2"/>
+  <text x="1001" y="316" text-anchor="middle" font-size="10" font-weight="700" fill="var(--c-user)">Coaching Staff</text>
+  <circle cx="1061" cy="302" r="3" fill="var(--done)"/>
+</g>
+<text x="1001" y="344" text-anchor="middle" font-size="7.5" fill="var(--text-dim)">set weights, shortlist</text>
+
+<!-- Flow direction arrow at bottom -->
+<text x="540" y="392" text-anchor="middle" font-size="9" fill="#505870" letter-spacing="6">DATA  ───────────────────────►  DECISION</text>
+
+</svg>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     BOTTOM PANELS (Question Stack + Configurable Weights)
+     ═══════════════════════════════════════════════════════════════════════ -->
+<div class="panels">
+
+  <div class="panel">
+    <div class="panel-hdr">The Question Stack</div>
+    <div class="panel-body">
+      <div class="qr"><div class="qn" style="background:var(--c-agent)">0</div><span class="qt">How does a new portal entrant become visible?</span><span class="qp">News Agent</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-cluster)">1</div><span class="qt">Who are we as a program?</span><span class="qp">M2 Team Clustering</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-cluster)">2</div><span class="qt">What kind of player is this?</span><span class="qp">M1 Player Clustering</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-fit)">3</div><span class="qt">Does this player fit our system?</span><span class="qp">M3 Scheme Fit</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-fit)">4</div><span class="qt">Does this player fill our roster holes?</span><span class="qp">Gap Matching</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-proj)">5</div><span class="qt">How good is this player, neutrally?</span><span class="qp">Player Projection</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-proj)">6</div><span class="qt">How many minutes will they get here?</span><span class="qp">Playing Time</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-proj)">7</div><span class="qt">What will they contribute at our program?</span><span class="qp">Dest Projection</span></div>
+      <div class="qr"><div class="qn" style="background:var(--c-output)">8</div><span class="qt">Should we recruit this player?</span><span class="qp">Rec Engine</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-hdr">Composite Fit &mdash; Configurable Weights</div>
+    <div class="panel-body">
+      <p class="wd">Coaching staff adjust these weights to match program priorities. The recommendation engine ranks portal candidates using the weighted composite.</p>
+      <div class="wg">
+        <span class="wh">Component</span><span class="wh">Default</span><span class="wh">Status</span>
+        <span class="wn">Scheme Fit</span><span class="wv">30%</span><span class="wp r">Real</span>
+        <span class="wn">Gap Match</span><span class="wv">20%</span><span class="wp r">Real</span>
+        <span class="wn">Role Fit</span><span class="wv">25%</span><span class="wp r">Real</span>
+        <span class="wn">Program Fit</span><span class="wv">25%</span><span class="wp s">Stub (50)</span>
+      </div>
+      <hr class="wdiv"/>
+      <p class="wf">overall_fit = w1*scheme + w2*gap + w3*role + w4*program</p>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

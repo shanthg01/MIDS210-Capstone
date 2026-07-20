@@ -111,8 +111,13 @@ const IMPORTANCE_FIELDS: Array<{ key: keyof ImportanceWeights; label: string; de
   { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
 ];
 
-const DEFAULT_FIT: FitWeightsPct = { gap: 20, scheme: 30, role_fit: 25, program_fit: 25 };
-const DEFAULT_IMPORTANCE: ImportanceWeights = { scheme_fit: 7, role_fit: 5, gap_match: 5, program_fit: 5 };
+const DEFAULT_FIT: FitWeightsPct = { gap: 30, scheme: 25, role_fit: 25, program_fit: 20 };
+const DEFAULT_IMPORTANCE: ImportanceWeights = {
+  scheme_fit: 7,
+  role_fit: 5,
+  gap_match: 5,
+  program_fit: 5,
+};
 
 // ── Slider row component ──────────────────────────────────────────────────────
 
@@ -410,7 +415,7 @@ export default function SettingsPage() {
         Program Settings
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Customize how fit scores are calculated for your program
+        Customize your personalized candidate ranking; canonical Overall Fit stays fixed
       </Typography>
 
       <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
@@ -547,10 +552,10 @@ export default function SettingsPage() {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Box>
             <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              Fit Component Weights
+              Personalized Fit Weights
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Controls what percentage each component contributes to overall fit
+              Controls your Personalized Fit ranking; does not redefine canonical Overall Fit
             </Typography>
           </Box>
           <Chip
@@ -590,7 +595,7 @@ export default function SettingsPage() {
             Priority Weights
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Program-stated priorities (1–10) used to weight Program Fit sub-components
+            Relative priorities used when generating your Personalized Fit ranking
           </Typography>
         </Box>
 

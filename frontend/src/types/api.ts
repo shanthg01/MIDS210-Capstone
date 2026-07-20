@@ -260,18 +260,32 @@ export interface FitBreakdown {
   program_fit: ProgramFitBreakdown;
 }
 
-export interface FitScoreResponse {
-  player_id: string; // string, not number — see PlayerProfile.player_id comment
-  school_id: number;
-  overall_fit: number;
+export interface FitComponentValues {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
   program_fit: number;
+}
+
+export interface FitScoreResponse {
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
+  school_id: number;
+  overall_fit: number;
+  personalized_fit: number | null;
+  gap_match: number;
+  scheme_fit: number;
+  role_fit: number;
+  program_fit: number;
+  raw_components: FitComponentValues;
+  component_confidences: FitComponentValues;
+  overall_confidence: number;
+  data_quality_flags: Record<string, boolean | string>;
   breakdown: FitBreakdown;
   weights_used: FitWeights;
+  personalized_weights: FitWeights | null;
   computed_at: string;
   model_version: string;
+  calibration_version: string | null;
   cache_hit: boolean;
   // PR #33 follow-ups — populated by backend, was silently dropped by FE
   is_portal_candidate: boolean;      // player has Entered/Committed portal event this season
@@ -326,38 +340,86 @@ export interface TeamRatingProjectionResponse {
   model_version: string;
 }
 
-// ── Predictions ───────────────────────────────────────────────────────────────
+// ── Minutes overrides ("what if" scenarios, issue #61) ─────────────────────────
 
-export type PredictedRole = 'starter' | 'rotation' | 'bench' | 'reserve';
+export interface PlayingTimeOverrideRequest {
+  school_id: number;
+  season?: number;
+  minutes_override: number;
+  usage_override?: number;
+}
+
+export interface PlayingTimeOverrideResponse {
+  player_id: string;
+  school_id: number;
+  season: number;
+  stored_expected_minutes: number;
+  stored_role_fit: number;
+  override_expected_minutes: number;
+  override_role_fit: number;
+  model_version: string;
+}
+
+export interface TeamRatingOverrideRequest {
+  // string, not number — player_id is a 63-bit hash; sending it as a numeric
+  // string lets FastAPI's Pydantic int coercion parse it without JS's 53-bit
+  // safe-integer loss (same convention as CompareRequest.player_ids).
+  player_id: string;
+  school_id: number;
+  season: number;
+  prior_season?: number;
+  minutes_override: number;
+  usage_override?: number;
+}
+
+export interface TeamRatingOverrideResponse {
+  player_id: string;
+  school_id: number;
+  season: number;
+  minutes_override: number;
+  baseline_adj_o: number;
+  baseline_adj_d: number;
+  baseline_adj_em: number;
+  projected_adj_o: number;
+  projected_adj_d: number;
+  projected_adj_em: number;
+  delta_adj_o: number;
+  delta_adj_d: number;
+  delta_adj_em: number;
+  confidence_interval: [number, number];
+}
+
+// ── Predictions ───────────────────────────────────────────────────────────────
+// Transfer Success (Model 5, transfer-success-eb-v1) — empirical-Bayes shrinkage
+// over (player_cluster x team system) cells, not a tree model — no SHAP/per-game
+// role prediction concept. Field names mirror transfer_success_scores directly.
+
+export type SuccessTier = 'Very Low' | 'Low' | 'Moderate' | 'High' | 'Very High';
 
 export interface SimilarTransfer {
   player_name: string;
-  season: string;
-  from_school: string;
-  to_school: string;
-  per_before: number;
-  per_after: number;
-  per_change: number;
-  minutes_before: number;
-  minutes_after: number;
-  outcome_score: number;
-}
-
-export interface SHAPExplanation {
-  feature: string;
-  impact: number;
-  description: string;
+  season: number;
+  value_vs_projection: number;
+  success_label: boolean | null;
+  minutes_drift: number | null;
+  usage_drift: number | null;
+  actual_value_per_100: number | null;
+  projected_value_per_100: number | null;
+  post_minutes_per_game: number | null;
+  projected_minutes: number | null;
+  post_usage_rate: number | null;
+  projected_usage: number | null;
 }
 
 export interface PredictionResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
-  predicted_per_change: number;
-  predicted_minutes: number;
-  predicted_role: PredictedRole;
-  confidence: number;
+  success_probability: number;
+  success_tier: SuccessTier;
+  cell_n: number | null;
+  shrinkage_w: number | null;
+  explanation: string;
   similar_transfers: SimilarTransfer[];
-  shap_explanations: SHAPExplanation[];
   model_version: string;
 }
 
@@ -412,9 +474,14 @@ export interface RecommendationItem {
   player_name: string;
   position: string;
   overall_fit: number;
+  personalized_fit: number;
   components: FitComponents;
   reasoning: string;
   is_portal_candidate: boolean;
+  // Destination-mode player_projections — null when no row exists yet for this pair.
+  value_per_100: number | null;
+  projected_minutes: number | null;
+  projected_usage: number | null;
 }
 
 export interface RecommendationsResponse {
@@ -438,5 +505,58 @@ export interface ShortlistItem {
 export interface ShortlistResponse {
   user_id: number;
   players: ShortlistItem[];
+  total: number;
+}
+
+// ── News-monitoring agent ───────────────────────────────────────────────────
+
+export interface AgentRunRequest {
+  season?: number;
+  window_days?: number;
+  use_llm?: boolean;
+  dry_run?: boolean;
+}
+
+export interface AgentRunAccepted {
+  run_id: string;
+  status: 'running';
+}
+
+export interface AgentRunSummary {
+  run_window_start: string;
+  run_window_end: string;
+  events_detected: number;
+  portal_updates: number;
+  errors: string[];
+  dry_run: boolean;
+  season: number;
+  window_days: number;
+  success: boolean;
+}
+
+export interface AgentRunStatus {
+  run_id: string;
+  status: 'running' | 'completed' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  summary: AgentRunSummary | null;
+  error: string | null;
+}
+
+export interface ProgramEventItem {
+  id: number;
+  event_type: string;
+  school_id: number | null;
+  player_id: number | null;
+  coach_id: number | null;
+  event_date: string | null;
+  source: string;
+  confidence: number | null;
+  match_status: string;
+  created_at: string;
+}
+
+export interface ProgramEventsResponse {
+  events: ProgramEventItem[];
   total: number;
 }

@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PortalPoint — Model Flow Overview</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #181b23;
+    --bg-band: rgba(255,255,255,0.03);
+    --text: #e4e4ebeb;
+    --text-sec: #e4e4e48d;
+    --text-ter: #e4e4e45e;
+    --stroke: #e4e4e41f;
+    --accent: #599CE7;
+
+    --c-ingest: #81A1C1;
+    --c-agent: #D08770;
+    --c-feature: #a0a0b0;
+    --c-cluster: #9386F2;
+    --c-fit: #3FA266;
+    --c-proj: #7BAFE9;
+    --c-user: #F1B467;
+    --c-output: #B48EAD;
+
+    --done: #3FA266;
+    --proto: #D08770;
+    --planned: #e4e4e442;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 18px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .subtitle { color: var(--text-sec); font-size: 14px; line-height: 1.5; margin-bottom: 24px; }
+
+  /* Stats row */
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+  .stat-card {
+    flex: 1 1 150px;
+    padding: 14px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--stroke);
+  }
+  .stat-val { font-size: 24px; font-weight: 700; color: var(--accent); }
+  .stat-label { font-size: 12px; font-weight: 600; }
+  .stat-detail { font-size: 11px; color: var(--text-ter); }
+
+  /* Legend */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 3px; }
+  .legend-sep { flex: 1; }
+  .status-legend { display: flex; gap: 14px; align-items: center; }
+  .status-dot { width: 8px; height: 8px; border-radius: 4px; }
+  .status-label { font-size: 11px; color: var(--text-sec); }
+
+  /* DAG container */
+  .dag-container { overflow-x: auto; margin-bottom: 28px; }
+
+  /* Bottom grid */
+  .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media (max-width: 800px) { .bottom-grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 14px 18px 10px;
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--stroke);
+  }
+  .card-body { padding: 14px 18px 18px; }
+
+  /* Question stack */
+  .q-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+  }
+  .q-num {
+    width: 22px; height: 22px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: var(--bg);
+    flex-shrink: 0;
+  }
+  .q-text { flex: 1; font-size: 13px; }
+  .pill {
+    font-size: 11px; font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+    color: var(--text-sec);
+    white-space: nowrap;
+  }
+
+  /* Weight config */
+  .weight-desc { color: var(--text-sec); font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
+  .weight-grid {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px 16px;
+    align-items: center;
+  }
+  .weight-hdr { font-size: 11px; font-weight: 700; color: var(--text-ter); text-transform: uppercase; }
+  .weight-name { font-weight: 500; font-size: 13px; }
+  .weight-val { font-family: "SF Mono", Consolas, monospace; color: var(--accent); font-size: 13px; }
+  .weight-pill {
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 8px;
+  }
+  .weight-pill.real { background: rgba(63,162,102,0.2); color: #5fd992; }
+  .weight-pill.stub { background: rgba(241,180,103,0.2); color: #f1b467; }
+  .weight-divider { grid-column: 1/-1; border: none; border-top: 1px solid var(--stroke); margin: 4px 0; }
+  .weight-formula { font-size: 12px; color: var(--text-ter); font-family: "SF Mono", Consolas, monospace; }
+
+  .source { font-size: 11px; color: var(--text-ter); }
+</style>
+</head>
+<body>
+
+<h1>PortalPoint Model Flow</h1>
+<p class="subtitle">
+  End-to-end pipeline from data ingestion through the recommendation engine.
+  Every model narrows a different dimension of uncertainty about whether a transfer portal player fits a program.
+</p>
+
+<!-- ── Stats ───────────────────────────────────────────────────────── -->
+<div class="stats">
+  <div class="stat-card"><div class="stat-val">5</div><div class="stat-label">Data Sources</div><div class="stat-detail">BartTorvik, HE, hoopR, 247S, Rosters</div></div>
+  <div class="stat-card"><div class="stat-val">6/10</div><div class="stat-label">Models Complete</div><div class="stat-detail">M1-M4, Scheme, Gap, Dest Proj</div></div>
+  <div class="stat-card"><div class="stat-val">9.7M</div><div class="stat-label">Fit Score Rows</div><div class="stat-detail">All-pairs player x school x season</div></div>
+  <div class="stat-card"><div class="stat-val">30K</div><div class="stat-label">Player Projections</div><div class="stat-detail">Phase 2a forecasts, 2022-2027</div></div>
+  <div class="stat-card"><div class="stat-val">Live</div><div class="stat-label">News Agent</div><div class="stat-detail">Tavily + Gemini, dual classifier</div></div>
+</div>
+
+<!-- ── DAG Diagram ────────────────────────────────────────────────── -->
+<h2>System Architecture</h2>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-ingest)"></div>Data Ingestion</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-agent)"></div>Agentic Monitoring</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-feature)"></div>Feature / Roster</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-cluster)"></div>Clustering Models</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-fit)"></div>Fit Scoring</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-proj)"></div>Projection Models</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-user)"></div>User / Program</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:var(--c-output)"></div>Product Output</div>
+  <div class="legend-sep"></div>
+  <div class="status-legend">
+    <div class="status-dot" style="background:var(--done)"></div><span class="status-label">Complete</span>
+    <div class="status-dot" style="background:var(--proto)"></div><span class="status-label">Prototype</span>
+    <div class="status-dot" style="background:var(--planned)"></div><span class="status-label">Planned</span>
+  </div>
+</div>
+
+<div class="dag-container">
+<svg viewBox="0 0 1140 820" width="1140" height="820" xmlns="http://www.w3.org/2000/svg" style="display:block">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e4e4e45e"/>
+    </marker>
+  </defs>
+
+  <!-- Row bands -->
+  <rect x="10" y="10" width="1120" height="70" rx="6" fill="rgba(255,255,255,0.025)"/>
+  <rect x="10" y="170" width="1120" height="70" rx="6" fill="rgba(255,255,255,0.025)"/>
+  <rect x="10" y="330" width="1120" height="70" rx="6" fill="rgba(255,255,255,0.025)"/>
+  <rect x="10" y="490" width="1120" height="70" rx="6" fill="rgba(255,255,255,0.025)"/>
+  <rect x="10" y="650" width="1120" height="70" rx="6" fill="rgba(255,255,255,0.025)"/>
+
+  <!-- ═══ ROW 0: Data Ingestion + News Agent ═══ -->
+  <!-- BartTorvik -->
+  <rect x="30" y="20" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-ingest)" stroke-width="1.5"/>
+  <circle cx="190" cy="30" r="4" fill="var(--done)"/>
+  <text x="115" y="40" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">BartTorvik</text>
+  <text x="115" y="56" text-anchor="middle" font-size="9" fill="var(--text-ter)">Player &amp; team stats</text>
+
+  <!-- Hoop Explorer -->
+  <rect x="220" y="20" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-ingest)" stroke-width="1.5"/>
+  <circle cx="380" cy="30" r="4" fill="var(--done)"/>
+  <text x="305" y="40" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Hoop Explorer</text>
+  <text x="305" y="56" text-anchor="middle" font-size="9" fill="var(--text-ter)">RAPM, play-types, position</text>
+
+  <!-- hoopR -->
+  <rect x="410" y="20" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-ingest)" stroke-width="1.5"/>
+  <circle cx="570" cy="30" r="4" fill="var(--done)"/>
+  <text x="495" y="40" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">hoopR ESPN PBP</text>
+  <text x="495" y="56" text-anchor="middle" font-size="9" fill="var(--text-ter)">Game logs (1.1M rows)</text>
+
+  <!-- 247Sports -->
+  <rect x="600" y="20" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-ingest)" stroke-width="1.5"/>
+  <circle cx="760" cy="30" r="4" fill="var(--done)"/>
+  <text x="685" y="40" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">247Sports Ingest</text>
+  <text x="685" y="56" text-anchor="middle" font-size="9" fill="var(--text-ter)">Structured portal ETL</text>
+
+  <!-- Roster Snapshots -->
+  <rect x="790" y="20" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-ingest)" stroke-width="1.5"/>
+  <circle cx="950" cy="30" r="4" fill="var(--done)"/>
+  <text x="875" y="40" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Roster Snapshots</text>
+  <text x="875" y="56" text-anchor="middle" font-size="9" fill="var(--text-ter)">barttorvik rostercast</text>
+
+  <!-- News Agent -->
+  <rect x="980" y="20" width="140" height="50" rx="8" fill="#181b23" stroke="var(--c-agent)" stroke-width="2"/>
+  <circle cx="1110" cy="30" r="4" fill="var(--proto)"/>
+  <text x="1050" y="38" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">News Monitor</text>
+  <text x="1050" y="52" text-anchor="middle" font-size="9" fill="var(--text-ter)">LangGraph + Gemini</text>
+
+  <!-- ═══ ROW 1: Feature Engineering + Roster Baseline ═══ -->
+  <!-- Feature Engineering -->
+  <rect x="140" y="180" width="200" height="50" rx="8" fill="#181b23" stroke="var(--c-feature)" stroke-width="1.5"/>
+  <circle cx="330" cy="190" r="4" fill="var(--done)"/>
+  <text x="240" y="200" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Feature Engineering</text>
+  <text x="240" y="216" text-anchor="middle" font-size="9" fill="var(--text-ter)">player_features + team_style_vectors</text>
+
+  <!-- Roster Baseline -->
+  <rect x="700" y="180" width="200" height="50" rx="8" fill="#181b23" stroke="var(--c-feature)" stroke-width="1.5"/>
+  <circle cx="890" cy="190" r="4" fill="var(--done)"/>
+  <text x="800" y="200" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Roster Baseline</text>
+  <text x="800" y="216" text-anchor="middle" font-size="9" fill="var(--text-ter)">Shared roster-membership contract</text>
+
+  <!-- is_portal_candidate -->
+  <rect x="960" y="180" width="150" height="50" rx="8" fill="#181b23" stroke="var(--c-fit)" stroke-width="1.5"/>
+  <circle cx="1100" cy="190" r="4" fill="var(--done)"/>
+  <text x="1035" y="198" text-anchor="middle" font-size="10" font-weight="600" fill="var(--text)">is_portal_candidate</text>
+  <text x="1035" y="214" text-anchor="middle" font-size="9" fill="var(--text-ter)">Availability filter</text>
+
+  <!-- ═══ ROW 2: Clustering + Player Projection ═══ -->
+  <!-- M1 -->
+  <rect x="80" y="340" width="180" height="50" rx="8" fill="#181b23" stroke="var(--c-cluster)" stroke-width="1.5"/>
+  <circle cx="250" cy="350" r="4" fill="var(--done)"/>
+  <text x="170" y="360" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">M1 Player Clustering</text>
+  <text x="170" y="376" text-anchor="middle" font-size="9" fill="var(--text-ter)">9 archetypes (k=9)</text>
+
+  <!-- M2 -->
+  <rect x="290" y="340" width="180" height="50" rx="8" fill="#181b23" stroke="var(--c-cluster)" stroke-width="1.5"/>
+  <circle cx="460" cy="350" r="4" fill="var(--done)"/>
+  <text x="380" y="360" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">M2 Team Clustering</text>
+  <text x="380" y="376" text-anchor="middle" font-size="9" fill="var(--text-ter)">Off/def system labels</text>
+
+  <!-- Player Projection -->
+  <rect x="530" y="340" width="180" height="50" rx="8" fill="#181b23" stroke="var(--c-proj)" stroke-width="1.5"/>
+  <circle cx="700" cy="350" r="4" fill="var(--done)"/>
+  <text x="620" y="360" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Player Projection</text>
+  <text x="620" y="376" text-anchor="middle" font-size="9" fill="var(--text-ter)">Ph0 shrinkage + Ph2a Kalman</text>
+
+  <!-- ═══ ROW 3: Fit Scoring + Playing Time ═══ -->
+  <!-- Scheme Fit -->
+  <rect x="30" y="500" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-fit)" stroke-width="1.5"/>
+  <circle cx="190" cy="510" r="4" fill="var(--done)"/>
+  <text x="115" y="520" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">M3 Scheme Fit</text>
+  <text x="115" y="536" text-anchor="middle" font-size="9" fill="var(--text-ter)">Cosine style alignment</text>
+
+  <!-- Gap Matching -->
+  <rect x="220" y="500" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-fit)" stroke-width="1.5"/>
+  <circle cx="380" cy="510" r="4" fill="var(--done)"/>
+  <text x="305" y="520" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Gap Matching</text>
+  <text x="305" y="536" text-anchor="middle" font-size="9" fill="var(--text-ter)">Roster need coverage</text>
+
+  <!-- Playing Time / Role Fit -->
+  <rect x="435" y="500" width="190" height="50" rx="8" fill="#181b23" stroke="var(--c-proj)" stroke-width="1.5"/>
+  <circle cx="615" cy="510" r="4" fill="var(--done)"/>
+  <text x="530" y="520" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Playing Time / Role Fit</text>
+  <text x="530" y="536" text-anchor="middle" font-size="9" fill="var(--text-ter)">Minutes, CI, role_fit</text>
+
+  <!-- Destination Projection -->
+  <rect x="660" y="500" width="190" height="50" rx="8" fill="#181b23" stroke="var(--c-proj)" stroke-width="1.5"/>
+  <circle cx="840" cy="510" r="4" fill="var(--done)"/>
+  <text x="755" y="520" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Destination Projection</text>
+  <text x="755" y="536" text-anchor="middle" font-size="9" fill="var(--text-ter)">4 context deltas (&#916;1-&#916;4)</text>
+
+  <!-- Program Fit (planned) -->
+  <rect x="880" y="500" width="150" height="50" rx="8" fill="#181b23" stroke="var(--c-fit)" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <circle cx="1020" cy="510" r="4" fill="var(--planned)"/>
+  <text x="955" y="520" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text-sec)">Program Fit</text>
+  <text x="955" y="536" text-anchor="middle" font-size="9" fill="var(--text-ter)">NIL, geo, academics</text>
+
+  <!-- ═══ ROW 4: Output ═══ -->
+  <!-- Fit Score Calibration -->
+  <rect x="150" y="660" width="200" height="50" rx="8" fill="#181b23" stroke="var(--c-output)" stroke-width="1.5"/>
+  <circle cx="340" cy="670" r="4" fill="var(--done)"/>
+  <text x="250" y="680" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">Fit Score Calibration</text>
+  <text x="250" y="696" text-anchor="middle" font-size="9" fill="var(--text-ter)">overall_fit composite</text>
+
+  <!-- Recommendation Engine (planned) -->
+  <rect x="440" y="660" width="200" height="50" rx="8" fill="#181b23" stroke="var(--c-output)" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <circle cx="630" cy="670" r="4" fill="var(--planned)"/>
+  <text x="540" y="680" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text-sec)">Recommendation Engine</text>
+  <text x="540" y="696" text-anchor="middle" font-size="9" fill="var(--text-ter)">needs M5, M7 — not started</text>
+
+  <!-- Team Rating (planned) -->
+  <rect x="730" y="660" width="180" height="50" rx="8" fill="#181b23" stroke="var(--c-proj)" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <circle cx="900" cy="670" r="4" fill="var(--planned)"/>
+  <text x="820" y="680" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text-sec)">Team Rating Projection</text>
+  <text x="820" y="696" text-anchor="middle" font-size="9" fill="var(--text-ter)">Roster counterfactual</text>
+
+  <!-- ═══ ROW 5: User + API ═══ -->
+  <!-- Coaching Staff -->
+  <rect x="320" y="760" width="180" height="50" rx="8" fill="#181b23" stroke="var(--c-user)" stroke-width="2.5"/>
+  <circle cx="490" cy="770" r="4" fill="var(--done)"/>
+  <text x="410" y="780" text-anchor="middle" font-size="11" font-weight="700" fill="var(--c-user)">Coaching Staff</text>
+  <text x="410" y="796" text-anchor="middle" font-size="9" fill="var(--text-ter)">Configure weights, shortlist</text>
+
+  <!-- API + Frontend -->
+  <rect x="560" y="760" width="170" height="50" rx="8" fill="#181b23" stroke="var(--c-output)" stroke-width="1.5"/>
+  <circle cx="720" cy="770" r="4" fill="var(--done)"/>
+  <text x="645" y="780" text-anchor="middle" font-size="11" font-weight="600" fill="var(--text)">API + Frontend</text>
+  <text x="645" y="796" text-anchor="middle" font-size="9" fill="var(--text-ter)">FastAPI + React</text>
+
+  <!-- ═══ EDGES ═══ -->
+  <!-- Ingest → Feature Engineering -->
+  <line x1="115" y1="70" x2="200" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="305" y1="70" x2="260" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="495" y1="70" x2="280" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- Ingest → Roster Baseline -->
+  <line x1="685" y1="70" x2="770" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="875" y1="70" x2="830" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- 247Sports + News Agent → is_portal_candidate -->
+  <line x1="685" y1="70" x2="1010" y2="180" stroke="var(--c-ingest)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="1050" y1="70" x2="1040" y2="180" stroke="var(--c-agent)" stroke-width="1.8" opacity="0.6" marker-end="url(#arrow)"/>
+
+  <!-- Feature Eng → Clustering -->
+  <line x1="200" y1="230" x2="170" y2="340" stroke="var(--c-feature)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="260" y1="230" x2="380" y2="340" stroke="var(--c-feature)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- Feature Eng + hoopR → Player Proj -->
+  <line x1="300" y1="230" x2="580" y2="340" stroke="var(--c-feature)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="495" y1="70" x2="600" y2="340" stroke="var(--c-ingest)" stroke-width="1" opacity="0.3" marker-end="url(#arrow)"/>
+
+  <!-- M1 → Scheme Fit + Gap -->
+  <line x1="170" y1="390" x2="115" y2="500" stroke="var(--c-cluster)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="170" y1="390" x2="270" y2="500" stroke="var(--c-cluster)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <!-- M2 → Scheme Fit -->
+  <line x1="380" y1="390" x2="140" y2="500" stroke="var(--c-cluster)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <!-- Roster Baseline → Gap -->
+  <line x1="800" y1="230" x2="340" y2="500" stroke="var(--c-feature)" stroke-width="1" opacity="0.3" marker-end="url(#arrow)"/>
+
+  <!-- Player Proj → Playing Time -->
+  <line x1="620" y1="390" x2="530" y2="500" stroke="var(--c-proj)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <!-- Roster Baseline → Playing Time -->
+  <line x1="800" y1="230" x2="540" y2="500" stroke="var(--c-feature)" stroke-width="1" opacity="0.3" marker-end="url(#arrow)"/>
+  <!-- Scheme Fit + Gap → Playing Time (context) -->
+  <line x1="150" y1="550" x2="470" y2="510" stroke="var(--c-fit)" stroke-width="1" opacity="0.25" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <line x1="340" y1="550" x2="480" y2="520" stroke="var(--c-fit)" stroke-width="1" opacity="0.25" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+
+  <!-- Playing Time → Destination Proj -->
+  <line x1="580" y1="525" x2="660" y2="525" stroke="var(--c-proj)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <!-- Player Proj → Destination Proj -->
+  <line x1="660" y1="390" x2="730" y2="500" stroke="var(--c-proj)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- Scheme + Gap + Playing Time + Program → Fit Score -->
+  <line x1="115" y1="550" x2="220" y2="660" stroke="var(--c-fit)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="305" y1="550" x2="245" y2="660" stroke="var(--c-fit)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="500" y1="550" x2="280" y2="660" stroke="var(--c-proj)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <line x1="955" y1="550" x2="310" y2="665" stroke="var(--c-fit)" stroke-width="1" opacity="0.25" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+
+  <!-- Dest Proj → Team Rating -->
+  <line x1="755" y1="550" x2="800" y2="660" stroke="var(--c-proj)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- is_portal_candidate → Playing Time (scopes candidate pool) -->
+  <line x1="1000" y1="230" x2="560" y2="500" stroke="var(--c-fit)" stroke-width="1.2" opacity="0.35" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <!-- is_portal_candidate → Destination Projection (filters to portal candidates) -->
+  <line x1="1035" y1="230" x2="780" y2="500" stroke="var(--c-fit)" stroke-width="1.2" opacity="0.35" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <!-- is_portal_candidate → API (available_only filter) -->
+  <line x1="1035" y1="230" x2="660" y2="760" stroke="var(--c-fit)" stroke-width="1" opacity="0.2" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+
+  <!-- Fit Score + portal_flag + Dest + Team Rating → Rec Engine -->
+  <line x1="300" y1="710" x2="480" y2="660" stroke="var(--c-output)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+  <!-- is_portal_candidate → Rec Engine (availability filter in CANDIDATE_SQL) -->
+  <line x1="1035" y1="230" x2="580" y2="660" stroke="var(--c-fit)" stroke-width="1.3" opacity="0.4" marker-end="url(#arrow)"/>
+  <line x1="780" y1="550" x2="580" y2="660" stroke="var(--c-proj)" stroke-width="1" opacity="0.3" marker-end="url(#arrow)"/>
+  <line x1="820" y1="710" x2="600" y2="685" stroke="var(--c-proj)" stroke-width="1" opacity="0.25" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+
+  <!-- Rec Engine → API -->
+  <line x1="540" y1="710" x2="620" y2="760" stroke="var(--c-output)" stroke-width="1.3" opacity="0.45" marker-end="url(#arrow)"/>
+
+  <!-- User ↔ Rec Engine -->
+  <line x1="410" y1="760" x2="500" y2="710" stroke="var(--c-user)" stroke-width="2" opacity="0.6" marker-end="url(#arrow)"/>
+  <!-- API → User (feedback loop) -->
+  <line x1="620" y1="790" x2="500" y2="790" stroke="var(--c-user)" stroke-width="1.3" opacity="0.35" marker-end="url(#arrow)" stroke-dasharray="6,4"/>
+</svg>
+</div>
+
+<!-- ── Bottom Panels ──────────────────────────────────────────────── -->
+<div class="bottom-grid">
+
+  <!-- Question Stack -->
+  <div class="card">
+    <div class="card-header">The Question Stack</div>
+    <div class="card-body">
+      <div class="q-row"><div class="q-num" style="background:var(--c-agent)">0</div><span class="q-text">How does a new portal entrant become visible?</span><span class="pill">News Agent</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-cluster)">1</div><span class="q-text">Who are we as a program?</span><span class="pill">M2 Team Clustering</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-cluster)">2</div><span class="q-text">What kind of player is this?</span><span class="pill">M1 Player Clustering</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-fit)">3</div><span class="q-text">Does this player fit our system?</span><span class="pill">M3 Scheme Fit</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-fit)">4</div><span class="q-text">Does this player fill our roster holes?</span><span class="pill">Gap Matching</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-proj)">5</div><span class="q-text">How good is this player, neutrally?</span><span class="pill">Player Projection</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-proj)">6</div><span class="q-text">How many minutes will they get here?</span><span class="pill">Playing Time</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-proj)">7</div><span class="q-text">What will they contribute at our program?</span><span class="pill">Destination Proj</span></div>
+      <div class="q-row"><div class="q-num" style="background:var(--c-output)">8</div><span class="q-text">Should we recruit this player?</span><span class="pill">Rec Engine</span></div>
+    </div>
+  </div>
+
+  <!-- Weight Config -->
+  <div class="card">
+    <div class="card-header">Composite Fit &mdash; Configurable Weights</div>
+    <div class="card-body">
+      <p class="weight-desc">Coaching staff can adjust these weights to match their program priorities. The recommendation engine ranks portal candidates using the weighted composite.</p>
+      <div class="weight-grid">
+        <span class="weight-hdr">Component</span><span class="weight-hdr">Default</span><span class="weight-hdr">Status</span>
+        <span class="weight-name">Scheme Fit</span><span class="weight-val">30%</span><span class="weight-pill real">Real</span>
+        <span class="weight-name">Gap Match</span><span class="weight-val">20%</span><span class="weight-pill real">Real</span>
+        <span class="weight-name">Role Fit</span><span class="weight-val">25%</span><span class="weight-pill real">Real</span>
+        <span class="weight-name">Program Fit</span><span class="weight-val">25%</span><span class="weight-pill stub">Stub (50)</span>
+      </div>
+      <hr class="weight-divider"/>
+      <p class="weight-formula">overall_fit = w1*scheme_fit + w2*gap_match + w3*role_fit + w4*program_fit</p>
+    </div>
+  </div>
+</div>
+
+<p class="source">Source: docs/models/model_dependency_graph.md &middot; docs/presentation/technical_walkthrough_plan.md</p>
+
+</body>
+</html>

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from portalpoint.api.routers import (
+    agent,
     auth,
     comparison,
     fit_scores,
@@ -41,6 +42,7 @@ app.include_router(projections.router)
 app.include_router(users.router)
 app.include_router(comparison.router)
 app.include_router(schools.router)
+app.include_router(agent.router)
 
 
 @app.get("/health", tags=["health"])

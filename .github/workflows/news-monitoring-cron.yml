@@ -1,0 +1,48 @@
+name: news-monitoring-cron
+
+# Scheduled trigger for the news-monitoring agent (issue #61 — "reduce portal
+# availability lag"). Matches CLAUDE.md's documented hourly_portal_monitoring_dag
+# cadence (hourly during the March-August transfer window, daily otherwise)
+# without standing up Airflow — hits the live API's
+# POST /api/agent/news-monitoring/run endpoint (src/portalpoint/api/routers/agent.py)
+# instead. Real Airflow DAG is a later upgrade, not a blocker.
+#
+# Requires repo secrets (not yet configured — this workflow is inert until
+# they are):
+#   PORTALPOINT_API_URL       — base URL of the deployed API (e.g. https://api.portalpoint.app)
+#   PORTALPOINT_BOT_EMAIL     — service account email for POST /api/auth/login
+#   PORTALPOINT_BOT_PASSWORD  — service account password
+
+on:
+  schedule:
+    - cron: '0 * * 3-8 *'      # hourly, March-August (portal window)
+    - cron: '0 6 * 1,2,9-12 *' # daily 06:00 UTC, rest of the year
+  workflow_dispatch: {}         # manual trigger for testing
+
+jobs:
+  trigger-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets are configured
+        id: check
+        run: |
+          if [ -z "${{ secrets.PORTALPOINT_API_URL }}" ] || [ -z "${{ secrets.PORTALPOINT_BOT_EMAIL }}" ] || [ -z "${{ secrets.PORTALPOINT_BOT_PASSWORD }}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::PORTALPOINT_API_URL / PORTALPOINT_BOT_EMAIL / PORTALPOINT_BOT_PASSWORD not set — skipping run. Configure these repo secrets to enable the scheduled agent trigger."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in and start agent run
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sf -X POST "${{ secrets.PORTALPOINT_API_URL }}/api/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\": \"${{ secrets.PORTALPOINT_BOT_EMAIL }}\", \"password\": \"${{ secrets.PORTALPOINT_BOT_PASSWORD }}\"}" \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+
+          curl -sf -X POST "${{ secrets.PORTALPOINT_API_URL }}/api/agent/news-monitoring/run" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{}'

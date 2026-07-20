@@ -121,6 +121,40 @@ def test_skill_percentiles_flips_direction_for_inverted_skill():
         assert out[col].between(0, 100).all()
 
 
+def test_skill_percentiles_position_scoped_defaults_to_season_only():
+    # position_col=None (default) must be byte-identical to season-only —
+    # every existing caller/stored row relies on this, changing the default
+    # would silently change already-written player_projections rows.
+    df = _synthetic_training_frame(n=40)
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    explicit_none = pp.skill_percentiles(shrunk, position_col=None)
+    pd.testing.assert_frame_equal(season_only, explicit_none)
+
+
+def test_skill_percentiles_position_scoped_differs_from_season_only():
+    df = _synthetic_training_frame(n=90)
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    by_position = pp.skill_percentiles(shrunk, position_col="position")
+
+    # Positions have independent random fg3_pct draws, so at least some rows'
+    # within-position rank must differ from their within-season rank.
+    assert not season_only["pctile_shooting_3p"].equals(by_position["pctile_shooting_3p"])
+    assert by_position["pctile_shooting_3p"].between(0, 100).all()
+
+
+def test_skill_percentiles_position_scoped_falls_back_when_position_missing():
+    df = _synthetic_training_frame(n=40)
+    df.loc[0, "position"] = None
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    by_position = pp.skill_percentiles(shrunk, position_col="position")
+
+    # Row with no position falls back to the season-only percentile exactly.
+    assert by_position.loc[0, "pctile_shooting_3p"] == season_only.loc[0, "pctile_shooting_3p"]
+
+
 def test_fit_value_model_recovers_known_positive_relationship():
     df = _synthetic_training_frame(n=80)
     shrunk = pp.shrink_skills(df)
@@ -253,6 +287,23 @@ def test_build_neutral_records_shape_and_neutral_mode():
         assert season == 2025 or season == 2026
         assert mode == "neutral"
         assert model_version == pp.MODEL_VERSION
+
+
+def test_build_neutral_records_surfaces_shrinkage_blend():
+    df = _synthetic_training_frame(n=80)
+    shrunk = pp.shrink_skills(df)
+    pctiles = pp.skill_percentiles(shrunk)
+    off_model, off_resid = pp.fit_value_model(pctiles, "off_adj_rapm")
+    def_model, def_resid = pp.fit_value_model(pctiles, "def_adj_rapm")
+    projected = pp.project_value(pctiles, off_model, def_model, off_resid, def_resid)
+
+    explanation = json.loads(pp.build_neutral_records(projected.head(1))[0][14])
+    blend = explanation["shrinkage"]
+
+    assert blend["observed_data_weight"] + blend["prior_weight"] == pytest.approx(1.0)
+    assert blend["observed_data_weight"] == pytest.approx(
+        projected.iloc[0]["_observed_weight_fraction"], abs=0.0001,
+    )
 
 
 def test_build_neutral_records_stores_turnover_avoidance_as_higher_is_better():

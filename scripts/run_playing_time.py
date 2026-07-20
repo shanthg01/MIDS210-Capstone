@@ -119,6 +119,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-validation-artifact", action="store_true")
     parser.add_argument(
+        "--skip-explanations",
+        action="store_true",
+        help="Skip per-row TreeSHAP generation for performance diagnostics",
+    )
+    parser.add_argument(
+        "--explanation-scope",
+        choices=("portal", "all"),
+        default="portal",
+        help=(
+            "Rows receiving persisted TreeSHAP payloads. Default portal avoids multi-GB "
+            "JSONB growth from the full player-school grid; all is intended for audits."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Score and validate without DB writes or MLflow logging",
@@ -203,6 +217,23 @@ def apply_player_filter(df: pd.DataFrame, include_player_ids: list[int]) -> pd.D
     if not include_player_ids or df.empty:
         return df
     return df[df["player_id"].isin(set(map(int, include_player_ids)))].reset_index(drop=True)
+
+
+def explanation_positions(scored: pd.DataFrame, scope: str) -> np.ndarray:
+    """Return row positions eligible for persisted explanations."""
+    if scope == "all":
+        return np.arange(len(scored), dtype=np.int64)
+    if scope != "portal":
+        raise ValueError(f"Unknown explanation scope: {scope}")
+    if "is_portal_candidate" not in scored:
+        raise RuntimeError("Portal explanation scope requires is_portal_candidate")
+    mask = (
+        pd.to_numeric(scored["is_portal_candidate"], errors="coerce")
+        .fillna(0.0)
+        .ge(0.5)
+        .to_numpy()
+    )
+    return np.flatnonzero(mask)
 
 
 def score_frame(
@@ -630,6 +661,55 @@ def write_validation_artifacts(
     return [csv_path, json_path]
 
 
+def write_shap_summary_artifacts(
+    models: pt.PlayingTimeModels,
+    scored_sample: pd.DataFrame,
+    artifact_dir: Path,
+) -> list[Path]:
+    """Write bounded-sample SHAP beeswarm plots for MLflow."""
+    if scored_sample.empty:
+        return []
+    import matplotlib.pyplot as plt
+    import shap
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    inputs = pt.build_playing_time_inference_inputs(models, scored_sample)
+    targets = (
+        (
+            "expected_minutes",
+            models.minutes_model,
+            inputs.x_minutes_augmented,
+            inputs.minutes_feature_names,
+            pt.MAX_PLAYER_MINUTES,
+        ),
+        (
+            "expected_usage",
+            models.usage_model,
+            inputs.x_usage_augmented,
+            inputs.usage_feature_names,
+            1.0,
+        ),
+    )
+    paths: list[Path] = []
+    for target, model, matrix, feature_names, scale in targets:
+        values = shap.TreeExplainer(model)(matrix, check_additivity=True)
+        plt.figure(figsize=(10, 7))
+        shap.summary_plot(
+            np.asarray(values.values) * scale,
+            matrix,
+            feature_names=list(feature_names),
+            max_display=15,
+            show=False,
+        )
+        plt.title(f"Playing Time — {target} SHAP summary")
+        plt.tight_layout()
+        path = artifact_dir / f"playing_time_{target}_shap_summary.png"
+        plt.savefig(path, dpi=160, bbox_inches="tight")
+        plt.close()
+        paths.append(path)
+    return paths
+
+
 def log_mlflow(
     models: pt.PlayingTimeModels,
     metrics: dict[str, float],
@@ -682,7 +762,8 @@ def log_mlflow(
             python_model=PlayingTimePyfunc(models.feature_medians),
         )
         for path in artifact_paths or []:
-            mlflow.log_artifact(str(path), artifact_path="validation")
+            artifact_group = "explainability" if "shap" in path.name else "validation"
+            mlflow.log_artifact(str(path), artifact_path=artifact_group)
         run_id = run.info.run_id
 
     gate_metric = pt.resolve_promotion_gate_metric(numeric_metrics)
@@ -806,6 +887,9 @@ def main() -> None:
     total_written = 0
     role_fit_values: list[float] = []
     interval_widths: list[float] = []
+    explanation_sample_parts: list[pd.DataFrame] = []
+    explanation_sample_size = 0
+    max_explanation_sample_size = 500
 
     for target_season in target_seasons:
         source_season, roster_season, fit_context_season, team_context_season = (
@@ -851,6 +935,40 @@ def main() -> None:
             if frame.empty:
                 continue
             scored = score_frame(models, frame)
+            if not args.skip_explanations:
+                explain_start = time.monotonic()
+                positions = explanation_positions(scored, args.explanation_scope)
+                explanations: list[dict | None] = [None] * len(scored)
+                if len(positions):
+                    explained_subset = pt.attach_playing_time_explanations(
+                        models,
+                        scored.iloc[positions].copy(),
+                    )
+                    for position, payload in zip(
+                        positions,
+                        explained_subset["explanation"],
+                    ):
+                        explanations[int(position)] = payload
+                    scored["explanation"] = explanations
+                else:
+                    scored["explanation"] = explanations
+                log.info(
+                    "season=%s schools %d-%d/%d generated TreeSHAP explanations "
+                    "for %s/%s rows (scope=%s) in %.1fs",
+                    target_season,
+                    start + 1,
+                    min(start + len(batch), len(school_ids)),
+                    len(school_ids),
+                    f"{len(positions):,}",
+                    f"{len(scored):,}",
+                    args.explanation_scope,
+                    time.monotonic() - explain_start,
+                )
+                remaining = max_explanation_sample_size - explanation_sample_size
+                if remaining > 0 and len(positions):
+                    sample_part = scored.iloc[positions[:remaining]].copy()
+                    explanation_sample_parts.append(sample_part)
+                    explanation_sample_size += len(sample_part)
             projection_records, sync_records = pt.build_playing_time_records(scored)
             total_scored += len(scored)
             role_fit_values.extend(scored["role_fit"].astype(float).tolist())
@@ -886,6 +1004,19 @@ def main() -> None:
 
     if total_scored == 0:
         raise RuntimeError("No playing-time records were scored")
+
+    if explanation_sample_parts and not args.dry_run and not args.backfill:
+        explanation_artifacts = write_shap_summary_artifacts(
+            models,
+            pd.concat(explanation_sample_parts, ignore_index=True),
+            args.validation_artifact_dir / "explainability",
+        )
+        validation_artifacts.extend(explanation_artifacts)
+        log.info(
+            "Wrote explainability artifacts from %s sampled rows: %s",
+            f"{explanation_sample_size:,}",
+            ", ".join(str(path) for path in explanation_artifacts),
+        )
 
     run_metrics = {
         "mean_role_fit": float(np.mean(role_fit_values)),
