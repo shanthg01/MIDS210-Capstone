@@ -439,3 +439,56 @@ export interface ShortlistResponse {
   players: ShortlistItem[];
   total: number;
 }
+
+// ── News-monitoring agent ───────────────────────────────────────────────────
+
+export interface AgentRunRequest {
+  season?: number;
+  window_days?: number;
+  use_llm?: boolean;
+  dry_run?: boolean;
+}
+
+export interface AgentRunAccepted {
+  run_id: string;
+  status: 'running';
+}
+
+export interface AgentRunSummary {
+  run_window_start: string;
+  run_window_end: string;
+  events_detected: number;
+  portal_updates: number;
+  errors: string[];
+  dry_run: boolean;
+  season: number;
+  window_days: number;
+  success: boolean;
+}
+
+export interface AgentRunStatus {
+  run_id: string;
+  status: 'running' | 'completed' | 'failed';
+  started_at: string;
+  finished_at: string | null;
+  summary: AgentRunSummary | null;
+  error: string | null;
+}
+
+export interface ProgramEventItem {
+  id: number;
+  event_type: string;
+  school_id: number | null;
+  player_id: number | null;
+  coach_id: number | null;
+  event_date: string | null;
+  source: string;
+  confidence: number | null;
+  match_status: string;
+  created_at: string;
+}
+
+export interface ProgramEventsResponse {
+  events: ProgramEventItem[];
+  total: number;
+}
