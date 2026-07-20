@@ -15,8 +15,11 @@ router = APIRouter(prefix="/api/fit-scores", tags=["fit-scores"])
 CACHE_TTL_SECONDS = 1800
 
 
-def _cache_key(player_id: int, school_id: int, season: int) -> str:
-    return f"fitscore:v2:{player_id}:{school_id}:{season}"
+def _cache_key(player_id: int, school_id: int, season: int, user_id: int) -> str:
+    # Must include user_id — the response carries per-user personalized_fit/
+    # personalized_weights now, so caching without it would leak one user's
+    # personalization into another user's cached response.
+    return f"fitscore:v3:{player_id}:{school_id}:{season}:{user_id}"
 
 
 @router.get("", response_model=FitScoreResponse)
@@ -33,7 +36,7 @@ async def get_fit_score(
     if season is None:
         season = await fit_score_service.get_current_season(db, redis)
 
-    cache_key = _cache_key(player_id, school_id, season)
+    cache_key = _cache_key(player_id, school_id, season, current_user)
 
     try:
         cached = await redis.get(cache_key)
@@ -51,7 +54,9 @@ async def get_fit_score(
             response.cache_hit = True
             return response
 
-    response = await fit_score_service.get_fit_score(db, player_id, school_id, season)
+    response = await fit_score_service.get_fit_score(
+        db, player_id, school_id, season, user_id=current_user
+    )
 
     try:
         await redis.set(cache_key, response.model_dump_json(), ex=CACHE_TTL_SECONDS)
