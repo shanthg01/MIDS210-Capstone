@@ -31,7 +31,7 @@ from portalpoint.db.models import (
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 _DEFAULTS = UserPreferences(
-    importance_weights=ImportanceWeights(scheme_fit=7, role_fit=5, gap_match=5, team_impact_fit=5),
+    importance_weights=ImportanceWeights(scheme_fit=7, role_fit=5, gap_match=5, program_fit=5),
     filters=UserFilters(),
     fit_weights=FitWeights(),
 )
@@ -43,14 +43,14 @@ def _prefs_to_schema(p: UserPreference) -> UserPreferences:
             scheme_fit=p.importance_scheme_fit,
             role_fit=p.importance_role_fit,
             gap_match=p.importance_gap_match,
-            team_impact_fit=p.importance_team_impact,
+            program_fit=p.importance_program_fit,
         ),
         filters=UserFilters(**(p.filters or {})),
         fit_weights=FitWeights(
             gap=p.weight_gap,
             scheme=p.weight_scheme,
             role_fit=p.weight_role,
-            team_impact_fit=p.weight_team_impact,
+            program_fit=p.weight_program,
         ),
     )
 
@@ -106,12 +106,12 @@ async def update_preferences(
         prefs.importance_scheme_fit = body.importance_weights.scheme_fit
         prefs.importance_role_fit = body.importance_weights.role_fit
         prefs.importance_gap_match = body.importance_weights.gap_match
-        prefs.importance_team_impact = body.importance_weights.team_impact_fit
+        prefs.importance_program_fit = body.importance_weights.program_fit
     if body.fit_weights is not None:
         prefs.weight_gap = body.fit_weights.gap
         prefs.weight_scheme = body.fit_weights.scheme
         prefs.weight_role = body.fit_weights.role_fit
-        prefs.weight_team_impact = body.fit_weights.team_impact_fit
+        prefs.weight_program = body.fit_weights.program_fit
     if body.filters is not None:
         prefs.filters = body.filters.model_dump(exclude_none=True)
 
@@ -222,13 +222,13 @@ def _profile_to_schema(p: UserPreferenceProfile) -> PreferenceProfile:
             gap=p.weight_gap,
             scheme=p.weight_scheme,
             role_fit=p.weight_role,
-            team_impact_fit=p.weight_team_impact,
+            program_fit=p.weight_program,
         ),
         importance_weights=ImportanceWeights(
             scheme_fit=p.importance_scheme_fit,
             role_fit=p.importance_role_fit,
             gap_match=p.importance_gap_match,
-            team_impact_fit=p.importance_team_impact,
+            program_fit=p.importance_program_fit,
         ),
         filters=UserFilters(**(p.filters or {})),
     )
@@ -262,11 +262,11 @@ async def create_preference_profile(
         weight_gap=body.fit_weights.gap,
         weight_scheme=body.fit_weights.scheme,
         weight_role=body.fit_weights.role_fit,
-        weight_team_impact=body.fit_weights.team_impact_fit,
+        weight_program=body.fit_weights.program_fit,
         importance_scheme_fit=body.importance_weights.scheme_fit,
         importance_role_fit=body.importance_weights.role_fit,
         importance_gap_match=body.importance_weights.gap_match,
-        importance_team_impact=body.importance_weights.team_impact_fit,
+        importance_program_fit=body.importance_weights.program_fit,
         filters=body.filters.model_dump(exclude_none=True),
     )
     db.add(profile)
@@ -322,11 +322,11 @@ async def activate_preference_profile(
     prefs.weight_gap = profile.weight_gap
     prefs.weight_scheme = profile.weight_scheme
     prefs.weight_role = profile.weight_role
-    prefs.weight_team_impact = profile.weight_team_impact
+    prefs.weight_program = profile.weight_program
     prefs.importance_scheme_fit = profile.importance_scheme_fit
     prefs.importance_role_fit = profile.importance_role_fit
     prefs.importance_gap_match = profile.importance_gap_match
-    prefs.importance_team_impact = profile.importance_team_impact
+    prefs.importance_program_fit = profile.importance_program_fit
     prefs.filters = profile.filters
 
     await db.commit()
