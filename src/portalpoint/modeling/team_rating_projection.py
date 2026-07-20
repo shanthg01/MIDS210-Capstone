@@ -1586,6 +1586,40 @@ def load_candidate_context(
     return pt_row.iloc[0], cand_proj
 
 
+def scale_displaced_minutes(
+    displaced_raw: Any,
+    stored_minutes: float,
+    minutes_override: float,
+) -> dict[str, float]:
+    """Scale a stored displaced_minutes payload for a minutes override.
+
+    displaced_minutes (how much build_candidate_roster() removes from
+    returning players) was computed by the batch playing-time run for the
+    *stored* expected_minutes — passing it through unscaled means a 0 MPG
+    override still displaces the original amount, and a higher override only
+    displaces the original amount too (real bug, caught in review). Scaling
+    by the same ratio the override applies to minutes means 0 MPG reproduces
+    the untouched baseline roster and a bigger override displaces
+    proportionally more.
+    """
+    if isinstance(displaced_raw, str):
+        try:
+            displaced_raw = json.loads(displaced_raw)
+        except (json.JSONDecodeError, TypeError):
+            displaced_raw = {}
+    if not isinstance(displaced_raw, dict):
+        displaced_raw = {}
+
+    if stored_minutes > 0:
+        scale = max(0.0, minutes_override) / stored_minutes
+    else:
+        # No baseline displacement to scale from (candidate wasn't projected
+        # any minutes at all) — nothing recorded to proportion against, so
+        # don't fabricate a displacement.
+        scale = 0.0
+    return {k: float(v) * scale for k, v in displaced_raw.items()}
+
+
 def compute_team_rating_override(
     engine: Engine,
     models: TeamRatingModels,
@@ -1666,6 +1700,11 @@ def compute_team_rating_override(
 
     pt_override = pt_row.copy()
     pt_override["expected_minutes"] = float(minutes_override)
+    pt_override["displaced_minutes"] = scale_displaced_minutes(
+        pt_row.get("displaced_minutes"),
+        stored_minutes=float(pt_row.get("expected_minutes", 0.0) or 0.0),
+        minutes_override=float(minutes_override),
+    )
     if usage_override is not None:
         pt_override["expected_usage"] = float(usage_override)
 

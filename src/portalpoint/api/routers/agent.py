@@ -21,7 +21,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 
 from portalpoint.agents.news_monitoring.runner import run as run_news_monitoring_cycle
-from portalpoint.api.deps import CurrentUser, DbSession, RedisClient
+from portalpoint.api.deps import AdminUser, CurrentUser, DbSession, RedisClient
 from portalpoint.api.schemas.agent import (
     AgentRunAccepted,
     AgentRunRequest,
@@ -37,16 +37,29 @@ log = logging.getLogger(__name__)
 _REDIS_KEY_PREFIX = "agent:news_monitoring:run:"
 _REDIS_TTL_SECONDS = 86400  # 24h — long enough to check on an overnight run
 
+# Single-flight lock (PR #64 review — the run endpoint had no protection
+# against overlapping Tavily/Gemini jobs; any authenticated user could fire
+# unlimited concurrent runs). TTL is a crash-recovery ceiling only — a
+# successful run always releases the lock itself in the `finally` below;
+# 30 min comfortably covers a real run and bounds how long a hard crash
+# (process killed mid-run, no `finally` executed) can wedge the lock.
+_LOCK_KEY = "agent:news_monitoring:lock"
+_LOCK_TTL_SECONDS = 1800
+
 
 def _redis_key(run_id: str) -> str:
     return f"{_REDIS_KEY_PREFIX}{run_id}"
 
 
-async def _execute_agent_run(run_id: str, redis: Redis, body: AgentRunRequest) -> None:
+async def _execute_agent_run(run_id: str, redis: Redis, body: AgentRunRequest, started_at: str) -> None:
     """Background task: run the agent cycle in a thread, write status to Redis.
 
     Runs after the request has already returned, so it can't raise back to
     the caller — failures are captured into the Redis record instead.
+    `started_at` is threaded through explicitly (rather than read back from
+    the cycle's own summary) so it's always a real timestamp even when the
+    cycle raises before producing a summary at all — AgentRunStatus.started_at
+    is a required datetime field, and a null there was a real 500 in review.
     """
     kwargs: dict = {"dry_run": body.dry_run, "use_llm_classifier": body.use_llm}
     if body.season is not None:
@@ -60,7 +73,7 @@ async def _execute_agent_run(run_id: str, redis: Redis, body: AgentRunRequest) -
         record = {
             "run_id": run_id,
             "status": status,
-            "started_at": summary.get("run_window_start"),
+            "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "summary": summary,
             "error": None,
@@ -70,11 +83,16 @@ async def _execute_agent_run(run_id: str, redis: Redis, body: AgentRunRequest) -
         record = {
             "run_id": run_id,
             "status": "failed",
-            "started_at": None,
+            "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "summary": None,
             "error": str(exc),
         }
+    finally:
+        try:
+            await redis.delete(_LOCK_KEY)
+        except Exception:
+            log.exception("Failed to release news-monitoring run lock for %s", run_id)
 
     try:
         await redis.set(_redis_key(run_id), json.dumps(record), ex=_REDIS_TTL_SECONDS)
@@ -84,13 +102,21 @@ async def _execute_agent_run(run_id: str, redis: Redis, body: AgentRunRequest) -
 
 @router.post("/news-monitoring/run", response_model=AgentRunAccepted, status_code=202)
 async def start_news_monitoring_run(
-    current_user: CurrentUser,
+    current_user: AdminUser,
     redis: RedisClient,
     background_tasks: BackgroundTasks,
     body: AgentRunRequest = AgentRunRequest(),
 ) -> AgentRunAccepted:
     run_id = str(uuid4())
     now = datetime.now(timezone.utc)
+
+    acquired = await redis.set(_LOCK_KEY, run_id, nx=True, ex=_LOCK_TTL_SECONDS)
+    if not acquired:
+        raise HTTPException(
+            status_code=409,
+            detail="A news-monitoring run is already in progress — wait for it to finish before starting another.",
+        )
+
     initial_record = {
         "run_id": run_id,
         "status": "running",
@@ -100,7 +126,7 @@ async def start_news_monitoring_run(
         "error": None,
     }
     await redis.set(_redis_key(run_id), json.dumps(initial_record), ex=_REDIS_TTL_SECONDS)
-    background_tasks.add_task(_execute_agent_run, run_id, redis, body)
+    background_tasks.add_task(_execute_agent_run, run_id, redis, body, now.isoformat())
     return AgentRunAccepted(run_id=run_id, status="running")
 
 

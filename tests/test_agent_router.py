@@ -11,8 +11,10 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-from portalpoint.api.routers.agent import _execute_agent_run, _redis_key
+from portalpoint.api.routers.agent import _LOCK_KEY, _execute_agent_run, _redis_key
 from portalpoint.api.schemas.agent import AgentRunRequest
+
+_STARTED_AT = "2026-07-19T00:00:00+00:00"
 
 
 def test_redis_key_is_namespaced():
@@ -35,7 +37,9 @@ def test_execute_agent_run_writes_completed_status_on_success():
         return_value=fake_summary,
     ) as mock_run:
         asyncio.run(
-            _execute_agent_run("run-1", redis, AgentRunRequest(season=2027, dry_run=True))
+            _execute_agent_run(
+                "run-1", redis, AgentRunRequest(season=2027, dry_run=True), _STARTED_AT
+            )
         )
 
     mock_run.assert_called_once_with(dry_run=True, use_llm_classifier=True, season=2027)
@@ -46,6 +50,7 @@ def test_execute_agent_run_writes_completed_status_on_success():
     assert record["status"] == "completed"
     assert record["summary"] == fake_summary
     assert record["error"] is None
+    assert record["started_at"] == _STARTED_AT
 
 
 def test_execute_agent_run_writes_failed_status_when_summary_has_errors():
@@ -61,11 +66,12 @@ def test_execute_agent_run_writes_failed_status_when_summary_has_errors():
         "portalpoint.api.routers.agent.run_news_monitoring_cycle",
         return_value=fake_summary,
     ):
-        asyncio.run(_execute_agent_run("run-2", redis, AgentRunRequest()))
+        asyncio.run(_execute_agent_run("run-2", redis, AgentRunRequest(), _STARTED_AT))
 
     record = json.loads(redis.set.await_args.args[1])
     assert record["status"] == "failed"
     assert record["summary"] == fake_summary
+    assert record["started_at"] == _STARTED_AT
 
 
 def test_execute_agent_run_captures_exception_without_raising():
@@ -76,12 +82,15 @@ def test_execute_agent_run_captures_exception_without_raising():
     ):
         # Must not raise — this runs after the HTTP response has already
         # been sent, there's no request left to propagate an error to.
-        asyncio.run(_execute_agent_run("run-3", redis, AgentRunRequest()))
+        asyncio.run(_execute_agent_run("run-3", redis, AgentRunRequest(), _STARTED_AT))
 
     record = json.loads(redis.set.await_args.args[1])
     assert record["status"] == "failed"
     assert record["summary"] is None
     assert "Tavily timed out" in record["error"]
+    # started_at must be the real request-time timestamp, not null — a null
+    # here was a real 500 in review (AgentRunStatus.started_at is required).
+    assert record["started_at"] == _STARTED_AT
 
 
 def test_execute_agent_run_passes_optional_overrides_through():
@@ -94,8 +103,29 @@ def test_execute_agent_run_passes_optional_overrides_through():
             _execute_agent_run(
                 "run-4", redis,
                 AgentRunRequest(season=2026, window_days=3, use_llm=False, dry_run=False),
+                _STARTED_AT,
             )
         )
     mock_run.assert_called_once_with(
         dry_run=False, use_llm_classifier=False, season=2026, window_days=3
     )
+
+
+def test_execute_agent_run_releases_lock_on_success():
+    redis = AsyncMock()
+    with patch(
+        "portalpoint.api.routers.agent.run_news_monitoring_cycle",
+        return_value={"run_window_start": "x", "errors": [], "success": True},
+    ):
+        asyncio.run(_execute_agent_run("run-5", redis, AgentRunRequest(), _STARTED_AT))
+    redis.delete.assert_awaited_once_with(_LOCK_KEY)
+
+
+def test_execute_agent_run_releases_lock_on_exception():
+    redis = AsyncMock()
+    with patch(
+        "portalpoint.api.routers.agent.run_news_monitoring_cycle",
+        side_effect=RuntimeError("boom"),
+    ):
+        asyncio.run(_execute_agent_run("run-6", redis, AgentRunRequest(), _STARTED_AT))
+    redis.delete.assert_awaited_once_with(_LOCK_KEY)

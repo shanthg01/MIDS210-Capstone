@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Box,
   Typography,
@@ -50,11 +50,18 @@ export default function AgentActivityPage() {
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 4000 : false),
   });
 
-  // Once a run finishes, refresh the events feed so new program_events show up.
-  const finished = runQuery.data && runQuery.data.status !== 'running';
-  if (finished) {
-    qc.invalidateQueries({ queryKey: ['agent-events'] });
-  }
+  // Once a run finishes, refresh the events feed so new program_events show
+  // up. Must live in an effect, not the render body — invalidateQueries()
+  // triggers a refetch/re-render, and calling it unconditionally on every
+  // render (as long as `finished` stays true) produced a refetch loop
+  // (caught in review). Keyed on the run id + status transition so it fires
+  // exactly once per completed run, not on every render while finished.
+  const runStatus = runQuery.data?.status;
+  useEffect(() => {
+    if (runId && runStatus && runStatus !== 'running') {
+      qc.invalidateQueries({ queryKey: ['agent-events'] });
+    }
+  }, [runId, runStatus, qc]);
 
   async function handleRunNow() {
     setStartError('');
