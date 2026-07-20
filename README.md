@@ -7,6 +7,14 @@ Data-driven transfer portal scouting platform for college basketball programs. C
 
 ---
 
+## Live Site
+
+**https://d331zwrxbrp79d.cloudfront.net** — production deployment, live as of 2026-07-20. Frontend on
+S3+CloudFront, backend on ECS Fargate, real RDS database. See
+[`docs/road_to_production.md`](docs/road_to_production.md) for the full deployment writeup.
+
+---
+
 ## Current State
 
 | Layer | Status |

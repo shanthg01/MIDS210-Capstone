@@ -4,13 +4,16 @@ Companion to `docs/road_to_production.md`. Concrete commands for each phase, usi
 AWS CLI v2, Docker CLI, and GitHub CLI. Placeholders in `<ANGLE_BRACKETS>` — everything
 else is a real value already confirmed in `docs/status/ARCHITECTURE_STATUS.md`.
 
-**Status (2026-07-20):** Phases 1, 2, and 3 (items 1-2) have been run for real against the live infra
-account — not just planned. See `docs/road_to_production.md`'s per-phase status notes for what's done
-vs. outstanding, and `docs/aws_rds_setup.md` for the finalized teammate-facing SSM tunnel workflow (the
-canonical doc for that — don't duplicate tunnel instructions here, this file stays the one-time
-infra-setup command log). Real near-miss during Phase 3: the ALB target group's health check was
-pointed at `/ready` before that endpoint existed in the app at all — caught before the ECS service went
-live; `src/portalpoint/main.py` now has a real `SELECT 1`-backed `/ready`.
+**Status (2026-07-20):** Phases 1-4 and part of Phase 6 have been run for real against the live infra
+account — not just planned. Phase 5 was explicitly skipped by decision (see `docs/road_to_production.md`).
+See that doc's per-phase status notes for what's done vs. outstanding, and `docs/aws_rds_setup.md` for
+the finalized teammate-facing SSM tunnel workflow (the canonical doc for that — don't duplicate tunnel
+instructions here, this file stays the one-time infra-setup command log). Real near-miss during Phase 3:
+the ALB target group's health check was pointed at `/ready` before that endpoint existed in the app at
+all — caught before the ECS service went live; `src/portalpoint/main.py` now has a real
+`SELECT 1`-backed `/ready`. Real prerequisite found during Phase 4: `npm run build` had never been run
+before (`npm run dev` doesn't invoke `tsc`) — 92 pre-existing TypeScript errors surfaced and were fixed
+before the frontend could be built for deployment at all.
 
 Known values used below:
 - Region: `us-east-1`
@@ -19,7 +22,10 @@ Known values used below:
 - Bastion security group: `sg-06d79bdd59fea641a`
 - Bastion instance ID: `i-0a6e1bafc1cb6f379`
 - RDS endpoint: `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com`
-- S3 bucket: `portalpoint-data`
+- S3 bucket (data/models): `portalpoint-data`
+- S3 bucket (frontend static site): `portalpoint-frontend`
+- CloudFront distribution: `E2HF7HKH8Y1FKD`
+- CloudWatch alarm: `portalpoint-unhealthy-targets` → SNS topic `portalpoint-alerts`
 
 Run these from a shell with `aws configure` already set to an account with sufficient
 IAM permissions (or ask Justin for a deploy-scoped IAM user/role). None of these commands
@@ -400,6 +406,14 @@ aws ecs update-service \
 
 ## Phase 4 — Frontend hosting (S3 + CloudFront)
 
+**Live URL: https://d331zwrxbrp79d.cloudfront.net**
+
+**Status (2026-07-20): done, real distribution live (`E2HF7HKH8Y1FKD`).** Went with the full CLI path
+below (OAC + two-origin distribution config) rather than the console shortcut originally suggested —
+worked fine scripted. Real prerequisite hit first: `npm run build` had never been run before this
+session (`npm run dev` doesn't invoke `tsc`), surfacing 92 pre-existing TypeScript errors that had to be
+fixed before the build would even produce a `dist/` — see the frontend-build-fix commits on `main`.
+
 ### 4a. S3 bucket for the static build
 
 ```bash
@@ -417,19 +431,55 @@ npm run build
 aws s3 sync dist/ s3://portalpoint-frontend --delete
 ```
 
-### 4c. CloudFront distribution — recommend the console for the initial distribution
-(origin-access-control + path-based `/api/*` behavior routing to the ALB is easiest to get
-right interactively). Once created, note the distribution ID for future invalidations:
+### 4c. Origin Access Control + CloudFront distribution
+
+Done via CLI, not the console — see `cloudfront-config.json` and `s3-bucket-policy.json` (both
+gitignored, account-specific) for the full two-origin config: default behavior serves S3
+(`CachingOptimized`), `/api/*` forwards to the ALB (`CachingDisabled` + `AllViewerExceptHostHeader` so
+`Authorization` headers pass through), `CustomErrorResponses` reroute 403/404 → `/index.html` for
+React Router.
+
+```bash
+# 1. OAC
+aws cloudfront create-origin-access-control \
+  --origin-access-control-config Name=portalpoint-oac,SigningProtocol=sigv4,SigningBehavior=always,OriginAccessControlOriginType=s3 \
+  --query 'OriginAccessControl.Id' --output text
+
+# 2. ALB DNS name (second origin)
+aws elbv2 describe-load-balancers --names portalpoint-alb --query 'LoadBalancers[0].DNSName' --output text
+
+# 3. Create the distribution (cloudfront-config.json has both origins + behaviors filled in)
+aws cloudfront create-distribution \
+  --distribution-config file://cloudfront-config.json \
+  --query '{Id:Distribution.Id,ARN:Distribution.ARN,Domain:Distribution.DomainName}'
+
+# 4. Grant that specific distribution read access to the bucket (s3-bucket-policy.json's
+#    Condition scopes to the distribution ARN from step 3 — not a public bucket policy)
+aws s3api put-bucket-policy --bucket portalpoint-frontend --policy file://s3-bucket-policy.json
+
+# 5. Poll until deployed
+aws cloudfront get-distribution --id E2HF7HKH8Y1FKD --query 'Distribution.Status' --output text
+```
+
+Invalidate after every future deploy (CloudFront caches aggressively):
 
 ```bash
 aws cloudfront create-invalidation \
-  --distribution-id <DISTRIBUTION_ID> \
+  --distribution-id E2HF7HKH8Y1FKD \
   --paths "/*"
 ```
+
+**Not done:** no CI step for this — build/sync/invalidate is still a manual 3-command sequence per
+deploy, unlike the backend's `deploy.yml`.
 
 ---
 
 ## Phase 5 — Scheduled jobs (ECS Scheduled Tasks via EventBridge, not GH Actions cron)
+
+**Status (2026-07-20): explicitly skipped by decision — nothing below has been run.** No automated
+freshness need exists yet (manual ingest reruns are fine for now); revisit if a real user needs
+fresher-than-manual data or the news-monitoring agent needs continuous operation during the portal
+window. See `docs/road_to_production.md` Phase 5.
 
 GitHub-hosted runners can't reach the private RDS instance — run scheduled ingest/model
 jobs as ECS tasks on the same image instead.
@@ -466,6 +516,13 @@ aws events put-targets \
 ---
 
 ## Phase 6 — Observability
+
+**Status (2026-07-20): item 6a/6b done (the one alarm this plan called for); everything else in
+`docs/road_to_production.md` Phase 6 (Sentry, Prometheus/Grafana, drift detection) explicitly skipped.**
+`TARGET_GROUP_ARN_SUFFIX`/`ALB_ARN_SUFFIX` are not the full ARNs used elsewhere in this doc — CloudWatch
+dimensions want the ARN suffix (everything after the account ID), e.g.
+`targetgroup/portalpoint-tg/<id>` and `app/portalpoint-alb/<id>`; get them via
+`aws elbv2 describe-target-groups`/`describe-load-balancers` and trim.
 
 ### 6a. CloudWatch alarm on unhealthy target count
 

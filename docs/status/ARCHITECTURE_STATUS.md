@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** July 20, 2026 (backend now live on ECS Fargate behind an ALB, real `/ready` DB health check added; bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely; see Database and Deployment Stance sections). Previously: July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS).
+**Last updated:** July 20, 2026 (frontend now live on S3+CloudFront; CloudWatch alarm on ALB unhealthy targets added; scheduled jobs explicitly deferred by decision — see Deployment Stance). Same-day, earlier: backend live on ECS Fargate behind an ALB, real `/ready` DB health check added; bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely. Previously: July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS).
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -10,18 +10,19 @@ Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/AP
 
 ## Deployment Stance
 
-PortalPoint moved off "local-first" for the backend on 2026-07-20 — API now runs in production on ECS Fargate. Frontend hosting and scheduled jobs remain local-first/manual.
+PortalPoint moved off "local-first" for both backend and frontend on 2026-07-20 — the API runs on ECS Fargate and the frontend is served from S3+CloudFront. Scheduled jobs remain manual, by explicit decision, not oversight.
 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
 | App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
 | Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
 | API | **ECS Fargate** (`portalpoint-prod` cluster, `portalpoint-backend` service, behind an ALB) — deployed 2026-07-20, image built from the repo-root `Dockerfile`, deployed via GitHub Actions OIDC on merge to `main` | ✅ Done |
+| Frontend | **Live: https://d331zwrxbrp79d.cloudfront.net** — S3 (`portalpoint-frontend`) + CloudFront (`E2HF7HKH8Y1FKD`), deployed 2026-07-20; bucket has no public access, read-only via Origin Access Control scoped to this distribution's ARN; `/api/*` routed to the ALB at the CDN layer, so the SPA still calls relative `/api/*` paths, no separate API base URL needed. Deploy is manual (`npm run build` → `aws s3 sync` → `aws cloudfront create-invalidation`), no CI step yet | ✅ Done (deploy automation not done) |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
 | MLflow tracking metadata | Local `mlruns.db` SQLite | Could move to hosted DB or MLflow server later |
 | MLflow artifacts | Local/S3 depending script/notebook setup | `s3://portalpoint-data/mlflow/` |
 
-ECS/Fargate backend deployment landed ahead of beta (`docs/production_db_connectivity_plan.md`, `docs/road_to_production.md` Phase 3) — not yet autoscaled (fixed task count) and CORS still points at local dev origins pending frontend hosting (Phase 4). GitHub Actions cron is still preferred over Airflow for scheduled ingest/model jobs; neither is wired up yet.
+ECS/Fargate backend and S3+CloudFront frontend deployment both landed ahead of beta (`docs/production_db_connectivity_plan.md`, `docs/road_to_production.md` Phases 3-4) — backend not yet autoscaled (fixed task count) and CORS still points at local dev origins (frontend is live, but the CORS finalization sub-item wasn't revisited). One CloudWatch alarm exists (`portalpoint-unhealthy-targets` on ALB `UnHealthyHostCount` → SNS `portalpoint-alerts`) — the rest of observability (Sentry, Prometheus/Grafana, drift detection) is explicitly deferred. Scheduled jobs (GitHub Actions cron vs. Airflow) remain unimplemented by explicit decision — no automated freshness need exists yet; see `docs/road_to_production.md` Phase 5 for the revisit conditions.
 
 ---
 

@@ -77,3 +77,5 @@ ecs-trust-policy.json
 secrets-read-policy.json
 s3-access-policy.json
 task-def.json
+cloudfront-config.json
+s3-bucket-policy.json
