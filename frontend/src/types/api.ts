@@ -326,6 +326,55 @@ export interface TeamRatingProjectionResponse {
   model_version: string;
 }
 
+// ── Minutes overrides ("what if" scenarios, issue #61) ─────────────────────────
+
+export interface PlayingTimeOverrideRequest {
+  school_id: number;
+  season?: number;
+  minutes_override: number;
+  usage_override?: number;
+}
+
+export interface PlayingTimeOverrideResponse {
+  player_id: string;
+  school_id: number;
+  season: number;
+  stored_expected_minutes: number;
+  stored_role_fit: number;
+  override_expected_minutes: number;
+  override_role_fit: number;
+  model_version: string;
+}
+
+export interface TeamRatingOverrideRequest {
+  // string, not number — player_id is a 63-bit hash; sending it as a numeric
+  // string lets FastAPI's Pydantic int coercion parse it without JS's 53-bit
+  // safe-integer loss (same convention as CompareRequest.player_ids).
+  player_id: string;
+  school_id: number;
+  season: number;
+  prior_season?: number;
+  minutes_override: number;
+  usage_override?: number;
+}
+
+export interface TeamRatingOverrideResponse {
+  player_id: string;
+  school_id: number;
+  season: number;
+  minutes_override: number;
+  baseline_adj_o: number;
+  baseline_adj_d: number;
+  baseline_adj_em: number;
+  projected_adj_o: number;
+  projected_adj_d: number;
+  projected_adj_em: number;
+  delta_adj_o: number;
+  delta_adj_d: number;
+  delta_adj_em: number;
+  confidence_interval: [number, number];
+}
+
 // ── Predictions ───────────────────────────────────────────────────────────────
 // Transfer Success (Model 5, transfer-success-eb-v1) — empirical-Bayes shrinkage
 // over (player_cluster x team system) cells, not a tree model — no SHAP/per-game
@@ -414,6 +463,10 @@ export interface RecommendationItem {
   components: FitComponents;
   reasoning: string;
   is_portal_candidate: boolean;
+  // Destination-mode player_projections — null when no row exists yet for this pair.
+  value_per_100: number | null;
+  projected_minutes: number | null;
+  projected_usage: number | null;
 }
 
 export interface RecommendationsResponse {

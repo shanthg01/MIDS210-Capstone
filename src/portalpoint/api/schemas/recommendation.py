@@ -23,6 +23,11 @@ class RecommendationItem(BaseModel):
     components: FitComponents
     reasoning: str  # 1-2 sentence explanation generated from dominant fit factors
     is_portal_candidate: bool  # always true today — CANDIDATE_SQL already filters on it
+    # Destination-mode player_projections (issue #61 dashboard ask) — None
+    # when no destination row exists yet for this pair, not a stub value.
+    value_per_100: float | None = None
+    projected_minutes: float | None = None
+    projected_usage: float | None = None
 
 
 class RecommendationsResponse(BaseModel):

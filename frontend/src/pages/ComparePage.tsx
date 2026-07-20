@@ -17,6 +17,7 @@ import {
   Checkbox,
   FormControlLabel,
   Divider,
+  Tooltip,
 } from '@mui/material';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -29,6 +30,7 @@ import { scoreColor, DataStatusChip } from '../components/FitScoreBar';
 import DefinitionTooltip from '../components/DefinitionTooltip';
 import { FIT_COMPONENTS, OVERALL_FIT } from '../constants/definitions';
 import { buildVerdict } from '../utils/compareInsights';
+import DivergingBar from '../components/DivergingBar';
 import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
@@ -43,12 +45,24 @@ const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'program_fit', label: 'Program Fit' },
 ];
 
-function maxNameInRow(row: Record<string, number>): string {
-  return Object.entries(row).reduce(
-    (best, [name, val]) => (val > row[best] ? name : best),
-    Object.keys(row)[0] ?? '',
-  );
-}
+// Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
+// convention as FitScorePage's own GAP_FEATURE_LABELS/SettingsPage's STAT_LABELS.
+const GAP_FEATURE_LABELS: Record<string, string> = {
+  usage_rate: 'Usage Rate',
+  true_shooting_pct: 'True Shooting %',
+  assist_rate: 'Assist Rate',
+  tov_pct_inverse: 'Turnover Avoidance',
+  off_reb_pct: 'Off. Rebound %',
+  def_reb_pct: 'Def. Rebound %',
+  block_pct: 'Block %',
+  steal_pct: 'Steal %',
+  free_throw_rate: 'Free Throw Rate',
+  three_point_rate: '3PT Rate',
+  rim_rate: 'Rim Rate',
+  mid_range_rate: 'Mid-Range Rate',
+  fg3_pct: '3PT %',
+  rim_pct: 'Rim %',
+};
 
 // ── Comparison results ────────────────────────────────────────────────────────
 
@@ -118,10 +132,9 @@ function ComparisonResults({
             <TableBody>
               {METRICS.map(({ key, label }) => {
                 const row = result.comparison_matrix[key];
-                const bestName = maxNameInRow(row);
                 return (
                   <TableRow key={key} hover>
-                    <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
+                    <TableCell sx={{ color: 'text.secondary', fontWeight: 500, verticalAlign: 'top', pt: 1.5 }}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <DefinitionTooltip
                           title={key === 'overall_fit' ? OVERALL_FIT.short : FIT_COMPONENTS[key as keyof typeof FIT_COMPONENTS]?.short ?? ''}
@@ -131,49 +144,69 @@ function ComparisonResults({
                         {key !== 'overall_fit' && <DataStatusChip component={key} />}
                       </Box>
                     </TableCell>
-                    {entries.map((e) => {
-                      const val = row[e.player.full_name] ?? 0;
-                      const isBest = e.player.full_name === bestName;
-                      const color = scoreColor(val);
-                      return (
-                        <TableCell key={e.player.player_id} align="center">
-                          <Typography
-                            variant="h6"
-                            fontWeight={isBest ? 800 : 500}
-                            color={isBest ? `${color}.main` : 'text.primary'}
-                            sx={isBest ? { textDecoration: 'underline dotted' } : {}}
-                          >
-                            {val.toFixed(0)}
-                          </Typography>
-                        </TableCell>
-                      );
-                    })}
+                    <TableCell colSpan={entries.length}>
+                      <DivergingBar
+                        entries={entries.map((e) => ({
+                          id: e.player.player_id,
+                          label: e.player.full_name.split(' ').pop() ?? e.player.full_name,
+                          value: row[e.player.full_name] ?? 0,
+                        }))}
+                      />
+                      {/* Why gap match differs — top_gap_features per player (issue #61) */}
+                      {key === 'gap_match' && (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 1 }}>
+                          {entries.map((e) => {
+                            const feats = e.fit_score.breakdown.gap.top_gap_features;
+                            if (feats.length === 0) return null;
+                            return (
+                              <Box key={e.player.player_id} sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ width: 88, flexShrink: 0, textAlign: 'right' }}>
+                                  {e.player.full_name.split(' ').pop()} fills:
+                                </Typography>
+                                {feats.slice(0, 3).map((f) => (
+                                  <Chip
+                                    key={f.feature}
+                                    size="small"
+                                    variant="outlined"
+                                    color="success"
+                                    label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
+                                  />
+                                ))}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      )}
+                    </TableCell>
                   </TableRow>
                 );
               })}
 
               {/* Transfer Success row */}
               <TableRow hover>
-                <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
+                <TableCell sx={{ color: 'text.secondary', fontWeight: 500, verticalAlign: 'top', pt: 1.5 }}>
                   Transfer Success
                 </TableCell>
-                {entries.map((e) => (
-                  <TableCell key={e.player.player_id} align="center" title={e.prediction.explanation}>
-                    <Typography
-                      variant="body2"
-                      fontWeight={600}
-                      color={`${scoreColor(e.prediction.success_probability * 100)}.main`}
-                    >
-                      {(e.prediction.success_probability * 100).toFixed(0)}%
-                    </Typography>
-                    <Chip
-                      label={e.prediction.success_tier}
-                      size="small"
-                      variant="outlined"
-                      sx={{ mt: 0.25 }}
-                    />
-                  </TableCell>
-                ))}
+                <TableCell colSpan={entries.length}>
+                  <DivergingBar
+                    entries={entries.map((e) => ({
+                      id: e.player.player_id,
+                      label: e.player.full_name.split(' ').pop() ?? e.player.full_name,
+                      value: e.prediction.success_probability * 100,
+                    }))}
+                  />
+                  <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', mt: 0.75 }}>
+                    {entries.map((e) => (
+                      <Tooltip key={e.player.player_id} title={e.prediction.explanation}>
+                        <Chip
+                          label={`${e.player.full_name.split(' ').pop()}: ${e.prediction.success_tier}`}
+                          size="small"
+                          variant="outlined"
+                        />
+                      </Tooltip>
+                    ))}
+                  </Box>
+                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
