@@ -4,11 +4,13 @@ Companion to `docs/road_to_production.md`. Concrete commands for each phase, usi
 AWS CLI v2, Docker CLI, and GitHub CLI. Placeholders in `<ANGLE_BRACKETS>` — everything
 else is a real value already confirmed in `docs/status/ARCHITECTURE_STATUS.md`.
 
-**Status (2026-07-20):** Phase 1 (1a-1f) and most of Phase 2 (2a-2d) have been run for real against
-the live infra account — not just planned. See `docs/road_to_production.md`'s Phase 1/2 status notes
-for what's done vs. outstanding, and `docs/aws_rds_setup.md` for the finalized teammate-facing SSM
-tunnel workflow (the canonical doc for that — don't duplicate tunnel instructions here, this file
-stays the one-time infra-setup command log).
+**Status (2026-07-20):** Phases 1, 2, and 3 (items 1-2) have been run for real against the live infra
+account — not just planned. See `docs/road_to_production.md`'s per-phase status notes for what's done
+vs. outstanding, and `docs/aws_rds_setup.md` for the finalized teammate-facing SSM tunnel workflow (the
+canonical doc for that — don't duplicate tunnel instructions here, this file stays the one-time
+infra-setup command log). Real near-miss during Phase 3: the ALB target group's health check was
+pointed at `/ready` before that endpoint existed in the app at all — caught before the ECS service went
+live; `src/portalpoint/main.py` now has a real `SELECT 1`-backed `/ready`.
 
 Known values used below:
 - Region: `us-east-1`

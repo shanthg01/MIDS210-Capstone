@@ -17,7 +17,7 @@ containers), `docker-compose.yml` (no app Dockerfile yet, local-db profile only)
 | Layer | State |
 |---|---|
 | DB | Shared AWS RDS Postgres 15, VPC-internal, reached from dev laptops via AWS SSM Session Manager port-forwarding (migrated off the SSH bastion tunnel 2026-07-20 — SSH port 22 closed entirely) |
-| Backend | FastAPI via `uvicorn --reload` locally; `Dockerfile` now exists and builds/runs correctly, but no ECS service deployed yet |
+| Backend | Live on ECS Fargate behind an ALB (`portalpoint-prod` cluster, `portalpoint-backend` service) — health-checked on a real DB-aware `/ready`, not `/health`. No autoscaling policy yet; CORS still pointed at local dev origins pending Phase 4 |
 | Frontend | React/Vite, local-only (`npm run dev`), never deployed anywhere |
 | Secrets | `DATABASE_URL`/`JWT_SECRET` now in AWS Secrets Manager; Tavily/Gemini keys still deferred (pending news-monitoring PR merge) |
 | CI | GitHub Actions `pull_request` pytest gate exists; `deploy.yml` added (builds/pushes to ECR via OIDC on merge to `main`) — ECS deploy step intentionally commented out until Phase 3 |
@@ -77,11 +77,12 @@ This is `docs/production_db_connectivity_plan.md` verbatim, placed in context: i
 VPC and secrets decisions, and it's a prerequisite for Phase 3 (backend can't run in ECS talking
 directly to RDS until the SG/subnet work here is done).
 
-**Status (2026-07-20):** items 2 (SG scoping), 5 (Multi-AZ), and 6 (bastion break-glass only, SSH
-closed) are done. Item 3 (secrets) partially done — see Phase 1. Items 1 (ECS Fargate, no tunnel in
-the request path) and 4 (`/ready` endpoint) are not started; that's Phase 3's job. Real finding along
-the way: the bastion's SSH port was open to `0.0.0.0/0` — the whole internet, not just per-teammate —
-closed as part of item 6, not merely narrowed.
+**Status (2026-07-20): all 6 items done.** Items 2 (SG scoping), 5 (Multi-AZ), and 6 (bastion
+break-glass only, SSH closed) landed first. Item 3 (secrets) done for `DATABASE_URL`/`JWT_SECRET`;
+Tavily/Gemini deferred (see Phase 1). Items 1 (ECS Fargate, no tunnel in the request path) and 4
+(`/ready`) landed with Phase 3 — see that section for a real near-miss caught before this could be
+called done. Real finding along the way: the bastion's SSH port was open to `0.0.0.0/0` — the whole
+internet, not just per-teammate — closed as part of item 6, not merely narrowed.
 
 1. ECS Fargate tasks in the same VPC/private subnets as RDS — no bastion in the request path.
 2. RDS security group scoped to the ECS task SG only (not `0.0.0.0/0`, not full VPC CIDR).
@@ -100,11 +101,23 @@ semantics, CloudWatch alarm routing) are Phase 1/6 dependencies — resolve ther
 
 ## Phase 3 — Backend hosting
 
-1. ECS Fargate service behind an ALB, task definition pulling the Phase 1 image from ECR.
-2. Target group health check → `/ready` (Phase 2 item 4).
+**Status (2026-07-20): items 1-2 done, with a real near-miss caught before calling it complete.**
+The target group's health check was pointed at `/ready` per the plan — but `/ready` had never
+actually been built despite being flagged as the direct fix for the original incident since
+`docs/production_db_connectivity_plan.md` was written. If the ECS service had gone live without
+catching this, every task would have failed health checks (404) and cycled indefinitely. Added a real
+`SELECT 1`-backed `/ready` to `main.py`, rebuilt/pushed the image, force-redeployed. `deploy.yml`'s
+ECS `update-service` step is now uncommented (was deliberately deferred in Phase 1 until the cluster/
+service existed). Items 3 (autoscaling) and 4 (CORS finalization) not started — item 4 is genuinely
+blocked on Phase 4's frontend URL; item 3 is just not done yet.
+
+1. ✅ ECS Fargate service behind an ALB, task definition pulling the Phase 1 image from ECR.
+2. ✅ Target group health check → `/ready` (Phase 2 item 4) — real endpoint now exists, not just
+   configured as a health-check path.
 3. Autoscaling policy — even a minimal one (CPU-based, min=1/max=2) beats a single uvicorn process
-   with no restart-on-crash behavior beyond ECS's own task replacement.
+   with no restart-on-crash behavior beyond ECS's own task replacement. Not started.
 4. CORS/allowed-origins config needs the Phase 4 frontend URL decided before this can be finalized.
+   Not started.
 
 ---
 

@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** July 20, 2026 (bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely; see Database section)
+**Last updated:** July 20, 2026 (backend now live on ECS Fargate behind an ALB, real `/ready` DB health check added; bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely; see Database and Deployment Stance sections)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -10,18 +10,18 @@ Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/AP
 
 ## Deployment Stance
 
-PortalPoint is local-first until beta.
+PortalPoint moved off "local-first" for the backend on 2026-07-20 — API now runs in production on ECS Fargate. Frontend hosting and scheduled jobs remain local-first/manual.
 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
 | App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
 | Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
-| API | Local FastAPI via `uvicorn` | EC2/ECS deferred |
+| API | **ECS Fargate** (`portalpoint-prod` cluster, `portalpoint-backend` service, behind an ALB) — deployed 2026-07-20, image built from the repo-root `Dockerfile`, deployed via GitHub Actions OIDC on merge to `main` | ✅ Done |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
 | MLflow tracking metadata | Local `mlruns.db` SQLite | Could move to hosted DB or MLflow server later |
 | MLflow artifacts | Local/S3 depending script/notebook setup | `s3://portalpoint-data/mlflow/` |
 
-No EC2/ECS container deployment is planned before beta. GitHub Actions cron is preferred before Airflow; Airflow remains a later option if orchestration complexity justifies it.
+ECS/Fargate backend deployment landed ahead of beta (`docs/production_db_connectivity_plan.md`, `docs/road_to_production.md` Phase 3) — not yet autoscaled (fixed task count) and CORS still points at local dev origins pending frontend hosting (Phase 4). GitHub Actions cron is still preferred over Airflow for scheduled ingest/model jobs; neither is wired up yet.
 
 ---
 

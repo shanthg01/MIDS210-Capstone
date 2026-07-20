@@ -47,10 +47,9 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      # TODO (Phase 3, once the ECS cluster/service exist):
-      # - name: Force new ECS deployment
-      #   run: |
-      #     aws ecs update-service \
-      #       --cluster portalpoint-prod \
-      #       --service portalpoint-backend \
-      #       --force-new-deployment
+      - name: Force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster portalpoint-prod \
+            --service portalpoint-backend \
+            --force-new-deployment
