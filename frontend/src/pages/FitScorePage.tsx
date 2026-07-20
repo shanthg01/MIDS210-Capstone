@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Box,
   Typography,
@@ -10,13 +11,19 @@ import {
   Breadcrumbs,
   Link,
   Tooltip,
+  Slider,
+  CircularProgress,
 } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
-import { getPlayer, getPlayerProjection } from '../api/players';
-import type { TeamRatingProjectionResponse } from '../types/api';
+import { getFitScore, getTeamRatingProjection, overrideTeamRating } from '../api/fitScores';
+import { getPlayer, getPlayerProjection, overridePlayingTime } from '../api/players';
+import type {
+  PlayingTimeOverrideResponse,
+  TeamRatingOverrideResponse,
+  TeamRatingProjectionResponse,
+} from '../types/api';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
@@ -423,6 +430,126 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
   );
 }
 
+// ── Minutes override ("what if this player got more/fewer minutes?", issue #61) ──
+
+function MinutesOverridePanel({
+  playerId,
+  schoolId,
+  storedMinutes,
+  teamRatingSeason,
+}: {
+  playerId: string;
+  schoolId: number;
+  storedMinutes: number;
+  teamRatingSeason: number | null;
+}) {
+  const [minutes, setMinutes] = useState(storedMinutes);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [roleResult, setRoleResult] = useState<PlayingTimeOverrideResponse | null>(null);
+  const [ratingResult, setRatingResult] = useState<TeamRatingOverrideResponse | null>(null);
+
+  async function runOverride(value: number) {
+    setPending(true);
+    setError('');
+    try {
+      const [role, rating] = await Promise.all([
+        overridePlayingTime(playerId, { school_id: schoolId, minutes_override: value }),
+        teamRatingSeason !== null
+          ? overrideTeamRating({
+              player_id: playerId,
+              school_id: schoolId,
+              season: teamRatingSeason,
+              minutes_override: value,
+            })
+          : Promise.resolve(null),
+      ]);
+      setRoleResult(role);
+      setRatingResult(rating);
+    } catch {
+      setError('Could not compute this scenario — no scored projection for this pair yet.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const roleDelta = roleResult ? roleResult.override_role_fit - roleResult.stored_role_fit : null;
+
+  return (
+    <SectionPaper>
+      <Typography variant="h6" fontWeight={700} gutterBottom>
+        What if minutes changed?
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 3 }}>
+        Drag to see how Role Fit and Team Rating impact change under a different minutes projection.
+        This doesn't change the stored scores — it's a live scenario check.
+      </Typography>
+
+      <Box sx={{ px: 1.5, mb: 1 }}>
+        <Slider
+          value={minutes}
+          min={0}
+          max={40}
+          step={1}
+          marks={[
+            { value: 0, label: '0' },
+            { value: 20, label: '20' },
+            { value: 40, label: '40' },
+          ]}
+          valueLabelDisplay="on"
+          valueLabelFormat={(v) => `${v} MPG`}
+          onChange={(_, v) => setMinutes(v as number)}
+          onChangeCommitted={(_, v) => runOverride(v as number)}
+          disabled={pending}
+        />
+      </Box>
+
+      {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
+
+      {pending && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+          <CircularProgress size={16} />
+          <Typography variant="caption" color="text.secondary">Recomputing…</Typography>
+        </Box>
+      )}
+
+      {!pending && (roleResult || ratingResult) && (
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 2, mt: 2 }}>
+          {roleResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Role Fit at {minutes} MPG
+              </Typography>
+              <Typography variant="h6" fontWeight={700} color={`${scoreColor(roleResult.override_role_fit)}.main`}>
+                {roleResult.override_role_fit.toFixed(0)}
+                {roleDelta !== null && (
+                  <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    ({roleDelta >= 0 ? '+' : ''}{roleDelta.toFixed(1)} vs. stored {roleResult.stored_role_fit.toFixed(0)})
+                  </Typography>
+                )}
+              </Typography>
+            </Box>
+          )}
+          {ratingResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Team AdjEM Impact at {minutes} MPG
+              </Typography>
+              <Typography
+                variant="h6"
+                fontWeight={700}
+                color={ratingResult.delta_adj_em >= 0 ? 'success.main' : 'error.main'}
+              >
+                {ratingResult.delta_adj_em >= 0 ? '+' : ''}{ratingResult.delta_adj_em.toFixed(1)} AdjEM
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      )}
+    </SectionPaper>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function FitScorePage() {
@@ -693,6 +820,13 @@ export default function FitScorePage() {
           </Tooltip>
         </Box>
       </SectionPaper>
+
+      <MinutesOverridePanel
+        playerId={playerId}
+        schoolId={schoolId!}
+        storedMinutes={fit.breakdown.role_fit.projected_minutes}
+        teamRatingSeason={proj?.season ?? null}
+      />
 
       {/* Gap Match breakdown */}
       <SectionPaper>

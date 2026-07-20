@@ -35,6 +35,7 @@ from portalpoint.modeling.team_rating_projection import (
     build_confidence_interval,
     fit_team_translation,
     rolling_origin_cv,
+    scale_displaced_minutes,
     upsert_team_rating_projections,
     TeamRatingModels,
 )
@@ -621,3 +622,57 @@ def test_analytical_ci_widens_with_freshman_priors():
     base_var = 2.0 * (2.0 ** 2 + 3.0 ** 2)
     expected_width2 = 2 * 1.2816 * np.sqrt(base_var + extra_var)
     assert width2 == pytest.approx(expected_width2, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# scale_displaced_minutes (minutes-override PR review fix)
+# ---------------------------------------------------------------------------
+
+def test_scale_displaced_minutes_zero_override_reproduces_baseline():
+    # 0 MPG override must remove nothing from the returning roster — passing
+    # the stored displaced_minutes through unscaled was the reviewed bug.
+    result = scale_displaced_minutes(
+        {"replacement_slot": 10.0, "same_position_depth": 4.0, "flexible_bench": 2.0},
+        stored_minutes=20.0,
+        minutes_override=0.0,
+    )
+    assert result == {"replacement_slot": 0.0, "same_position_depth": 0.0, "flexible_bench": 0.0}
+
+
+def test_scale_displaced_minutes_scales_proportionally():
+    result = scale_displaced_minutes(
+        {"replacement_slot": 10.0, "flexible_bench": 4.0},
+        stored_minutes=20.0,
+        minutes_override=40.0,  # 2x the stored minutes
+    )
+    assert result == {"replacement_slot": 20.0, "flexible_bench": 8.0}
+
+
+def test_scale_displaced_minutes_unchanged_at_stored_value():
+    # No-op override (minutes_override == stored_minutes) must be a no-op on
+    # displacement too — regression guard against the fix changing behavior
+    # for calls that aren't actually overriding anything.
+    raw = {"replacement_slot": 10.0, "same_position_depth": 3.0}
+    result = scale_displaced_minutes(raw, stored_minutes=15.0, minutes_override=15.0)
+    assert result == pytest.approx(raw)
+
+
+def test_scale_displaced_minutes_handles_zero_stored_minutes():
+    # No baseline displacement to scale from — must not divide by zero or
+    # fabricate a displacement out of nothing.
+    result = scale_displaced_minutes(
+        {"replacement_slot": 5.0}, stored_minutes=0.0, minutes_override=20.0
+    )
+    assert result == {"replacement_slot": 0.0}
+
+
+def test_scale_displaced_minutes_parses_json_string():
+    result = scale_displaced_minutes(
+        '{"replacement_slot": 10.0}', stored_minutes=10.0, minutes_override=5.0
+    )
+    assert result == {"replacement_slot": 5.0}
+
+
+def test_scale_displaced_minutes_handles_missing_or_malformed_input():
+    assert scale_displaced_minutes(None, stored_minutes=10.0, minutes_override=5.0) == {}
+    assert scale_displaced_minutes("not json", stored_minutes=10.0, minutes_override=5.0) == {}

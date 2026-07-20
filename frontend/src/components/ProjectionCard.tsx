@@ -58,6 +58,18 @@ function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
 
+function ordinal(n: number): string {
+  const rounded = Math.round(n);
+  const mod100 = rounded % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${rounded}th`;
+  switch (rounded % 10) {
+    case 1: return `${rounded}st`;
+    case 2: return `${rounded}nd`;
+    case 3: return `${rounded}rd`;
+    default: return `${rounded}th`;
+  }
+}
+
 interface ValueDriver {
   feature: string;
   component: string;
@@ -65,8 +77,10 @@ interface ValueDriver {
 }
 
 export default function ProjectionCard({ projection }: { projection: PlayerProjectionResponse }) {
-  const { value_per_100, value_ci_lower, value_ci_upper, projected_box_score, skill_percentiles, explanation } =
-    projection;
+  const {
+    value_per_100, value_ci_lower, value_ci_upper, projected_box_score,
+    skill_states, skill_percentiles, explanation,
+  } = projection;
   const isDestination = projection.projection_mode === 'destination';
 
   const valueDrivers = explanation?.value_drivers as
@@ -153,26 +167,30 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
           </AccordionSummary>
           <AccordionDetails>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-              {Object.entries(skill_percentiles).map(([key, pct]) => (
-                <Box key={key}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                    <DefinitionTooltip title={SKILLS[key]?.short ?? ''} placement="top">
-                      <Typography variant="caption" color="text.secondary">
-                        {SKILL_LABELS[key] ?? key}
+              {Object.entries(skill_percentiles).map(([key, pct]) => {
+                const stateVal = skill_states?.[key];
+                return (
+                  <Box key={key}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                      <DefinitionTooltip title={SKILLS[key]?.short ?? ''} placement="top">
+                        <Typography variant="caption" color="text.secondary">
+                          {SKILL_LABELS[key] ?? key}
+                        </Typography>
+                      </DefinitionTooltip>
+                      <Typography variant="caption" fontWeight={700}>
+                        {stateVal !== undefined ? `${fmt(stateVal, 3)} · ` : ''}
+                        {ordinal(pct)}
                       </Typography>
-                    </DefinitionTooltip>
-                    <Typography variant="caption" fontWeight={700}>
-                      {Math.round(pct)}
-                    </Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={pct}
+                      color={scoreColor(pct)}
+                      sx={{ height: 6, borderRadius: 1 }}
+                    />
                   </Box>
-                  <LinearProgress
-                    variant="determinate"
-                    value={pct}
-                    color={scoreColor(pct)}
-                    sx={{ height: 6, borderRadius: 1 }}
-                  />
-                </Box>
-              ))}
+                );
+              })}
             </Box>
           </AccordionDetails>
         </Accordion>

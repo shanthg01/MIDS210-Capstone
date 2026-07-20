@@ -25,6 +25,34 @@ class RosterImpactResponse(BaseModel):
     total: int
 
 
+class TeamRatingOverrideRequest(BaseModel):
+    player_id: int
+    school_id: int
+    season: int = Field(default=2027, description="Target season (must have a scored playing_time_projections row).")
+    prior_season: int | None = Field(
+        default=None, description="Source/baseline season. Defaults to season - 1."
+    )
+    minutes_override: float = Field(..., ge=0.0, le=40.0)
+    usage_override: float | None = Field(default=None, ge=0.0, le=100.0)
+
+
+class TeamRatingOverrideResponse(BaseModel):
+    player_id: str
+    school_id: int
+    season: int
+    minutes_override: float
+    baseline_adj_o: float
+    baseline_adj_d: float
+    baseline_adj_em: float
+    projected_adj_o: float
+    projected_adj_d: float
+    projected_adj_em: float
+    delta_adj_o: float
+    delta_adj_d: float
+    delta_adj_em: float
+    confidence_interval: tuple[float, float]
+
+
 class TeamRatingProjectionResponse(BaseModel):
     player_id: str          # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int

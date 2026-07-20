@@ -1304,6 +1304,10 @@ class User(Base):
     school_id: Mapped[Optional[int]] = mapped_column(ForeignKey("schools.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # First admin/role flag in this codebase (PR #64 review) — gates the
+    # news-monitoring agent run endpoint. No self-service promotion; set
+    # directly in the DB for whoever operates the agent.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

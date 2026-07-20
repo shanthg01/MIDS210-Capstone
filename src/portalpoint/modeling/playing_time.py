@@ -2206,6 +2206,41 @@ def compute_role_fit_score(row: pd.Series) -> float:
     return float(compute_role_fit_scores(pd.DataFrame([row]))[0])
 
 
+def compute_role_fit_override(
+    stored_row: dict,
+    minutes_override: float,
+    usage_override: float | None = None,
+) -> float:
+    """Marginal role_fit for a coach-supplied minutes/usage override.
+
+    `roster_player_count`/`roster_open_minutes` (crowding + opportunity terms
+    in compute_role_fit_scores) aren't persisted on playing_time_projections —
+    only the final role_fit is. Rather than guess at them (which would bias
+    the result), compute the formula twice — once at the row's real
+    expected_minutes/expected_usage, once at the override — holding every
+    other input (including the two missing ones, whatever they default to)
+    fixed between the two calls. Those terms cancel exactly in the difference,
+    so the delta only reflects the real marginal effect of the minutes/usage
+    change on minutes_score/usage_score (role_path_score and the two
+    penalties are unaffected by a minutes-only override, since they come
+    from the already-fitted rotation/starter probability classifiers, which
+    this doesn't re-run).
+
+    Returns the adjusted role_fit (0-100), anchored to stored_row["role_fit"].
+    """
+    baseline = dict(stored_row)
+    overridden = dict(stored_row)
+    overridden["expected_minutes"] = float(minutes_override)
+    if usage_override is not None:
+        overridden["expected_usage"] = float(usage_override)
+
+    before = compute_role_fit_score(pd.Series(baseline))
+    after = compute_role_fit_score(pd.Series(overridden))
+
+    stored_role_fit = float(stored_row.get("role_fit", before))
+    return float(np.clip(stored_role_fit + (after - before), 0.0, 100.0))
+
+
 def build_playing_time_records(
     scored_df: pd.DataFrame,
     *,

@@ -272,10 +272,25 @@ def shrink_skills(
     return out
 
 
-def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list[str] = RAW_RATE_SKILLS) -> pd.DataFrame:
-    """Within-season percentile rank (0-100) per shrunk skill. Percentile
+def skill_percentiles(
+    df: pd.DataFrame,
+    season_col: str = "season",
+    skills: list[str] = RAW_RATE_SKILLS,
+    position_col: str | None = None,
+) -> pd.DataFrame:
+    """Percentile rank (0-100) per shrunk skill, within season (default) or
+    within season x position when `position_col` is given. Percentile
     direction is flipped for turnover_avoidance (and any other
     `INVERTED_SKILLS` member) so 100 always means "better".
+
+    `position_col` defaults to None (season-only, original behavior) for
+    backward compatibility with every existing caller/stored row — issue #61
+    asked for position-scoped percentiles ("relative to which position?"),
+    but that's an opt-in the caller must request explicitly, not a silent
+    default change to already-written `player_projections` rows. When given,
+    rows with an unmapped position (`he.pos_class` is nullable) fall back to
+    the season-only percentile, same fallback convention `_skill_prior` uses
+    for the shrinkage prior itself.
 
     `skills` defaults to the Shrinkage Baseline's `RAW_RATE_SKILLS` (10) for
     backward compatibility, but the Cross-Season state frame has 11 (master
@@ -289,7 +304,13 @@ def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list
     `pctile_foul_discipline`)."""
     out = df.copy()
     for skill in skills:
-        pct = df.groupby(season_col)[f"skill_{skill}"].rank(pct=True) * 100
+        col = f"skill_{skill}"
+        season_pct = df.groupby(season_col)[col].rank(pct=True) * 100
+        if position_col is not None:
+            pct = df.groupby([season_col, position_col])[col].rank(pct=True) * 100
+            pct = pct.fillna(season_pct)
+        else:
+            pct = season_pct
         if skill in INVERTED_SKILLS:
             pct = 100 - pct
         out[f"pctile_{skill}"] = pct.round(1)

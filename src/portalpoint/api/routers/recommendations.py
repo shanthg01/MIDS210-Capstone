@@ -47,6 +47,12 @@ def _check_auth(user_id: int, current_user: int) -> None:
         raise HTTPException(status_code=403, detail="Not authorized")
 
 
+def _opt_float(value) -> float | None:
+    """None on a LEFT JOIN miss (no destination player_projections row yet) —
+    NaN in pandas terms — rather than a fabricated 0.0."""
+    return float(value) if pd.notna(value) else None
+
+
 def _build_reasoning(row: pd.Series) -> str:
     scores = {key: row[key] for key in _COMPONENT_LABELS}
     top_key = max(scores, key=lambda k: scores[k])
@@ -125,6 +131,9 @@ async def get_recommendations(
             ),
             reasoning=_build_reasoning(row),
             is_portal_candidate=bool(row["is_portal_candidate"]),
+            value_per_100=_opt_float(row.get("value_per_100")),
+            projected_minutes=_opt_float(row.get("projected_minutes")),
+            projected_usage=_opt_float(row.get("projected_usage")),
         )
         for _, row in top10.iterrows()
     ]
