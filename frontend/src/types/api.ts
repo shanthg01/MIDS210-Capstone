@@ -260,18 +260,32 @@ export interface FitBreakdown {
   program_fit: ProgramFitBreakdown;
 }
 
-export interface FitScoreResponse {
-  player_id: string; // string, not number — see PlayerProfile.player_id comment
-  school_id: number;
-  overall_fit: number;
+export interface FitComponentValues {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
   program_fit: number;
+}
+
+export interface FitScoreResponse {
+  player_id: string; // string, not number — see PlayerProfile.player_id comment
+  school_id: number;
+  overall_fit: number;
+  personalized_fit: number | null;
+  gap_match: number;
+  scheme_fit: number;
+  role_fit: number;
+  program_fit: number;
+  raw_components: FitComponentValues;
+  component_confidences: FitComponentValues;
+  overall_confidence: number;
+  data_quality_flags: Record<string, boolean | string>;
   breakdown: FitBreakdown;
   weights_used: FitWeights;
+  personalized_weights: FitWeights | null;
   computed_at: string;
   model_version: string;
+  calibration_version: string | null;
   cache_hit: boolean;
   // PR #33 follow-ups — populated by backend, was silently dropped by FE
   is_portal_candidate: boolean;      // player has Entered/Committed portal event this season
@@ -460,6 +474,7 @@ export interface RecommendationItem {
   player_name: string;
   position: string;
   overall_fit: number;
+  personalized_fit: number;
   components: FitComponents;
   reasoning: string;
   is_portal_candidate: boolean;

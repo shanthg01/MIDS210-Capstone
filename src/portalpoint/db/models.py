@@ -1067,7 +1067,19 @@ class PlayerTeamFitScore(Base):
     scheme_fit: Mapped[float] = mapped_column(Float, nullable=False)
     role_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
     program_fit: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.0"))
-    # Weights used for this computation (may differ from defaults if user customized)
+    # Raw model columns above remain untouched for diagnostics. The calibration
+    # job writes the shared-scale presentation/ranking values below.
+    calibrated_scheme_fit: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_gap_match: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_role_fit: Mapped[Optional[float]] = mapped_column(Float)
+    calibrated_program_fit: Mapped[Optional[float]] = mapped_column(Float)
+    overall_confidence: Mapped[Optional[float]] = mapped_column(Float)
+    component_confidences: Mapped[Optional[dict]] = mapped_column(JSONB)
+    data_quality_flags: Mapped[Optional[dict]] = mapped_column(JSONB)
+    calibration_version: Mapped[Optional[str]] = mapped_column(String(40))
+    # Legacy raw-writer weights retained for compatibility. fit-cal-v1 rewrites
+    # the active canonical weights; user customization is stored separately and
+    # produces personalized_fit at request time.
     weight_gap: Mapped[float] = mapped_column(Float, nullable=False, default=0.20)
     weight_scheme: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
     weight_role: Mapped[float] = mapped_column(Float, nullable=False, default=0.25, server_default=text("0.25"))
@@ -1310,16 +1322,16 @@ class UserPreference(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False)
-    # Importance weights (1-10 scale) for Program Fit sub-components
+    # Relative personalized-ranking priorities (1-10 scale).
     importance_scheme_fit: Mapped[int] = mapped_column(SmallInteger, default=7, server_default=text("7"))
     importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     # Fit component weights (must sum to 1.0)
-    weight_gap: Mapped[float] = mapped_column(Float, default=0.20)
-    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30)
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
     weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
-    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
     # Flexible filters stored as JSONB (desired_major, regions, conferences, enrollment range)
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -1348,10 +1360,10 @@ class UserPreferenceProfile(Base):
     importance_role_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_gap_match: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
     importance_program_fit: Mapped[int] = mapped_column(SmallInteger, default=5, server_default=text("5"))
-    weight_gap: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
-    weight_scheme: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_gap: Mapped[float] = mapped_column(Float, default=0.30, server_default=text("0.30"))
+    weight_scheme: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
     weight_role: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
-    weight_program: Mapped[float] = mapped_column(Float, default=0.25, server_default=text("0.25"))
+    weight_program: Mapped[float] = mapped_column(Float, default=0.20, server_default=text("0.20"))
     filters: Mapped[Optional[dict]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -35,8 +35,7 @@ import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
 
-// overall_fit has no single component key — it blends real (scheme, gap) and
-// stub (role, program), so it gets no Live/Placeholder chip, just the row metrics below it.
+// overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
   { key: 'scheme_fit', label: 'Scheme Fit' },

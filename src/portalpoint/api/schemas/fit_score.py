@@ -7,14 +7,16 @@ from pydantic import BaseModel, Field
 
 
 class FitWeights(BaseModel):
-    """User-adjustable component weights.
+    """User-adjustable Personalized Fit weights.
 
-    Default: gap=0.20, scheme=0.30, role_fit=0.25, program_fit=0.25.
+    Canonical Overall Fit always uses these defaults. User changes produce a
+    separate ``personalized_fit`` rather than redefining Overall Fit.
     """
-    gap: float = Field(default=0.20, ge=0.0, le=1.0)
-    scheme: float = Field(default=0.30, ge=0.0, le=1.0)
+
+    gap: float = Field(default=0.30, ge=0.0, le=1.0)
+    scheme: float = Field(default=0.25, ge=0.0, le=1.0)
     role_fit: float = Field(default=0.25, ge=0.0, le=1.0)
-    program_fit: float = Field(default=0.25, ge=0.0, le=1.0)
+    program_fit: float = Field(default=0.20, ge=0.0, le=1.0)
 
 
 class CosineFeatureContribution(BaseModel):
@@ -83,6 +85,20 @@ class ProgramFitBreakdown(BaseModel):
     nil_budget_alignment: float
 
 
+class RawFitComponents(BaseModel):
+    gap_match: float = Field(..., ge=0, le=100)
+    scheme_fit: float = Field(..., ge=0, le=100)
+    role_fit: float = Field(..., ge=0, le=100)
+    program_fit: float = Field(..., ge=0, le=100)
+
+
+class ComponentConfidences(BaseModel):
+    gap_match: float = Field(..., ge=0, le=1)
+    scheme_fit: float = Field(..., ge=0, le=1)
+    role_fit: float = Field(..., ge=0, le=1)
+    program_fit: float = Field(..., ge=0, le=1)
+
+
 class FitBreakdown(BaseModel):
     scheme: SchemeBreakdown
     role_fit: RoleFitBreakdown
@@ -94,14 +110,21 @@ class FitScoreResponse(BaseModel):
     player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int
     overall_fit: float = Field(..., ge=0, le=100)
+    personalized_fit: float | None = Field(default=None, ge=0, le=100)
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
     program_fit: float = Field(..., ge=0, le=100)
+    raw_components: RawFitComponents
+    component_confidences: ComponentConfidences
+    overall_confidence: float = Field(..., ge=0, le=1)
+    data_quality_flags: dict[str, bool | str] = Field(default_factory=dict)
     breakdown: FitBreakdown
     weights_used: FitWeights
+    personalized_weights: FitWeights | None = None
     computed_at: datetime
     model_version: str
+    calibration_version: str | None = None
     cache_hit: bool = False
     # True if the player has a matched Entered/Committed transfer_portal_events
     # row for this season — distinguishes "available recruit" from a generic
