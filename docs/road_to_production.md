@@ -16,11 +16,11 @@ containers), `docker-compose.yml` (no app Dockerfile yet, local-db profile only)
 
 | Layer | State |
 |---|---|
-| DB | Shared AWS RDS Postgres 15, VPC-internal, reached from dev laptops via SSH bastion tunnel |
-| Backend | FastAPI via `uvicorn --reload`, local-only, no container image |
+| DB | Shared AWS RDS Postgres 15, VPC-internal, reached from dev laptops via AWS SSM Session Manager port-forwarding (migrated off the SSH bastion tunnel 2026-07-20 — SSH port 22 closed entirely) |
+| Backend | FastAPI via `uvicorn --reload` locally; `Dockerfile` now exists and builds/runs correctly, but no ECS service deployed yet |
 | Frontend | React/Vite, local-only (`npm run dev`), never deployed anywhere |
-| Secrets | Plaintext `.env` per developer; `portalpoint-bastion.pem` in repo root (gitignored) |
-| CI | GitHub Actions `pull_request` pytest gate exists (Postgres+Redis service containers) — no deploy step |
+| Secrets | `DATABASE_URL`/`JWT_SECRET` now in AWS Secrets Manager; Tavily/Gemini keys still deferred (pending news-monitoring PR merge) |
+| CI | GitHub Actions `pull_request` pytest gate exists; `deploy.yml` added (builds/pushes to ECR via OIDC on merge to `main`) — ECS deploy step intentionally commented out until Phase 3 |
 | Scheduled jobs | None running on a schedule; all ingest/model scripts run manually per dev |
 | MLflow | Local SQLite `mlruns.db` per dev; artifacts to shared S3 |
 | Monitoring | None — no Prometheus/Grafana/Sentry despite being named in CLAUDE.md's tech stack; `/health` doesn't check DB (root cause of the 2026-07-13 incident that produced the DB connectivity plan) |
@@ -32,6 +32,13 @@ Nothing here is deployed. "Production" currently means "shared RDS + shared S3,"
 
 ## Phase 1 — Foundation (blocks everything below)
 
+**Status (2026-07-20): mostly done.** Private subnets + NAT gateway + S3 gateway endpoint created,
+ECR repo + working multi-stage `Dockerfile` built and verified locally, Secrets Manager holds
+`DATABASE_URL`/`JWT_SECRET`, GitHub Actions OIDC deploy role + `deploy.yml` wired up (builds/pushes to
+ECR on merge to `main`). Not done: Tavily/Gemini secrets (deferred pending news-monitoring PR), and the
+ECS deploy step in `deploy.yml` is deliberately commented out (no cluster/service exists — that's
+Phase 3). Full command log: `docs/production_deployment_commands.md`.
+
 These decisions are shared inputs to DB connectivity, backend hosting, and scheduled jobs alike —
 sequence them first so later phases aren't redone.
 
@@ -40,16 +47,27 @@ sequence them first so later phases aren't redone.
    in a doc, so treat as decided unless you want to revisit.
 2. **VPC/subnet layout** (open item in the DB plan): private subnets + NAT vs. fully-private with VPC
    endpoints for S3/ECR. This decision also determines how GitHub Actions-triggered scheduled jobs
-   reach RDS (Phase 5) and whether the bastion is kept at all (Phase 2).
+   reach RDS (Phase 5) and whether the bastion is kept at all (Phase 2). ✅ Done — private subnets +
+   NAT gateway + S3 gateway endpoint (chose NAT over fully-private-with-endpoints for cost/simplicity
+   at this scale).
 3. **Secrets store**: AWS Secrets Manager vs. SSM Parameter Store (open item in the DB plan). Same
    store should back `DATABASE_URL`, `JWT_SECRET`, AWS creds, and (later) `TAVILY_API_KEY`/Gemini key
    used by the news-monitoring agent — decide once, reuse everywhere, don't let ECS and GitHub
-   Actions cron end up on two different secret-injection mechanisms.
+   Actions cron end up on two different secret-injection mechanisms. ✅ Decided — Secrets Manager
+   (native RDS rotation support, trivial per-secret cost at this scale). `DATABASE_URL`/`JWT_SECRET`
+   created; Tavily/Gemini deferred.
 4. **Containerize the app.** No Dockerfile exists yet for backend or frontend. Needed before ECS
    Fargate is possible at all — write `Dockerfile` (backend, FastAPI/uvicorn) and confirm frontend
-   build output (Phase 4 decides where it's served from).
+   build output (Phase 4 decides where it's served from). ✅ Backend `Dockerfile` done, multi-stage,
+   built and verified against the real RDS instance locally. One real bug found along the way:
+   `player_projection.py` resolves `find_repo_root()` at import time (transitively imported by
+   `players.py`), which needs `pyproject.toml` present in the image even though it's otherwise unused
+   at runtime — fixed by copying it into the runtime stage. Frontend Dockerfile not yet started
+   (Phase 4).
 5. **CI deploy step.** `test.yml` already runs pytest on PRs — extend it (or add a second workflow)
-   to build/push the backend image to ECR on merge to `main`, gated on the same test job.
+   to build/push the backend image to ECR on merge to `main`, gated on the same test job. ✅ Done —
+   `deploy.yml`, OIDC role-based (no long-lived AWS keys in GitHub secrets), `test.yml` reused via
+   `workflow_call` so a broken build never reaches ECR.
 
 ---
 
@@ -58,6 +76,12 @@ sequence them first so later phases aren't redone.
 This is `docs/production_db_connectivity_plan.md` verbatim, placed in context: it depends on Phase 1's
 VPC and secrets decisions, and it's a prerequisite for Phase 3 (backend can't run in ECS talking
 directly to RDS until the SG/subnet work here is done).
+
+**Status (2026-07-20):** items 2 (SG scoping), 5 (Multi-AZ), and 6 (bastion break-glass only, SSH
+closed) are done. Item 3 (secrets) partially done — see Phase 1. Items 1 (ECS Fargate, no tunnel in
+the request path) and 4 (`/ready` endpoint) are not started; that's Phase 3's job. Real finding along
+the way: the bastion's SSH port was open to `0.0.0.0/0` — the whole internet, not just per-teammate —
+closed as part of item 6, not merely narrowed.
 
 1. ECS Fargate tasks in the same VPC/private subnets as RDS — no bastion in the request path.
 2. RDS security group scoped to the ECS task SG only (not `0.0.0.0/0`, not full VPC CIDR).

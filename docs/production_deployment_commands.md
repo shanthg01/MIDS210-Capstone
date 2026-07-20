@@ -4,10 +4,18 @@ Companion to `docs/road_to_production.md`. Concrete commands for each phase, usi
 AWS CLI v2, Docker CLI, and GitHub CLI. Placeholders in `<ANGLE_BRACKETS>` — everything
 else is a real value already confirmed in `docs/status/ARCHITECTURE_STATUS.md`.
 
+**Status (2026-07-20):** Phase 1 (1a-1f) and most of Phase 2 (2a-2d) have been run for real against
+the live infra account — not just planned. See `docs/road_to_production.md`'s Phase 1/2 status notes
+for what's done vs. outstanding, and `docs/aws_rds_setup.md` for the finalized teammate-facing SSM
+tunnel workflow (the canonical doc for that — don't duplicate tunnel instructions here, this file
+stays the one-time infra-setup command log).
+
 Known values used below:
 - Region: `us-east-1`
+- Infra account: `424056758764`
 - RDS security group: `sg-0ec78cb4f641ee901`
 - Bastion security group: `sg-06d79bdd59fea641a`
+- Bastion instance ID: `i-0a6e1bafc1cb6f379`
 - RDS endpoint: `portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com`
 - S3 bucket: `portalpoint-data`
 
@@ -193,21 +201,66 @@ aws rds modify-db-instance \
   --apply-immediately
 ```
 
-### 2d. Replace bastion SSH with SSM Session Manager (break-glass only, no open port 22)
+### 2d. Replace bastion SSH with SSM Session Manager (done 2026-07-20)
+
+Real findings from running this against `i-0a6e1bafc1cb6f379`, worth knowing before repeating on
+another instance: (1) the bastion had **no IAM instance profile attached at all** — had to create
+one from scratch, not just attach a policy to an existing role. (2) The AL2023 AMI didn't ship the
+SSM agent preinstalled — `dnf install -y amazon-ssm-agent` was needed before it could register.
+(3) The existing SSH ingress rule turned out to be `0.0.0.0/0` — open to the entire internet, not a
+scoped per-team rule — so this wasn't just a hygiene improvement, it closed a real exposure.
 
 ```bash
-# Attach the SSM managed instance policy to the bastion's instance role
+# Only needed if the instance has no profile yet — check first:
+aws ec2 describe-instances --instance-ids i-0a6e1bafc1cb6f379 \
+  --query 'Reservations[0].Instances[0].IamInstanceProfile'
+
+aws iam create-role --role-name portalpoint-bastion-role \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam create-instance-profile --instance-profile-name portalpoint-bastion-profile
+aws iam add-role-to-instance-profile \
+  --instance-profile-name portalpoint-bastion-profile \
+  --role-name portalpoint-bastion-role
+aws ec2 associate-iam-instance-profile \
+  --instance-id i-0a6e1bafc1cb6f379 \
+  --iam-instance-profile Name=portalpoint-bastion-profile
+
+# Attach the SSM managed instance policy
 aws iam attach-role-policy \
-  --role-name <BASTION_INSTANCE_ROLE> \
+  --role-name portalpoint-bastion-role \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
-# Connect without SSH once the SSM agent checks in (no .pem, no open 22)
-aws ssm start-session --target <BASTION_INSTANCE_ID>
+# If the SSM agent was never installed on this AMI, install it via SSH (last time you'll need SSH):
+# ssh -i portalpoint-bastion.pem ec2-user@<bastion-public-ip>
+# sudo dnf install -y amazon-ssm-agent && sudo systemctl enable --now amazon-ssm-agent
 
-# Once SSM access is confirmed working, remove the SSH ingress rule
+# Confirm the agent is online before touching the SSH rule
+aws ssm describe-instance-information \
+  --filters "Key=InstanceIds,Values=i-0a6e1bafc1cb6f379" \
+  --query 'InstanceInformationList[0].PingStatus' --output text   # must say "Online"
+
+# Install session-manager-plugin locally (once per machine), then verify:
+aws ssm start-session --target i-0a6e1bafc1cb6f379
+
+# Only once the above works: remove the SSH ingress rule (was 0.0.0.0/0)
 aws ec2 revoke-security-group-ingress \
   --group-id sg-06d79bdd59fea641a \
-  --protocol tcp --port 22 --cidr <CURRENT_ALLOWED_CIDR>
+  --protocol tcp --port 22 --cidr 0.0.0.0/0
+```
+
+**Teammate access, post-migration** (not a `ssm start-session` shell — a port-forward tunnel replacing
+the old `ssh -L`; see `docs/aws_rds_setup.md` for the full, canonical teammate-facing version):
+
+```bash
+aws iam create-group --group-name PortalPoint-Dev   # infra account — separate from the same-named
+                                                       # group in Justin's S3 bucket-owner account
+aws iam put-group-policy --group-name PortalPoint-Dev \
+  --policy-name PortalPointSSMBastionAccess \
+  --policy-document file://ssm-bastion-policy.json
+
+aws iam create-user --user-name <firstname>-portalpoint-infra
+aws iam add-user-to-group --group-name PortalPoint-Dev --user-name <firstname>-portalpoint-infra
+aws iam create-access-key --user-name <firstname>-portalpoint-infra   # send secret via secure DM
 ```
 
 ---

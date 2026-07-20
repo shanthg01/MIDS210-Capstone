@@ -36,6 +36,10 @@ COPY --from=builder /app/.venv /app/.venv
 COPY src ./src
 COPY alembic.ini ./
 COPY alembic ./alembic
+# player_projection.py's DEFAULT_CACHE_DIR resolves find_repo_root() at import
+# time (players.py imports it transitively) — pyproject.toml only needs to
+# exist here as find_repo_root()'s anchor, not be otherwise meaningful in-container.
+COPY pyproject.toml ./
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1

@@ -1,10 +1,21 @@
 # Production DB Connectivity Plan
 
-**Status:** Not started. Written 2026-07-13 after a dev incident (search/login/signup all
+**Status:** In progress (started 2026-07-20). Written 2026-07-13 after a dev incident (search/login/signup all
 failing — root cause: local SSH bastion tunnel to RDS had closed, so every DB-backed
 endpoint 500'd; `/health` stayed green throughout because it doesn't touch the DB).
 See `docs/aws_rds_setup.md` for the current dev-only bastion tunnel setup this plan replaces
 for the production path.
+
+**Progress against the numbered items below (2026-07-20):** item 3 (secrets management) partially
+done — `DATABASE_URL`/`JWT_SECRET` are in Secrets Manager; Tavily/Gemini keys deferred until the
+news-monitoring PR merges and their real env var names can be confirmed. Item 5 (Multi-AZ RDS) done.
+Item 6 (bastion break-glass only) done — SSH closed, SSM Session Manager wired up, teammate IAM
+access via a `PortalPoint-Dev` group in the infra account. Item 2 (SG scoping) done for the ECS task
+SG, created ahead of the ECS service itself. Item 1 (ECS Fargate, no tunnel in the request path) and
+item 4 (`/ready` endpoint) **not started** — no ECS cluster/service exists yet, and the app still only
+has `/health`. Foundation work also done ahead of schedule: private subnets + NAT gateway + S3 gateway
+endpoint, ECR repo + working `Dockerfile`, GitHub Actions OIDC deploy role (`deploy.yml`). Full command
+log: `docs/production_deployment_commands.md`.
 
 ## Why the current dev setup doesn't carry over
 
@@ -45,10 +56,12 @@ away.
 
 ## Open items before implementation
 
-- Confirm target VPC/subnet layout for ECS tasks (private subnets + NAT vs. fully private
-  with VPC endpoints for S3/ECR).
-- Decide Secrets Manager vs. SSM Parameter Store (cost/rotation tradeoff).
+- ~~Confirm target VPC/subnet layout for ECS tasks~~ ✅ Decided 2026-07-20 — private subnets + NAT
+  gateway (+ S3 gateway endpoint), not fully-private-with-interface-endpoints, for cost/simplicity
+  at this team's scale.
+- ~~Decide Secrets Manager vs. SSM Parameter Store~~ ✅ Decided 2026-07-20 — Secrets Manager (native
+  RDS rotation support; per-secret cost is trivial at this secret count).
 - Define `/ready` failure semantics — fail fast vs. short retry/backoff before reporting
-  unhealthy, to avoid flapping on transient DB blips.
+  unhealthy, to avoid flapping on transient DB blips. **Still open — `/ready` itself doesn't exist yet.**
 - CloudWatch alarm wiring for repeated `/ready` failures (paging vs. Slack notification —
   no monitoring channel decided yet).

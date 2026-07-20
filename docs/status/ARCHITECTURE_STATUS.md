@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** June 30, 2026 (AWS RDS PostgreSQL 15 migration complete; access hardened to bastion SSH tunnel, no per-IP allowlist — see Database section)
+**Last updated:** July 20, 2026 (bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely; see Database section)
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -98,7 +98,7 @@ S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 | Async app access | `postgresql+asyncpg://...?ssl=require` — `ssl=require` required (RDS enforces TLS) |
 | Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL (`ssl=require` → `sslmode=require` translation added 2026-06-29) |
 | App user | `portalpoint_app` — scoped runtime user; master user (`portalpoint_master`) reserved for admin ops only |
-| Security group | RDS SG `sg-0ec78cb4f641ee901` — port 5432 only from bastion SG `sg-06d79bdd59fea641a` (source-group rule, not per-IP). No public access. Connect via SSH tunnel through the bastion (`portalpoint-bastion.pem` from Justin) — see `docs/aws_rds_setup.md`. Replaced an earlier per-teammate static-IP allowlist (broke on network changes) |
+| Security group | RDS SG `sg-0ec78cb4f641ee901` — port 5432 only from bastion SG `sg-06d79bdd59fea641a` (source-group rule, not per-IP). No public access. Connect via **AWS SSM Session Manager port-forwarding** through the bastion (`i-0a6e1bafc1cb6f379`) — see `docs/aws_rds_setup.md`. Replaced an earlier per-teammate static-IP allowlist (broke on network changes), then (2026-07-20) the bastion's SSH port itself was closed (`0.0.0.0/0` ingress on port 22 revoked — had been open to the entire internet, not just the team) in favor of IAM-authenticated SSM access, logged per-identity in CloudTrail |
 
 Applied migration chain:
 
@@ -303,7 +303,7 @@ Do not set `MLFLOW_TRACKING_URI` to S3. S3 is for artifacts, not tracking metada
 
 ## Architecture Open Questions
 
-1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`. Access pattern further hardened the same day: per-teammate static-IP security group rules (broke whenever someone changed networks) replaced with a bastion EC2 host + SSH tunnel — RDS SG now only allows port 5432 from the bastion's SG (source-group rule), no public/per-IP access at all. See `docs/aws_rds_setup.md`.
+1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`. Access pattern further hardened the same day: per-teammate static-IP security group rules (broke whenever someone changed networks) replaced with a bastion EC2 host + SSH tunnel — RDS SG now only allows port 5432 from the bastion's SG (source-group rule), no public/per-IP access at all. **Further hardened 2026-07-20** (start of production-DB-connectivity work, `docs/production_db_connectivity_plan.md`): the bastion's SSH port was found open to `0.0.0.0/0` (the whole internet, not just the team — a real exposure, not just a hygiene nit) and closed entirely; access moved to AWS SSM Session Manager port-forwarding, authenticated via IAM instead of a shared `.pem` key, with per-session CloudTrail logging. Same session also stood up private subnets + NAT gateway + S3 gateway endpoint, an ECR repo, an ECS task security group scoped to RDS, RDS Multi-AZ, and a GitHub Actions OIDC deploy role — see `docs/production_deployment_commands.md` for the full command log. Backend ECS Fargate hosting itself (Phase 3) has not started yet. See `docs/aws_rds_setup.md` for the current teammate access flow.
 2. ✅ Resolved — Redis caching is enabled in `fit_scores.py` (cache-aside, 30min TTL, fails open on Redis errors; see `src/portalpoint/db/redis_client.py`).
 3. Is GitHub Actions cron sufficient for scheduled ingest, or do we need Airflow near beta?
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?
