@@ -94,25 +94,30 @@ interface FitWeightsPct {
   gap: number;
   scheme: number;
   role_fit: number;
-  program_fit: number;
+  team_impact_fit: number;
 }
 
 const FIT_WEIGHT_FIELDS: Array<{ key: keyof FitWeightsPct; label: string; description?: string }> = [
   { key: 'gap', label: 'Gap Match' },
   { key: 'scheme', label: 'Scheme Fit' },
   { key: 'role_fit', label: 'Role Fit' },
-  { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
+  { key: 'team_impact_fit', label: 'Team Impact', description: FIT_COMPONENTS.team_impact_fit.short },
 ];
 
 const IMPORTANCE_FIELDS: Array<{ key: keyof ImportanceWeights; label: string; description: string }> = [
   { key: 'scheme_fit', label: 'Scheme Fit', description: 'How much player style must match your system' },
   { key: 'role_fit', label: 'Role Fit', description: 'Importance of minutes availability' },
   { key: 'gap_match', label: 'Gap Match', description: 'Priority of filling roster archetype holes' },
-  { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
+  { key: 'team_impact_fit', label: 'Team Impact', description: FIT_COMPONENTS.team_impact_fit.short },
 ];
 
-const DEFAULT_FIT: FitWeightsPct = { gap: 20, scheme: 30, role_fit: 25, program_fit: 25 };
-const DEFAULT_IMPORTANCE: ImportanceWeights = { scheme_fit: 7, role_fit: 5, gap_match: 5, program_fit: 5 };
+const DEFAULT_FIT: FitWeightsPct = { gap: 30, scheme: 25, role_fit: 25, team_impact_fit: 20 };
+const DEFAULT_IMPORTANCE: ImportanceWeights = {
+  scheme_fit: 7,
+  role_fit: 5,
+  gap_match: 5,
+  team_impact_fit: 5,
+};
 
 // ── Slider row component ──────────────────────────────────────────────────────
 
@@ -273,7 +278,7 @@ export default function SettingsPage() {
         gap: Math.round(prefs.fit_weights.gap * 100),
         scheme: Math.round(prefs.fit_weights.scheme * 100),
         role_fit: Math.round(prefs.fit_weights.role_fit * 100),
-        program_fit: Math.round(prefs.fit_weights.program_fit * 100),
+        team_impact_fit: Math.round(prefs.fit_weights.team_impact_fit * 100),
       });
       setImportance({ ...prefs.importance_weights });
       setFilters({ ...DEFAULT_FILTERS, ...prefs.filters });
@@ -281,7 +286,7 @@ export default function SettingsPage() {
     }
   }, [prefs]);
 
-  const fitTotal = fitWeights.gap + fitWeights.scheme + fitWeights.role_fit + fitWeights.program_fit;
+  const fitTotal = fitWeights.gap + fitWeights.scheme + fitWeights.role_fit + fitWeights.team_impact_fit;
   const fitValid = fitTotal === 100;
 
   function updateFit(key: keyof FitWeightsPct, val: number) {
@@ -340,7 +345,7 @@ export default function SettingsPage() {
         gap: fitWeights.gap / 100,
         scheme: fitWeights.scheme / 100,
         role_fit: fitWeights.role_fit / 100,
-        program_fit: fitWeights.program_fit / 100,
+        team_impact_fit: fitWeights.team_impact_fit / 100,
       };
       await updatePreferences(userId, {
         fit_weights: fitWeightsApi,
@@ -374,7 +379,7 @@ export default function SettingsPage() {
           gap: fitWeights.gap / 100,
           scheme: fitWeights.scheme / 100,
           role_fit: fitWeights.role_fit / 100,
-          program_fit: fitWeights.program_fit / 100,
+          team_impact_fit: fitWeights.team_impact_fit / 100,
         },
         importance_weights: importance,
         filters,
@@ -410,7 +415,7 @@ export default function SettingsPage() {
         Program Settings
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Customize how fit scores are calculated for your program
+        Customize your personalized candidate ranking; canonical Overall Fit stays fixed
       </Typography>
 
       <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
@@ -547,10 +552,10 @@ export default function SettingsPage() {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Box>
             <Typography variant="h6" fontWeight={700}>
-              Fit Component Weights
+              Personalized Fit Weights
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Controls what percentage each component contributes to overall fit
+              Controls your Personalized Fit ranking; does not redefine canonical Overall Fit
             </Typography>
           </Box>
           <Chip
@@ -590,7 +595,7 @@ export default function SettingsPage() {
             Priority Weights
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Program-stated priorities (1–10) used to weight Program Fit sub-components
+            Relative priorities used when generating your Personalized Fit ranking
           </Typography>
         </Box>
 

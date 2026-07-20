@@ -14,7 +14,7 @@ export interface Definition {
 export const ROLE_FIT_LIVE_MODEL_VERSION = 'playing-time-rotation-v2';
 
 export const FIT_COMPONENTS: Record<
-  'gap_match' | 'scheme_fit' | 'role_fit' | 'program_fit' | 'team_impact_fit',
+  'gap_match' | 'scheme_fit' | 'role_fit' | 'team_impact_fit',
   Definition
 > = {
   gap_match: {
@@ -29,10 +29,6 @@ export const FIT_COMPONENTS: Record<
     label: 'Role Fit',
     short: 'Projected minutes, starter probability, and depth-chart position if this player joined your roster.',
   },
-  program_fit: {
-    label: 'Program Fit',
-    short: 'Not live yet — intended to capture off-court alignment (NIL budget, geography, academics, culture). Currently a neutral placeholder, not a real signal.',
-  },
   team_impact_fit: {
     label: 'Team Impact',
     short: "Projected effect on your program's overall rating (AdjEM) if this player joins, from the Team Rating Projection model.",
@@ -41,7 +37,7 @@ export const FIT_COMPONENTS: Record<
 
 export const OVERALL_FIT: Definition = {
   label: 'Overall Fit',
-  short: 'A weighted blend of Gap Match, Scheme Fit, Role Fit, and Program Fit, using your Settings weights.',
+  short: 'The canonical calibrated blend of Scheme Fit (25%), Gap Match (30%), Role Fit (25%), and Team Impact (20%).',
 };
 
 export const SKILLS: Record<string, Definition> = {
@@ -100,11 +96,6 @@ export const SUB_METRICS: Record<string, Definition> = {
   pace_match: { label: 'Pace Match', short: "How closely this player's playing pace matches your program's system." },
   rim_attack_match: { label: 'Rim Attack', short: "How closely this player's rim-attack rate matches your program's system." },
   mid_range_match: { label: 'Mid-Range Match', short: "How closely this player's mid-range shot rate matches your program's system." },
-  nil_score: { label: 'NIL Score', short: "Fit between this player's NIL expectations and your program's NIL market." },
-  geographic_score: { label: 'Geographic Fit', short: "How close this player's home/current location is to your program, a factor in transfer likelihood." },
-  academic_score: { label: 'Academic Fit', short: "Alignment between this player's academic profile and your program." },
-  cultural_score: { label: 'Cultural Fit', short: "Estimated alignment with your program's culture and identity." },
-  nil_budget_alignment: { label: 'NIL Budget Alignment', short: "Whether this player's NIL price point fits your program's NIL budget." },
   depth_chart_position: { label: 'Depth Chart Position', short: 'Lower number = higher on the depth chart at this position.' },
   gap_reliability: {
     label: 'Gap Confidence',

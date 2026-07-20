@@ -41,14 +41,14 @@ export interface FitWeights {
   gap: number;
   scheme: number;
   role_fit: number;
-  program_fit: number;
+  team_impact_fit: number;
 }
 
 export interface ImportanceWeights {
   scheme_fit: number;
   role_fit: number;
   gap_match: number;
-  program_fit: number;
+  team_impact_fit: number;
 }
 
 // Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
@@ -245,33 +245,50 @@ export interface GapMatchBreakdown {
   top_gap_features: GapFeatureGap[];
 }
 
-export interface ProgramFitBreakdown {
-  nil_score: number;
-  geographic_score: number;
-  academic_score: number;
-  cultural_score: number;
-  nil_budget_alignment: number;
+export interface TeamImpactBreakdown {
+  available: boolean;
+  delta_adj_em: number | null;
+  current_adj_em: number | null;
+  projected_adj_em: number | null;
+  confidence_interval: [number, number] | null;
+  national_percentile: number | null;
+  conference_rank: number | null;
+  model_version: string | null;
 }
 
 export interface FitBreakdown {
   scheme: SchemeBreakdown;
   role_fit: RoleFitBreakdown;
   gap: GapMatchBreakdown;
-  program_fit: ProgramFitBreakdown;
+  team_impact: TeamImpactBreakdown;
+}
+
+export interface FitComponentValues {
+  gap_match: number;
+  scheme_fit: number;
+  role_fit: number;
+  team_impact_fit: number;
 }
 
 export interface FitScoreResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
   overall_fit: number;
+  personalized_fit: number | null;
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
-  program_fit: number;
+  team_impact_fit: number;
+  raw_components: FitComponentValues;
+  component_confidences: FitComponentValues;
+  overall_confidence: number;
+  data_quality_flags: Record<string, boolean | string>;
   breakdown: FitBreakdown;
   weights_used: FitWeights;
+  personalized_weights: FitWeights | null;
   computed_at: string;
   model_version: string;
+  calibration_version: string | null;
   cache_hit: boolean;
   // PR #33 follow-ups — populated by backend, was silently dropped by FE
   is_portal_candidate: boolean;      // player has Entered/Committed portal event this season
@@ -374,7 +391,7 @@ export interface ComparisonMatrix {
   gap_match: Record<string, number>;
   scheme_fit: Record<string, number>;
   role_fit: Record<string, number>;
-  program_fit: Record<string, number>;
+  team_impact_fit: Record<string, number>;
 }
 
 export interface TradeOff {
@@ -412,6 +429,7 @@ export interface RecommendationItem {
   player_name: string;
   position: string;
   overall_fit: number;
+  personalized_fit: number;
   components: FitComponents;
   reasoning: string;
   is_portal_candidate: boolean;

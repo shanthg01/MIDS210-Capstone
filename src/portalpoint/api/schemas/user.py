@@ -10,17 +10,19 @@ from portalpoint.api.schemas.school import Region
 
 
 class ImportanceWeights(BaseModel):
-    """Program-stated priorities on 1-10 scale. Used to weight Program Fit sub-components."""
+    """Program-stated priorities on a 1-10 scale."""
+
     scheme_fit: int = Field(default=7, ge=1, le=10)
     role_fit: int = Field(default=5, ge=1, le=10)
     gap_match: int = Field(default=5, ge=1, le=10)
-    program_fit: int = Field(default=5, ge=1, le=10)
+    team_impact_fit: int = Field(default=5, ge=1, le=10)
 
 
 class StatKey(str, Enum):
     """player_season_stats columns eligible for a hard min-value filter.
     Same 10 columns as player_projection.py's SKILL_COLUMNS, plus min_pct —
     kept manually in sync, same convention as that module's own skill list."""
+
     USAGE_RATE = "usage_rate"
     THREE_POINT_PCT = "fg3_pct"
     FREE_THROW_PCT = "ft_pct"

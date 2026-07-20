@@ -16,7 +16,7 @@ CACHE_TTL_SECONDS = 1800
 
 
 def _cache_key(player_id: int, school_id: int, season: int) -> str:
-    return f"fitscore:{player_id}:{school_id}:{season}"
+    return f"fitscore:v2:{player_id}:{school_id}:{season}"
 
 
 @router.get("", response_model=FitScoreResponse)
@@ -26,7 +26,9 @@ async def get_fit_score(
     redis: Redis = Depends(get_redis),
     player_id: int = Query(...),
     school_id: int = Query(...),
-    season: int | None = Query(default=None, description="Defaults to the most recent scored season"),
+    season: int | None = Query(
+        default=None, description="Defaults to the most recent scored season"
+    ),
 ):
     if season is None:
         season = await fit_score_service.get_current_season(db, redis)

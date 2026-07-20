@@ -127,38 +127,48 @@ async def compare_players(
         gap_match={e.player.full_name: e.fit_score.gap_match for e in entries},
         scheme_fit={e.player.full_name: e.fit_score.scheme_fit for e in entries},
         role_fit={e.player.full_name: e.fit_score.role_fit for e in entries},
-        program_fit={e.player.full_name: e.fit_score.program_fit for e in entries},
+        team_impact_fit={e.player.full_name: e.fit_score.team_impact_fit for e in entries},
     )
 
     best_scheme = max(entries, key=lambda e: e.fit_score.scheme_fit)
-    best_gap    = max(entries, key=lambda e: e.fit_score.gap_match)
-    best_role   = max(entries, key=lambda e: e.fit_score.role_fit)
-    best_nil    = max(entries, key=lambda e: e.fit_score.breakdown.program_fit.nil_score)
+    best_gap = max(entries, key=lambda e: e.fit_score.gap_match)
+    best_role = max(entries, key=lambda e: e.fit_score.role_fit)
+    best_impact = max(entries, key=lambda e: e.fit_score.team_impact_fit)
 
     trade_offs = [
         TradeOff(
             factor="Scheme Fit",
-            description=f"{best_scheme.player.full_name} system profile most closely matches program offensive identity.",
+            description=(
+                f"{best_scheme.player.full_name} system profile most closely matches "
+                "program offensive identity."
+            ),
             best_player_name=best_scheme.player.full_name,
             best_player_id=best_scheme.player.player_id,
         ),
         TradeOff(
             factor="Gap Match",
-            description=f"{best_gap.player.full_name} best fills the program's current roster needs.",
+            description=(
+                f"{best_gap.player.full_name} best fills the program's current roster needs."
+            ),
             best_player_name=best_gap.player.full_name,
             best_player_id=best_gap.player.player_id,
         ),
         TradeOff(
             factor="Role Fit",
-            description=f"{best_role.player.full_name} offers the best projected role and starter probability.",
+            description=(
+                f"{best_role.player.full_name} offers the best projected role and "
+                "starter probability."
+            ),
             best_player_name=best_role.player.full_name,
             best_player_id=best_role.player.player_id,
         ),
         TradeOff(
-            factor="NIL Budget Fit",
-            description=f"{best_nil.player.full_name} best aligns with the program's NIL budget.",
-            best_player_name=best_nil.player.full_name,
-            best_player_id=best_nil.player.player_id,
+            factor="Team Rating Impact",
+            description=(
+                f"{best_impact.player.full_name} produces the largest projected rating gain."
+            ),
+            best_player_name=best_impact.player.full_name,
+            best_player_id=best_impact.player.player_id,
         ),
     ]
 

@@ -69,9 +69,9 @@ export default function OnboardingWizard() {
               Prioritize
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Weights that re-rank candidates. Default split: Gap {fitPct(prefs.fit_weights.gap)}% ·
+              Personalized weights that re-rank candidates. Default split: Gap {fitPct(prefs.fit_weights.gap)}% ·
               Scheme {fitPct(prefs.fit_weights.scheme)}% · Role {fitPct(prefs.fit_weights.role_fit)}% ·
-              Program {fitPct(prefs.fit_weights.program_fit)}%
+              Team Impact {fitPct(prefs.fit_weights.team_impact_fit)}%
             </Typography>
           </Box>
         </Box>

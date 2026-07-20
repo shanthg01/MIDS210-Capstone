@@ -33,14 +33,13 @@ import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
 
-// overall_fit has no single component key — it blends real (scheme, gap) and
-// stub (role, program), so it gets no Live/Placeholder chip, just the row metrics below it.
+// overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
   { key: 'scheme_fit', label: 'Scheme Fit' },
   { key: 'gap_match', label: 'Gap Match' },
   { key: 'role_fit', label: 'Role Fit' },
-  { key: 'program_fit', label: 'Program Fit' },
+  { key: 'team_impact_fit', label: 'Team Impact' },
 ];
 
 function maxNameInRow(row: Record<string, number>): string {
