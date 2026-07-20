@@ -34,7 +34,6 @@ from portalpoint.modeling.fit_calibration import (
     confidence_adjust,
 )
 from portalpoint.modeling.io import get_sync_engine
-from portalpoint.modeling.recommendations import team_impact_fit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -46,15 +45,13 @@ SELECT
     ptf.scheme_fit,
     ptf.gap_match,
     ptf.role_fit,
+    ptf.program_fit,
     ptf.breakdown,
     COALESCE(tsp.stale_flag, false) AS scheme_stale,
     ptp.minutes_ci_lower,
     ptp.minutes_ci_upper,
     ptp.usage_role_confidence,
-    ptp.data_quality_flags AS role_quality_flags,
-    trp.delta_adj_em,
-    trp.ci_lower AS team_ci_lower,
-    trp.ci_upper AS team_ci_upper
+    ptp.data_quality_flags AS role_quality_flags
 FROM player_team_fit_scores ptf
 LEFT JOIN team_system_profiles tsp
   ON tsp.school_id = ptf.school_id AND tsp.season = ptf.season
@@ -63,11 +60,6 @@ LEFT JOIN playing_time_projections ptp
  AND ptp.school_id = ptf.school_id
  AND ptp.season = ptf.season
  AND ptp.model_version = 'playing-time-rotation-v2'
-LEFT JOIN team_rating_projections trp
-  ON trp.player_id = ptf.player_id
- AND trp.school_id = ptf.school_id
- AND trp.season = ptf.season
- AND trp.expires_at > now()
 WHERE ptf.season = :season
   AND ptf.is_portal_candidate = true
 """
@@ -77,7 +69,7 @@ UPDATE player_team_fit_scores AS ptf
 SET calibrated_scheme_fit = data.scheme_fit,
     calibrated_gap_match = data.gap_match,
     calibrated_role_fit = data.role_fit,
-    team_impact_fit = data.team_impact_fit,
+    calibrated_program_fit = data.program_fit,
     overall_fit = data.overall_fit,
     overall_confidence = data.overall_confidence,
     component_confidences = data.component_confidences::jsonb,
@@ -86,9 +78,9 @@ SET calibrated_scheme_fit = data.scheme_fit,
     weight_gap = 0.30,
     weight_scheme = 0.25,
     weight_role = 0.25,
-    weight_team_impact = 0.20
+    weight_program = 0.20
 FROM (VALUES %s) AS data(
-    id, scheme_fit, gap_match, role_fit, team_impact_fit, overall_fit,
+    id, scheme_fit, gap_match, role_fit, program_fit, overall_fit,
     overall_confidence, component_confidences, data_quality_flags, calibration_version
 )
 WHERE ptf.id = data.id
@@ -117,10 +109,11 @@ def _role_confidence(frame: pd.DataFrame) -> pd.Series:
     return (0.6 * usage_quality + 0.4 * interval_quality).where(has_projection, 0.0).clip(0.0, 1.0)
 
 
-def _team_confidence(frame: pd.DataFrame) -> pd.Series:
-    available = frame["delta_adj_em"].notna()
-    width = (frame["team_ci_upper"] - frame["team_ci_lower"]).clip(lower=0.0)
-    return (1.0 - width / 10.0).clip(0.25, 1.0).where(available, 0.0)
+def _program_confidence(frame: pd.DataFrame) -> pd.Series:
+    """Program Fit is fully descoped — no real model backs it, so it never
+    carries confidence. confidence_adjust() shrinks it to neutral 50 for every
+    row regardless of what calibrate_series ranks it at."""
+    return pd.Series(0.0, index=frame.index)
 
 
 def calibrate_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -130,8 +123,6 @@ def calibrate_frame(frame: pd.DataFrame) -> pd.DataFrame:
         _raw_gap_score(score, breakdown)
         for score, breakdown in zip(scored["gap_match"], scored["breakdown"])
     ]
-    delta_adj_em = pd.to_numeric(scored["delta_adj_em"], errors="coerce").fillna(0.0)
-    scored["team_impact_fit"] = team_impact_fit(delta_adj_em)
     scored = calibrate_by_school(scored)
 
     scored["scheme_confidence"] = np.where(
@@ -139,13 +130,13 @@ def calibrate_frame(frame: pd.DataFrame) -> pd.DataFrame:
     )
     scored["gap_confidence"] = scored["breakdown"].map(_gap_confidence)
     scored["role_confidence"] = _role_confidence(scored)
-    scored["team_impact_confidence"] = _team_confidence(scored)
+    scored["program_confidence"] = _program_confidence(scored)
 
     confidence_columns = {
         "scheme_fit": "scheme_confidence",
         "gap_match": "gap_confidence",
         "role_fit": "role_confidence",
-        "team_impact_fit": "team_impact_confidence",
+        "program_fit": "program_confidence",
     }
     for component, confidence_col in confidence_columns.items():
         scored[component] = confidence_adjust(
@@ -170,13 +161,13 @@ def _records(scored: pd.DataFrame) -> list[tuple]:
             "scheme_fit": round(float(row["scheme_confidence"]), 4),
             "gap_match": round(float(row["gap_confidence"]), 4),
             "role_fit": round(float(row["role_confidence"]), 4),
-            "team_impact_fit": round(float(row["team_impact_confidence"]), 4),
+            "program_fit": round(float(row["program_confidence"]), 4),
         }
         flags = {
             "stale_scheme_fit": bool(row["scheme_stale"]),
             "low_gap_confidence": confidences["gap_match"] < 0.5,
             "missing_role_projection": confidences["role_fit"] == 0.0,
-            "missing_team_rating": confidences["team_impact_fit"] == 0.0,
+            "missing_program_fit": True,  # Program Fit descoped — always a stub
         }
         records.append(
             (
@@ -184,7 +175,7 @@ def _records(scored: pd.DataFrame) -> list[tuple]:
                 round(float(row["scheme_fit"]), 2),
                 round(float(row["gap_match"]), 2),
                 round(float(row["role_fit"]), 2),
-                round(float(row["team_impact_fit"]), 2),
+                round(float(row["program_fit"]), 2),
                 round(float(row["overall_fit"]), 2),
                 round(float(row["overall_confidence"]), 4),
                 json.dumps(confidences),

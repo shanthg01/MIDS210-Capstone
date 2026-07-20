@@ -16,7 +16,7 @@ class FitWeights(BaseModel):
     gap: float = Field(default=0.30, ge=0.0, le=1.0)
     scheme: float = Field(default=0.25, ge=0.0, le=1.0)
     role_fit: float = Field(default=0.25, ge=0.0, le=1.0)
-    team_impact_fit: float = Field(default=0.20, ge=0.0, le=1.0)
+    program_fit: float = Field(default=0.20, ge=0.0, le=1.0)
 
 
 class CosineFeatureContribution(BaseModel):
@@ -77,36 +77,33 @@ class GapMatchBreakdown(BaseModel):
     calibrated_score_adjustment: float | None = None
 
 
-class TeamImpactBreakdown(BaseModel):
-    available: bool
-    delta_adj_em: float | None = None
-    current_adj_em: float | None = None
-    projected_adj_em: float | None = None
-    confidence_interval: tuple[float, float] | None = None
-    national_percentile: int | None = Field(default=None, ge=1, le=100)
-    conference_rank: int | None = Field(default=None, ge=1)
-    model_version: str | None = None
+class ProgramFitBreakdown(BaseModel):
+    nil_score: float = Field(..., ge=0, le=100)
+    geographic_score: float = Field(..., ge=0, le=100)
+    academic_score: float = Field(..., ge=0, le=100)
+    cultural_score: float = Field(..., ge=0, le=100)
+    nil_budget_alignment: float
 
 
 class RawFitComponents(BaseModel):
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
-    team_impact_fit: float = Field(..., ge=0, le=100)
+    program_fit: float = Field(..., ge=0, le=100)
 
 
 class ComponentConfidences(BaseModel):
     gap_match: float = Field(..., ge=0, le=1)
     scheme_fit: float = Field(..., ge=0, le=1)
     role_fit: float = Field(..., ge=0, le=1)
-    team_impact_fit: float = Field(..., ge=0, le=1)
+    program_fit: float = Field(..., ge=0, le=1)
 
 
 class FitBreakdown(BaseModel):
     scheme: SchemeBreakdown
     role_fit: RoleFitBreakdown
     gap: GapMatchBreakdown
-    team_impact: TeamImpactBreakdown
+    program_fit: ProgramFitBreakdown
 
 
 class FitScoreResponse(BaseModel):
@@ -117,7 +114,7 @@ class FitScoreResponse(BaseModel):
     gap_match: float = Field(..., ge=0, le=100)
     scheme_fit: float = Field(..., ge=0, le=100)
     role_fit: float = Field(..., ge=0, le=100)
-    team_impact_fit: float = Field(..., ge=0, le=100)
+    program_fit: float = Field(..., ge=0, le=100)
     raw_components: RawFitComponents
     component_confidences: ComponentConfidences
     overall_confidence: float = Field(..., ge=0, le=1)

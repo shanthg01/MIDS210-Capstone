@@ -6,6 +6,7 @@ const LABEL_MAP: Record<string, string> = {
   gap_match: 'Gap Match',
   scheme_fit: 'Scheme Fit',
   role_fit: 'Role Fit',
+  program_fit: 'Program Fit',    // FitScorePage breakdown (stubbed, descoped)
   team_impact_fit: 'Team Impact', // RecommendationCard — M6 delta_adjEM normalized
 };
 
@@ -17,7 +18,9 @@ export function scoreColor(v: number): 'success' | 'warning' | 'error' {
 
 // Components backed by a real model for every row: scheme_fit (scheme-cos-v3),
 // gap_match (gap-cos-v4), team_impact_fit (M6 delta_adjEM normalized).
-// role_fit is NOT in this set — unlike the others, its liveness is per-row (real only
+// program_fit is always a 50.0 stub until the Program Fit calculator is built
+// (descoped 2026-07-11 — no NIL/geography/academic proxy data yet). role_fit
+// is NOT in this set — unlike the others, its liveness is per-row (real only
 // where playing-time-rotation-v2/Issue #25 has actually synced that pair, see
 // isComponentLive below), not a fixed property of the component.
 export const LIVE_COMPONENTS = new Set(['scheme_fit', 'gap_match', 'team_impact_fit']);

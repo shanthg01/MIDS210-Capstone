@@ -19,12 +19,12 @@ import pandas as pd
 
 MODEL_VERSION = "fit-cal-v1"
 
-COMPONENTS = ("scheme_fit", "gap_match", "role_fit", "team_impact_fit")
+COMPONENTS = ("scheme_fit", "gap_match", "role_fit", "program_fit")
 DEFAULT_FIT_WEIGHTS: dict[str, float] = {
     "scheme_fit": 0.25,
     "gap_match": 0.30,
     "role_fit": 0.25,
-    "team_impact_fit": 0.20,
+    "program_fit": 0.20,
 }
 
 SCORE_CENTER = 50.0

@@ -181,7 +181,7 @@ function OverallPanel({
   gap,
   scheme,
   role,
-  teamImpact,
+  program,
   personalized,
   confidence,
   modelVersion,
@@ -190,7 +190,7 @@ function OverallPanel({
   gap: number;
   scheme: number;
   role: number;
-  teamImpact: number;
+  program: number;
   personalized: number | null;
   confidence: number;
   modelVersion: string;
@@ -222,7 +222,7 @@ function OverallPanel({
             { label: 'Gap Match', value: gap, component: 'gap_match' },
             { label: 'Scheme', value: scheme, component: 'scheme_fit' },
             { label: 'Role Fit', value: role, component: 'role_fit' },
-            { label: 'Team Impact', value: teamImpact, component: 'team_impact_fit' },
+            { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
             const c = scoreColor(value);
             const isLive = isComponentLive(component, modelVersion);
@@ -256,7 +256,7 @@ function OverallPanel({
               { label: 'Gap Match', value: gap, component: 'gap_match' },
               { label: 'Scheme', value: scheme, component: 'scheme_fit' },
               { label: 'Role Fit', value: role, component: 'role_fit' },
-              { label: 'Team Impact', value: teamImpact, component: 'team_impact_fit' },
+              { label: 'Program Fit', value: program, component: 'program_fit' },
             ]}
           />
           <RadarLegend />
@@ -586,7 +586,7 @@ export default function FitScorePage() {
         gap={fit.gap_match}
         scheme={schemeDisplay}
         role={fit.role_fit}
-        teamImpact={fit.team_impact_fit}
+        program={fit.program_fit}
         personalized={fit.personalized_fit}
         confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
@@ -755,17 +755,11 @@ export default function FitScorePage() {
         )}
       </SectionPaper>
 
-      {/* Team Rating is the fourth canonical fit component. */}
+      {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
-        <ScoreHeader label="Team Impact" score={fit.team_impact_fit} weight="20%" component="team_impact_fit" />
+        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
-        <Alert severity="info">{FIT_COMPONENTS.team_impact_fit.short}</Alert>
-        {fit.breakdown.team_impact.available && (
-          <Typography variant="body2" sx={{ mt: 1.5 }}>
-            Projected rating change: {fit.breakdown.team_impact.delta_adj_em! >= 0 ? '+' : ''}
-            {fit.breakdown.team_impact.delta_adj_em?.toFixed(2)} AdjEM
-          </Typography>
-        )}
+        <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>
 
       {/* Player Projection — adjusted for this program, not part of the 4-component score above */}

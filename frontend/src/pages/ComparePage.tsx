@@ -39,7 +39,7 @@ const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'scheme_fit', label: 'Scheme Fit' },
   { key: 'gap_match', label: 'Gap Match' },
   { key: 'role_fit', label: 'Role Fit' },
-  { key: 'team_impact_fit', label: 'Team Impact' },
+  { key: 'program_fit', label: 'Program Fit' },
 ];
 
 function maxNameInRow(row: Record<string, number>): string {

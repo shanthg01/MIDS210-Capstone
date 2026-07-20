@@ -5,11 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from portalpoint.api.deps import CurrentUser, DbSession, RedisClient
-from portalpoint.api.schemas.recommendation import (
-    FitComponents,
-    RecommendationItem,
-    RecommendationsResponse,
-)
+from portalpoint.api.schemas.recommendation import FitComponents, RecommendationItem, RecommendationsResponse
 from portalpoint.api.services import fit_score_service
 from portalpoint.modeling.recommendations import (
     CANDIDATE_SQL,
@@ -33,7 +29,6 @@ SELECT
     COALESCE(up.weight_scheme, 0.25) AS weight_scheme,
     COALESCE(up.weight_gap,    0.30) AS weight_gap,
     COALESCE(up.weight_role,   0.25) AS weight_role
-    , COALESCE(up.weight_team_impact, 0.20) AS weight_team_impact
 FROM users u
 LEFT JOIN user_preferences up ON up.user_id = u.id
 WHERE u.id = :user_id
@@ -64,9 +59,7 @@ def _build_reasoning(row: pd.Series) -> str:
         verdict = "Solid, worth a look"
     else:
         verdict = "Developmental fit"
-    return (
-        f"{verdict} — stands out most in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
-    )
+    return f"{verdict} — stands out most in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
 
 
 @router.get("", response_model=RecommendationsResponse)
@@ -75,9 +68,7 @@ async def get_recommendations(
     db: DbSession,
     redis: RedisClient,
     user_id: int = Query(...),
-    season: int | None = Query(
-        default=None, description="Defaults to the most recent scored season"
-    ),
+    season: int | None = Query(default=None, description="Defaults to the most recent scored season"),
 ):
     _check_auth(user_id, current_user)
 
@@ -102,36 +93,19 @@ async def get_recommendations(
     )
     if not pool_rows:
         return RecommendationsResponse(
-            program_id=user_id,
-            recommendations=[],
-            total=0,
-            generated_at=now,
-            model_version=MODEL_VERSION,
+            program_id=user_id, recommendations=[], total=0, generated_at=now, model_version=MODEL_VERSION
         )
 
     pool = pd.DataFrame(pool_rows)
-    raw_team_impact = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
-    pool["team_impact_fit"] = pool["stored_team_impact_fit"].fillna(raw_team_impact)
+    pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
 
     top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS)
-    if "canonical_overall_fit" in top50:
-        top50["overall_fit"] = top50["canonical_overall_fit"].where(
-            top50["calibration_version"].notna(), top50["overall_fit"]
-        )
 
     try:
         user_preferences = fixed_team_impact_preferences(
-            user_row["weight_scheme"],
-            user_row["weight_gap"],
-            user_row["weight_role"],
-            user_row["weight_team_impact"],
+            user_row["weight_scheme"], user_row["weight_gap"], user_row["weight_role"]
         )
         top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
-        if all(
-            abs(user_preferences[f"{component}_weight"] - weight) < 1e-9
-            for component, weight in DEFAULT_FIT_WEIGHTS.items()
-        ):
-            top10["personalized_fit"] = top10["overall_fit"]
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

@@ -39,7 +39,7 @@ def test_top_level_schema(client, H):
         "gap_match",
         "scheme_fit",
         "role_fit",
-        "team_impact_fit",
+        "program_fit",
         "breakdown",
         "weights_used",
         "computed_at",
@@ -56,7 +56,7 @@ def test_component_scores_in_range(client, H):
     data = client.get(
         f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H
     ).json()
-    for field in ("overall_fit", "gap_match", "scheme_fit", "role_fit", "team_impact_fit"):
+    for field in ("overall_fit", "gap_match", "scheme_fit", "role_fit", "program_fit"):
         assert 0 <= data[field] <= 100, f"{field}={data[field]} out of [0, 100]"
 
 
@@ -69,7 +69,7 @@ def test_overall_matches_weighted_sum(client, H):
         data["gap_match"] * w["gap"]
         + data["scheme_fit"] * w["scheme"]
         + data["role_fit"] * w["role_fit"]
-        + data["team_impact_fit"] * w["team_impact_fit"]
+        + data["program_fit"] * w["program_fit"]
     )
     assert data["overall_fit"] == pytest.approx(expected, abs=0.2)
 
@@ -86,7 +86,7 @@ def test_confidence_contract(client, H):
         f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H
     ).json()
     assert 0 <= data["overall_confidence"] <= 1
-    for component in ("gap_match", "scheme_fit", "role_fit", "team_impact_fit"):
+    for component in ("gap_match", "scheme_fit", "role_fit", "program_fit"):
         assert 0 <= data["component_confidences"][component] <= 1
 
 
@@ -109,11 +109,13 @@ def test_role_fit_breakdown(client, H):
     assert role["depth_chart_position"] >= 1
 
 
-def test_team_impact_breakdown_present(client, H):
-    impact = client.get(
+def test_program_fit_breakdown_in_range(client, H):
+    prog = client.get(
         f"/api/fit-scores?player_id={PLAYER_A}&school_id={SCHOOL_A}", headers=H
-    ).json()["breakdown"]["team_impact"]
-    assert isinstance(impact["available"], bool)
+    ).json()["breakdown"]["program_fit"]
+    for field in ("nil_score", "geographic_score", "academic_score", "cultural_score"):
+        assert 0 <= prog[field] <= 100, f"program_fit.{field} out of range"
+    assert prog["nil_budget_alignment"] >= 0
 
 
 def test_gap_breakdown_present(client, H):

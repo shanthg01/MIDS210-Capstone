@@ -20,7 +20,7 @@ class ComparisonMatrix(BaseModel):
     gap_match: dict[str, float]
     scheme_fit: dict[str, float]
     role_fit: dict[str, float]
-    team_impact_fit: dict[str, float]
+    program_fit: dict[str, float]
 
 
 class TradeOff(BaseModel):

@@ -9,11 +9,16 @@ weighted_composite =
     0.25 * scheme_fit
   + 0.30 * gap_match
   + 0.25 * role_fit
-  + 0.20 * team_impact_fit
+  + 0.20 * program_fit
 ```
 
-Program Fit is descoped and is not displayed or aggregated. Team Impact is
-the Team Rating Projection model's `delta_adj_em` signal.
+Program Fit remains the 50.0 descoped placeholder (no real NIL/geography/
+academic model backs it yet). It still occupies the fourth canonical slot —
+calibrating a constant collapses every candidate to the same 50 within a
+school, so its 20% weight is real but currently inert. It is not the Team
+Rating Projection model's `delta_adj_em` signal; that stays a separate,
+already-established `team_impact_fit` component used by the Recommendation
+Engine (`rec-v1.2`), not by this canonical Overall Fit formula.
 
 The weighted composite determines ranking. It is then passed through the same
 school-relative normal-score calibration to produce the displayed and
@@ -63,12 +68,12 @@ confidence_adjusted = 50 + confidence * (calibrated - 50)
 `overall_confidence` is the canonical weighted average of component
 confidences. The API also returns component confidences and explicit data-
 quality flags for stale Scheme Fit, low-confidence Gap Match, missing Role
-projection, and missing Team Rating projection.
+projection, and Program Fit (always flagged missing — no model exists).
 
 ## Persistence and run order
 
-Raw `scheme_fit`, `gap_match`, and `role_fit` remain unchanged for diagnostics.
-The calibration job writes additive calibrated columns, Team Impact,
+Raw `scheme_fit`, `gap_match`, `role_fit`, and `program_fit` remain unchanged
+for diagnostics. The calibration job writes additive calibrated columns,
 `overall_fit`, confidence metadata, and `calibration_version`.
 
 ```bash

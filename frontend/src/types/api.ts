@@ -41,14 +41,14 @@ export interface FitWeights {
   gap: number;
   scheme: number;
   role_fit: number;
-  team_impact_fit: number;
+  program_fit: number;
 }
 
 export interface ImportanceWeights {
   scheme_fit: number;
   role_fit: number;
   gap_match: number;
-  team_impact_fit: number;
+  program_fit: number;
 }
 
 // Mirrors schemas/user.py StatKey — player_season_stats columns eligible for a hard min-value filter.
@@ -245,29 +245,26 @@ export interface GapMatchBreakdown {
   top_gap_features: GapFeatureGap[];
 }
 
-export interface TeamImpactBreakdown {
-  available: boolean;
-  delta_adj_em: number | null;
-  current_adj_em: number | null;
-  projected_adj_em: number | null;
-  confidence_interval: [number, number] | null;
-  national_percentile: number | null;
-  conference_rank: number | null;
-  model_version: string | null;
+export interface ProgramFitBreakdown {
+  nil_score: number;
+  geographic_score: number;
+  academic_score: number;
+  cultural_score: number;
+  nil_budget_alignment: number;
 }
 
 export interface FitBreakdown {
   scheme: SchemeBreakdown;
   role_fit: RoleFitBreakdown;
   gap: GapMatchBreakdown;
-  team_impact: TeamImpactBreakdown;
+  program_fit: ProgramFitBreakdown;
 }
 
 export interface FitComponentValues {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
-  team_impact_fit: number;
+  program_fit: number;
 }
 
 export interface FitScoreResponse {
@@ -278,7 +275,7 @@ export interface FitScoreResponse {
   gap_match: number;
   scheme_fit: number;
   role_fit: number;
-  team_impact_fit: number;
+  program_fit: number;
   raw_components: FitComponentValues;
   component_confidences: FitComponentValues;
   overall_confidence: number;
@@ -391,7 +388,7 @@ export interface ComparisonMatrix {
   gap_match: Record<string, number>;
   scheme_fit: Record<string, number>;
   role_fit: Record<string, number>;
-  team_impact_fit: Record<string, number>;
+  program_fit: Record<string, number>;
 }
 
 export interface TradeOff {

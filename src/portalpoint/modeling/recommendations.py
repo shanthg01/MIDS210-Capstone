@@ -12,7 +12,6 @@ wired today. Program fit is descoped from the active roadmap (2026-07-11) and
 is not a planned column here. Player projection and confidence-aware risk
 penalties remain future extensions.
 """
-
 from __future__ import annotations
 
 import logging
@@ -51,13 +50,10 @@ SELECT
     ptf.school_id,
     p.full_name     AS player_name,
     p.position,
-    COALESCE(ptf.calibrated_scheme_fit, ptf.scheme_fit) AS scheme_fit,
-    COALESCE(ptf.calibrated_gap_match, ptf.gap_match) AS gap_match,
-    COALESCE(ptf.calibrated_role_fit, ptf.role_fit) AS role_fit,
-    ptf.team_impact_fit AS stored_team_impact_fit,
-    ptf.overall_fit AS canonical_overall_fit,
-    ptf.overall_confidence,
-    ptf.calibration_version,
+    ptf.scheme_fit,
+    ptf.gap_match,
+    ptf.role_fit,
+    ptf.overall_fit,
     ptf.is_portal_candidate,
     trp.delta_adj_em
     -- future — uncomment when Model 5 (predictions) is ready:
@@ -90,10 +86,10 @@ DELTA_ADJ_EM_CLIP: float = 5.0
 TEAM_IMPACT_FIT_NEUTRAL: float = 50.0
 
 DEFAULT_FIT_WEIGHTS: dict = {
-    "scheme_fit": 0.25,
-    "gap_match": 0.30,
-    "role_fit": 0.25,
-    "team_impact_fit": 0.20,
+    "scheme_fit":      0.25,
+    "gap_match":        0.30,
+    "role_fit":         0.25,
+    "team_impact_fit":  0.20,
     # placeholders — uncomment and re-proportion when future signals land:
     # 'player_projection': 0.0, # future (separate from adjusted_projection)
     # 'data_confidence': 0.0,   # future
@@ -124,41 +120,17 @@ def fixed_team_impact_preferences(
     scheme_weight: float,
     gap_weight: float,
     role_weight: float,
-    team_impact_weight: float | None = None,
 ) -> dict[str, float]:
-    """Normalize the four user-controlled Personalized Fit weights.
+    """Reserve the default 20% team-impact share in Stage 2 preferences.
 
-    Three-argument callers preserve the earlier contract that reserves exactly
-    20% for Team Impact. Four-argument callers use the configurable Settings
-    value and normalize all four weights together.
+    The three user-controlled weights are relative preferences for the
+    remaining 80%. If all three are zero, use the Stage 1 default proportions
+    so team impact cannot accidentally become 100% after normalization.
     """
-    if team_impact_weight is None:
-        controlled = {
-            "scheme_fit_weight": float(scheme_weight),
-            "gap_match_weight": float(gap_weight),
-            "role_fit_weight": float(role_weight),
-        }
-        if any(weight < 0 for weight in controlled.values()):
-            raise ValueError("Stage 2 preference weights must be non-negative")
-        controlled_total = sum(controlled.values())
-        if controlled_total <= 0:
-            controlled = {
-                "scheme_fit_weight": DEFAULT_FIT_WEIGHTS["scheme_fit"],
-                "gap_match_weight": DEFAULT_FIT_WEIGHTS["gap_match"],
-                "role_fit_weight": DEFAULT_FIT_WEIGHTS["role_fit"],
-            }
-            controlled_total = sum(controlled.values())
-        share = DEFAULT_FIT_WEIGHTS["team_impact_fit"]
-        return {
-            **{key: value * (1.0 - share) / controlled_total for key, value in controlled.items()},
-            "team_impact_fit_weight": share,
-        }
-
     user_weights = {
         "scheme_fit_weight": float(scheme_weight),
         "gap_match_weight": float(gap_weight),
         "role_fit_weight": float(role_weight),
-        "team_impact_fit_weight": float(team_impact_weight),
     }
     if any(weight < 0 for weight in user_weights.values()):
         raise ValueError("Stage 2 preference weights must be non-negative")
@@ -166,16 +138,23 @@ def fixed_team_impact_preferences(
     raw_sum = sum(user_weights.values())
     if raw_sum <= 0:
         user_weights = {
-            f"{component}_weight": weight for component, weight in DEFAULT_FIT_WEIGHTS.items()
+            "scheme_fit_weight": DEFAULT_FIT_WEIGHTS["scheme_fit"],
+            "gap_match_weight": DEFAULT_FIT_WEIGHTS["gap_match"],
+            "role_fit_weight": DEFAULT_FIT_WEIGHTS["role_fit"],
         }
         raw_sum = sum(user_weights.values())
-    return {col: weight / raw_sum for col, weight in user_weights.items()}
 
+    team_impact_share = DEFAULT_FIT_WEIGHTS["team_impact_fit"]
+    scale = (1.0 - team_impact_share) / raw_sum
+    return {
+        **{col: weight * scale for col, weight in user_weights.items()},
+        "team_impact_fit_weight": team_impact_share,
+    }
 
 _RISK_CONFIG: dict = {
-    "low": {"confidence_floor": 0.70, "penalty": 2.0},
+    "low":    {"confidence_floor": 0.70, "penalty": 2.0},
     "medium": {"confidence_floor": 0.50, "penalty": 1.0},
-    "high": {"confidence_floor": 0.00, "penalty": 0.0},
+    "high":   {"confidence_floor": 0.00, "penalty": 0.0},
 }
 
 
@@ -199,9 +178,7 @@ def _normalize_available_weights(df: pd.DataFrame, raw_weights: dict) -> dict:
 
     total = sum(usable_weights.values())
     if total <= 0:
-        raise ValueError(
-            "At least one positive preference weight must reference an available column"
-        )
+        raise ValueError("At least one positive preference weight must reference an available column")
 
     return {col: weight / total for col, weight in usable_weights.items()}
 
@@ -279,7 +256,11 @@ def generate_top_50_candidates(
     # pool["adjusted_projection"] = pool["player_projection"] * pool["data_confidence"]
     # pool["stage1_rank_score"] = pool["adjusted_projection"] + (pool["overall_fit"] / 100)
 
-    top50 = pool.sort_values("stage1_rank_score", ascending=False).head(50).reset_index(drop=True)
+    top50 = (
+        pool.sort_values("stage1_rank_score", ascending=False)
+        .head(50)
+        .reset_index(drop=True)
+    )
     logger.info("Stage 1 complete: %d candidates → %d selected", len(pool), len(top50))
     return top50
 
@@ -325,31 +306,40 @@ def refine_to_top_10(
     """
     if risk_tolerance not in _RISK_CONFIG:
         raise ValueError(
-            f"Unknown risk_tolerance {risk_tolerance!r}; expected one of {list(_RISK_CONFIG)}"
+            f"Unknown risk_tolerance {risk_tolerance!r}; "
+            f"expected one of {list(_RISK_CONFIG)}"
         )
 
     if user_preferences is None:
-        user_preferences = {f"{col}_weight": weight for col, weight in DEFAULT_FIT_WEIGHTS.items()}
+        user_preferences = {
+            f"{col}_weight": weight
+            for col, weight in DEFAULT_FIT_WEIGHTS.items()
+        }
 
     # Strip _weight suffix and normalize against the columns available in this pool.
-    raw_weights = {key.removesuffix("_weight"): val for key, val in user_preferences.items()}
+    raw_weights = {
+        key.removesuffix("_weight"): val
+        for key, val in user_preferences.items()
+    }
     normalized_weights = _normalize_available_weights(df_top_50, raw_weights)
+
+    risk = _RISK_CONFIG[risk_tolerance]
+    confidence_floor: float = risk["confidence_floor"]
+    penalty_rate: float = risk["penalty"]
 
     df = df_top_50.copy()
     df["personalized_fit"] = calculate_overall_fit(df, normalized_weights)
     df["confidence_penalty"] = 0.0
     df["final_rec_score"] = df["personalized_fit"] / 100
     # future — uncomment when predictions table ready:
-    # risk = _RISK_CONFIG[risk_tolerance]
-    # confidence_gap = (risk["confidence_floor"] - df["data_confidence"]).clip(lower=0)
-    # df["confidence_penalty"] = confidence_gap * risk["penalty"]
-    # df["final_rec_score"] = (
-    #     df["adjusted_projection"]
-    #     + (df["personalized_fit"] / 100)
-    #     - df["confidence_penalty"]
-    # )
+    # df["confidence_penalty"] = (confidence_floor - df["data_confidence"]).clip(lower=0) * penalty_rate
+    # df["final_rec_score"] = df["adjusted_projection"] + (df["personalized_fit"] / 100) - df["confidence_penalty"]
 
-    top10 = df.sort_values("final_rec_score", ascending=False).head(10).reset_index(drop=True)
+    top10 = (
+        df.sort_values("final_rec_score", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
     top10.insert(0, "final_rank", range(1, len(top10) + 1))
 
     logger.info("Stage 2 complete: %d candidates → %d selected", len(df), len(top10))

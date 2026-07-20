@@ -88,7 +88,7 @@ export default function FitRadarChart({ data, size = 240 }: Props) {
 
           {/* Axis labels — anchor points outward (away from center) instead of
               centering on the axis point, otherwise longer labels like
-              long component labels overlap back into the chart on the left/right axes. */}
+              "Program Fit" overlap back into the chart on the left/right axes. */}
           {data.map((d, i) => {
             const [x, y] = pointFor(i, labelRadius);
             const dx = x - center;

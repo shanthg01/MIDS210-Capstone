@@ -8,7 +8,6 @@ stub-generation logic in one place.
 import random
 from datetime import datetime, timezone
 
-import pandas as pd
 from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,22 +20,20 @@ from portalpoint.api.schemas.fit_score import (
     FitWeights,
     GapFeatureGap,
     GapMatchBreakdown,
+    ProgramFitBreakdown,
     RawFitComponents,
     RoleFitBreakdown,
     SchemeBreakdown,
-    TeamImpactBreakdown,
 )
 from portalpoint.db.models import (
     PlayerSeasonStats,
     PlayerTeamFitScore,
     RosterBaselineMember,
-    TeamRatingProjection,
     TeamSystemProfile,
     UserPreference,
 )
 from portalpoint.modeling.fit_calibration import DEFAULT_FIT_WEIGHTS, normalized_weights
 from portalpoint.modeling.gap_matching import GAP_FEATURES
-from portalpoint.modeling.recommendations import team_impact_fit
 
 
 def stub_role_fit_breakdown(rng: random.Random) -> RoleFitBreakdown:
@@ -107,24 +104,13 @@ def stub_gap_breakdown(rng: random.Random) -> GapMatchBreakdown:
     )
 
 
-def _team_impact_score(projection: TeamRatingProjection | None) -> float:
-    if projection is None:
-        return 50.0
-    return round(float(team_impact_fit(pd.Series([projection.delta_adj_em])).iloc[0]), 2)
-
-
-def _team_impact_breakdown(projection: TeamRatingProjection | None) -> TeamImpactBreakdown:
-    if projection is None:
-        return TeamImpactBreakdown(available=False)
-    return TeamImpactBreakdown(
-        available=True,
-        delta_adj_em=projection.delta_adj_em,
-        current_adj_em=projection.current_adj_em,
-        projected_adj_em=projection.projected_adj_em,
-        confidence_interval=(projection.ci_lower, projection.ci_upper),
-        national_percentile=projection.national_percentile,
-        conference_rank=projection.conference_rank,
-        model_version=projection.model_version,
+def stub_program_fit_breakdown(rng: random.Random) -> ProgramFitBreakdown:
+    return ProgramFitBreakdown(
+        nil_score=round(rng.uniform(40.0, 90.0), 1),
+        geographic_score=round(rng.uniform(30.0, 95.0), 1),
+        academic_score=round(rng.uniform(55.0, 95.0), 1),
+        cultural_score=round(rng.uniform(50.0, 90.0), 1),
+        nil_budget_alignment=round(rng.uniform(50.0, 1800.0), 0),
     )
 
 
@@ -140,7 +126,7 @@ def _personalized_score(
             "scheme_fit": weights.scheme,
             "gap_match": weights.gap,
             "role_fit": weights.role_fit,
-            "team_impact_fit": weights.team_impact_fit,
+            "program_fit": weights.program_fit,
         }
     )
     if canonical_score is not None and all(
@@ -163,13 +149,13 @@ def stub_fit_score(
     gap = round(rng.uniform(55.0, 95.0), 1)
     scheme = round(rng.uniform(55.0, 95.0), 1)
     role = round(rng.uniform(55.0, 90.0), 1)
-    team_impact = 50.0
+    program = round(rng.uniform(50.0, 85.0), 1)
     w = FitWeights()
     components = {
         "gap_match": gap,
         "scheme_fit": scheme,
         "role_fit": role,
-        "team_impact_fit": team_impact,
+        "program_fit": program,
     }
     overall = round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 1)
     return FitScoreResponse(
@@ -180,13 +166,13 @@ def stub_fit_score(
         gap_match=gap,
         scheme_fit=scheme,
         role_fit=role,
-        team_impact_fit=team_impact,
+        program_fit=program,
         raw_components=RawFitComponents(**components),
         component_confidences=ComponentConfidences(
-            gap_match=0.0, scheme_fit=0.0, role_fit=0.0, team_impact_fit=0.0
+            gap_match=0.0, scheme_fit=0.0, role_fit=0.0, program_fit=0.0
         ),
         overall_confidence=0.0,
-        data_quality_flags={"fallback_only_pair": True, "missing_team_rating": True},
+        data_quality_flags={"fallback_only_pair": True, "missing_program_fit": True},
         breakdown=FitBreakdown(
             scheme=SchemeBreakdown(
                 three_point_match=round(rng.uniform(60.0, 98.0), 1),
@@ -198,7 +184,7 @@ def stub_fit_score(
             ),
             role_fit=stub_role_fit_breakdown(rng),
             gap=stub_gap_breakdown(rng),
-            team_impact=TeamImpactBreakdown(available=False),
+            program_fit=stub_program_fit_breakdown(rng),
         ),
         weights_used=w,
         personalized_weights=personalized_weights,
@@ -216,37 +202,35 @@ def stub_fit_score(
 
 def real_fit_score(
     row: PlayerTeamFitScore,
-    team_rating: TeamRatingProjection | None = None,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
     scheme_fit_stale: bool = False,
     scheme_fit_stale_reason: str | None = None,
     personalized_weights: FitWeights | None = None,
 ) -> FitScoreResponse:
+    # role_fit is model-written where playing-time rows have been synced.
+    # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
     rng = random.Random(row.player_id * 1000 + row.school_id)
     bd = row.breakdown or {}
     scheme_bd = bd.get("scheme", {})
     gap_bd = bd.get("gap", {})
     role_bd = bd.get("role_fit", {})
 
-    raw_team_impact = _team_impact_score(team_rating)
     calibrated_gap = getattr(row, "calibrated_gap_match", None)
     calibrated_scheme = getattr(row, "calibrated_scheme_fit", None)
     calibrated_role = getattr(row, "calibrated_role_fit", None)
-    stored_team_impact = getattr(row, "team_impact_fit", None)
+    calibrated_program = getattr(row, "calibrated_program_fit", None)
     components = {
         "gap_match": calibrated_gap if calibrated_gap is not None else row.gap_match,
         "scheme_fit": calibrated_scheme if calibrated_scheme is not None else row.scheme_fit,
         "role_fit": calibrated_role if calibrated_role is not None else row.role_fit,
-        "team_impact_fit": stored_team_impact
-        if stored_team_impact is not None
-        else raw_team_impact,
+        "program_fit": calibrated_program if calibrated_program is not None else row.program_fit,
     }
     confidences = getattr(row, "component_confidences", None) or {
         "gap_match": float(gap_bd.get("gap_reliability", 0.0)),
         "scheme_fit": 0.0 if scheme_fit_stale else 1.0,
         "role_fit": 1.0 if role_bd else 0.0,
-        "team_impact_fit": 1.0 if team_rating is not None else 0.0,
+        "program_fit": 0.0,  # Program Fit descoped — no real model backs it
     }
     overall_confidence = getattr(row, "overall_confidence", None)
     if overall_confidence is None:
@@ -261,8 +245,7 @@ def real_fit_score(
         else round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 2)
     )
     quality_flags = dict(getattr(row, "data_quality_flags", None) or {})
-    if team_rating is None:
-        quality_flags["missing_team_rating"] = True
+    quality_flags["missing_program_fit"] = True
     if scheme_fit_stale:
         quality_flags["stale_scheme_fit"] = True
 
@@ -274,12 +257,12 @@ def real_fit_score(
         gap_match=components["gap_match"],
         scheme_fit=components["scheme_fit"],
         role_fit=components["role_fit"],
-        team_impact_fit=components["team_impact_fit"],
+        program_fit=components["program_fit"],
         raw_components=RawFitComponents(
             gap_match=gap_bd.get("raw_gap_match", row.gap_match),
             scheme_fit=row.scheme_fit,
             role_fit=row.role_fit,
-            team_impact_fit=raw_team_impact,
+            program_fit=row.program_fit,
         ),
         component_confidences=ComponentConfidences(**confidences),
         overall_confidence=overall_confidence,
@@ -320,7 +303,7 @@ def real_fit_score(
                 reliability_baseline_contribution=gap_bd.get("reliability_baseline_contribution"),
                 calibrated_score_adjustment=gap_bd.get("calibrated_score_adjustment"),
             ),
-            team_impact=_team_impact_breakdown(team_rating),
+            program_fit=stub_program_fit_breakdown(rng),
         ),
         weights_used=FitWeights(),
         personalized_weights=personalized_weights,
@@ -386,16 +369,6 @@ async def get_fit_score(
     )
     row = result.scalar_one_or_none()
 
-    team_rating_result = await db.execute(
-        select(TeamRatingProjection).where(
-            TeamRatingProjection.player_id == player_id,
-            TeamRatingProjection.school_id == school_id,
-            TeamRatingProjection.season == season,
-            TeamRatingProjection.expires_at > datetime.now(timezone.utc),
-        )
-    )
-    team_rating = team_rating_result.scalar_one_or_none()
-
     personalized_weights = None
     if user_id is not None:
         pref_result = await db.execute(
@@ -407,7 +380,7 @@ async def get_fit_score(
                 gap=pref.weight_gap,
                 scheme=pref.weight_scheme,
                 role_fit=pref.weight_role,
-                team_impact_fit=pref.weight_team_impact,
+                program_fit=pref.weight_program,
             )
 
     # Player already on school_id's own roster this season — the gap_match
@@ -441,7 +414,6 @@ async def get_fit_score(
     if row is not None:
         return real_fit_score(
             row,
-            team_rating=team_rating,
             is_current_school=is_current_school,
             is_roster_baseline_member=is_roster_baseline_member,
             scheme_fit_stale=scheme_fit_stale,

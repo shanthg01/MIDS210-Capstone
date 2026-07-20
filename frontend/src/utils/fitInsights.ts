@@ -12,7 +12,7 @@ export function buildFitInsight(fit: FitScoreResponse): Insight {
     { key: 'gap_match' as const, value: fit.gap_match },
     { key: 'scheme_fit' as const, value: fit.scheme_fit },
     { key: 'role_fit' as const, value: fit.role_fit },
-    { key: 'team_impact_fit' as const, value: fit.team_impact_fit },
+    { key: 'program_fit' as const, value: fit.program_fit },
   ];
   const strongest = components.reduce((a, b) => (b.value > a.value ? b : a));
   const weakest = components.reduce((a, b) => (b.value < a.value ? b : a));

@@ -40,7 +40,6 @@ Tables stubbed (uncomment when ready):
 Program Fit (Model, Issue #20) is descoped from the active roadmap (2026-07-11)
 and is not part of this engine's weight formula.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -85,7 +84,8 @@ SELECT
     COALESCE(up.weight_scheme, 0.25)    AS weight_scheme,
     COALESCE(up.weight_gap,    0.30)    AS weight_gap,
     COALESCE(up.weight_role,   0.25)    AS weight_role
-    , COALESCE(up.weight_team_impact, 0.20) AS weight_team_impact
+    -- future — uncomment when program fit is ready:
+    -- , COALESCE(up.weight_program, 0.0) AS weight_program
 FROM users u
 LEFT JOIN user_preferences up ON up.user_id = u.id
 WHERE u.school_id = :school_id
@@ -194,18 +194,11 @@ def upsert_recommendations(engine, top10: pd.DataFrame, user_id: int) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run 2-stage recommendation engine")
     parser.add_argument("--school_id", type=int, required=True)
-    parser.add_argument("--season", type=int, required=True)
-    parser.add_argument(
-        "--user_id",
-        type=int,
-        default=None,
-        help="Run for a single user; omit to run for all active users of the school",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Read + score only — skip DB write. Safe to run against shared DB.",
-    )
+    parser.add_argument("--season",    type=int, required=True)
+    parser.add_argument("--user_id",   type=int, default=None,
+                        help="Run for a single user; omit to run for all active users of the school")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Read + score only — skip DB write. Safe to run against shared DB.")
     args = parser.parse_args()
 
     engine = get_sync_engine()
@@ -222,11 +215,8 @@ def main() -> None:
     # team_rating_projections join only; ranking happens in Python below.
     pool = build_candidate_pool(engine, args.school_id, args.season)
     if pool.empty:
-        log.warning(
-            "No candidates found — check that school_id=%d season=%d has fit scores",
-            args.school_id,
-            args.season,
-        )
+        log.warning("No candidates found — check that school_id=%d season=%d has fit scores",
+                    args.school_id, args.season)
         return
 
     if not check_role_fit_freshness(engine, args.season):
@@ -245,24 +235,17 @@ def main() -> None:
             "No team_rating_projections found for school_id=%d season=%d — "
             "team_impact_fit will be the %.1f neutral stub for all candidates; "
             "team-rating signal is inert this run.",
-            args.school_id,
-            args.season,
-            TEAM_IMPACT_FIT_NEUTRAL,
+            args.school_id, args.season, TEAM_IMPACT_FIT_NEUTRAL,
         )
 
     # delta_adj_em is NaN wherever the LEFT JOIN in CANDIDATE_SQL found no
     # matching team_rating_projections row — must be filled to a raw AdjEM
     # delta of 0 (neutral) before normalizing, not left NaN, since a per-row
     # NaN would poison that row's weighted sum in calculate_overall_fit.
-    raw_team_impact = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
-    pool["team_impact_fit"] = pool["stored_team_impact_fit"].fillna(raw_team_impact)
+    pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
 
     # ── Stage 1: vectorized rank score → Top-50 ──────────────────────────────
     top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS)
-    if "canonical_overall_fit" in top50:
-        top50["overall_fit"] = top50["canonical_overall_fit"].where(
-            top50["calibration_version"].notna(), top50["overall_fit"]
-        )
 
     # ── Stage 2: per-user re-rank using saved preferences → Top-10 ──────────
     all_mean_scores: list[float] = []
@@ -272,19 +255,9 @@ def main() -> None:
 
         try:
             user_preferences = fixed_team_impact_preferences(
-                user["weight_scheme"],
-                user["weight_gap"],
-                user["weight_role"],
-                user["weight_team_impact"],
+                user["weight_scheme"], user["weight_gap"], user["weight_role"]
             )
-            top10 = refine_to_top_10(
-                top50, user_preferences=user_preferences, risk_tolerance="medium"
-            )
-            if all(
-                abs(user_preferences[f"{component}_weight"] - weight) < 1e-9
-                for component, weight in DEFAULT_FIT_WEIGHTS.items()
-            ):
-                top10["personalized_fit"] = top10["overall_fit"]
+            top10 = refine_to_top_10(top50, user_preferences=user_preferences, risk_tolerance="medium")
         except ValueError as e:
             log.error("user_id=%d — skipping, invalid preference weights: %s", uid, e)
             continue
@@ -293,28 +266,11 @@ def main() -> None:
         all_mean_scores.append(mean_score)
 
         if args.dry_run:
-            log.info(
-                "[DRY RUN] user_id=%d — would write %d rows (mean_fit=%.1f)",
-                uid,
-                len(top10),
-                mean_score,
-            )
-            print(
-                top10[
-                    [
-                        "final_rank",
-                        "player_id",
-                        "player_name",
-                        "position",
-                        "scheme_fit",
-                        "gap_match",
-                        "role_fit",
-                        "team_impact_fit",
-                        "stage1_rank_score",
-                        "personalized_fit",
-                    ]
-                ].to_string(index=False)
-            )
+            log.info("[DRY RUN] user_id=%d — would write %d rows (mean_fit=%.1f)",
+                     uid, len(top10), mean_score)
+            print(top10[["final_rank", "player_id", "player_name", "position",
+                          "scheme_fit", "gap_match", "role_fit", "team_impact_fit",
+                          "stage1_rank_score", "personalized_fit"]].to_string(index=False))
         else:
             n = upsert_recommendations(engine, top10, uid)
             log.info("user_id=%d → %d recommendations written (mean_fit=%.1f)", uid, n, mean_score)
@@ -332,7 +288,6 @@ def main() -> None:
         model; register_model needs *some* logged model artifact to attach
         a version to, same pattern as destination_projection.py's
         DestProjectionPyfunc."""
-
         def predict(self, context, model_input):
             return model_input
 
@@ -340,22 +295,18 @@ def main() -> None:
     overall_mean = sum(all_mean_scores) / len(all_mean_scores) if all_mean_scores else 0.0
 
     with mlflow.start_run(run_name=f"rec-school{args.school_id}-s{args.season}") as run:
-        mlflow.log_params(
-            {
-                "school_id": args.school_id,
-                "season": args.season,
-                "model_version": MODEL_VERSION,
-                "n_users": len(users_df),
-                "stage1_weights": str(DEFAULT_FIT_WEIGHTS),
-            }
-        )
-        mlflow.log_metrics(
-            {
-                "pool_size": float(len(pool)),
-                "top50_size": float(len(top50)),
-                "mean_overall_fit": overall_mean,
-            }
-        )
+        mlflow.log_params({
+            "school_id":      args.school_id,
+            "season":         args.season,
+            "model_version":  MODEL_VERSION,
+            "n_users":        len(users_df),
+            "stage1_weights": str(DEFAULT_FIT_WEIGHTS),
+        })
+        mlflow.log_metrics({
+            "pool_size":        float(len(pool)),
+            "top50_size":       float(len(top50)),
+            "mean_overall_fit": overall_mean,
+        })
         mlflow.pyfunc.log_model(artifact_path="rec_engine_model", python_model=RecEnginePyfunc())
         run_id = run.info.run_id
 
@@ -375,10 +326,7 @@ def main() -> None:
         pass  # No registered champion yet.
 
     result = maybe_promote(
-        client,
-        "recommendation-engine",
-        run_id,
-        "rec_engine_model",
+        client, "recommendation-engine", run_id, "rec_engine_model",
         metric_name="mean_overall_fit",
         new_value=overall_mean,
         higher_is_better=True,

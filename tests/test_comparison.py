@@ -26,7 +26,7 @@ def test_player_count_matches_input(client, H):
 
 def test_matrix_has_all_components(client, H):
     matrix = client.post("/api/compare", json={"program_id": 101, "player_ids": [301, 302]}, headers=H).json()["comparison_matrix"]
-    for component in ("overall_fit", "gap_match", "scheme_fit", "role_fit", "team_impact_fit"):
+    for component in ("overall_fit", "gap_match", "scheme_fit", "role_fit", "program_fit"):
         assert component in matrix
 
 

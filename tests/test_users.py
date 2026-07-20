@@ -14,13 +14,13 @@ def test_preferences_schema(client, user_id, H):
 
 def test_importance_weights_in_range(client, user_id, H):
     w = client.get(f"/api/users/{user_id}/preferences", headers=H).json()["importance_weights"]
-    for key in ("scheme_fit", "role_fit", "gap_match", "team_impact_fit"):
+    for key in ("scheme_fit", "role_fit", "gap_match", "program_fit"):
         assert 1 <= w[key] <= 10, f"importance_weights.{key} out of [1, 10]"
 
 
 def test_fit_weights_sum_to_one(client, user_id, H):
     w = client.get(f"/api/users/{user_id}/preferences", headers=H).json()["fit_weights"]
-    total = w["gap"] + w["scheme"] + w["role_fit"] + w["team_impact_fit"]
+    total = w["gap"] + w["scheme"] + w["role_fit"] + w["program_fit"]
     assert abs(total - 1.0) < 0.01
 
 
@@ -31,7 +31,7 @@ def test_update_preferences_require_auth(client, user_id):
 def test_update_preferences_merges_fields(client, user_id, H):
     r = client.put(
         f"/api/users/{user_id}/preferences",
-        json={"importance_weights": {"scheme_fit": 10, "role_fit": 3, "gap_match": 7, "team_impact_fit": 5}},
+        json={"importance_weights": {"scheme_fit": 10, "role_fit": 3, "gap_match": 7, "program_fit": 5}},
         headers=H,
     )
     assert r.status_code == 200
@@ -43,7 +43,7 @@ def test_update_preferences_merges_fields(client, user_id, H):
 def test_update_preferences_rejects_weight_out_of_range(client, user_id, H):
     r = client.put(
         f"/api/users/{user_id}/preferences",
-        json={"importance_weights": {"scheme_fit": 11, "role_fit": 5, "gap_match": 5, "team_impact_fit": 5}},
+        json={"importance_weights": {"scheme_fit": 11, "role_fit": 5, "gap_match": 5, "program_fit": 5}},
         headers=H,
     )
     assert r.status_code == 422
@@ -52,7 +52,7 @@ def test_update_preferences_rejects_weight_out_of_range(client, user_id, H):
 def test_update_fit_weights(client, user_id, H):
     r = client.put(
         f"/api/users/{user_id}/preferences",
-        json={"fit_weights": {"gap": 0.25, "scheme": 0.25, "role_fit": 0.25, "team_impact_fit": 0.25}},
+        json={"fit_weights": {"gap": 0.25, "scheme": 0.25, "role_fit": 0.25, "program_fit": 0.25}},
         headers=H,
     )
     assert r.status_code == 200
@@ -112,8 +112,8 @@ def test_remove_from_shortlist_returns_204(client, user_id, H):
 
 _PROFILE_BODY = {
     "name": "Wing search",
-    "fit_weights": {"gap": 0.1, "scheme": 0.5, "role_fit": 0.2, "team_impact_fit": 0.2},
-    "importance_weights": {"scheme_fit": 9, "role_fit": 4, "gap_match": 3, "team_impact_fit": 5},
+    "fit_weights": {"gap": 0.1, "scheme": 0.5, "role_fit": 0.2, "program_fit": 0.2},
+    "importance_weights": {"scheme_fit": 9, "role_fit": 4, "gap_match": 3, "program_fit": 5},
     "filters": {
         "recruiting_regions": [], "conferences": [], "positions": ["SF"],
         "target_archetypes": [], "nil_budget_min": None, "nil_budget_max": None, "min_stats": None,

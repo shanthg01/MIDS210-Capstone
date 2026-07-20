@@ -15,7 +15,7 @@ class ImportanceWeights(BaseModel):
     scheme_fit: int = Field(default=7, ge=1, le=10)
     role_fit: int = Field(default=5, ge=1, le=10)
     gap_match: int = Field(default=5, ge=1, le=10)
-    team_impact_fit: int = Field(default=5, ge=1, le=10)
+    program_fit: int = Field(default=5, ge=1, le=10)
 
 
 class StatKey(str, Enum):
