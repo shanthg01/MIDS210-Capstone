@@ -182,6 +182,8 @@ function OverallPanel({
   scheme,
   role,
   program,
+  personalized,
+  confidence,
   modelVersion,
 }: {
   overall: number;
@@ -189,6 +191,8 @@ function OverallPanel({
   scheme: number;
   role: number;
   program: number;
+  personalized: number | null;
+  confidence: number;
   modelVersion: string;
 }) {
   const color = scoreColor(overall);
@@ -208,6 +212,10 @@ function OverallPanel({
           /100
         </Typography>
       </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Score confidence: {Math.round(confidence * 100)}%
+        {personalized !== null && ` · Personalized Fit: ${Math.round(personalized)}/100`}
+      </Typography>
       <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
           {[
@@ -491,17 +499,12 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
-  // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
-  // changes — this average is just how this page's headline is presented.
+  // The calibrated Scheme score is the canonical headline. Keep the raw HE
+  // play-type score in the explanation below; it is not on the calibrated scale.
   const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
-  const schemeDisplay = hasPlayType
-    ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
-    : fit.scheme_fit;
+  const schemeDisplay = fit.scheme_fit;
 
-  // buildFitInsight's strongest/weakest narrative sits right next to the Overall
-  // panel, which already shows schemeDisplay for Scheme — pass the same blended
-  // value in so the two don't disagree on the page (overall_fit itself is untouched).
-  const fitInsight = buildFitInsight({ ...fit, scheme_fit: schemeDisplay });
+  const fitInsight = buildFitInsight(fit);
   if (playerProjectionQuery.data) {
     fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
   }
@@ -584,22 +587,23 @@ export default function FitScorePage() {
         scheme={schemeDisplay}
         role={fit.role_fit}
         program={fit.program_fit}
+        personalized={fit.personalized_fit}
+        confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown — headline is display-only average of Shot Distribution
-          + Play Type match when both exist; fit.scheme_fit itself (used by Overall
-          Fit/ranking elsewhere) is untouched, always just the shot-distribution cosine. */}
+      {/* Scheme Fit breakdown — headline is calibrated; the category scores
+          below remain raw model diagnostics. */}
       <SectionPaper>
         <ScoreHeader
           label="Scheme Fit"
           score={schemeDisplay}
-          weight="30%"
+          weight="25%"
           component="scheme_fit"
           headlineNote={
             hasPlayType
-              ? 'Average of Shot Distribution Match and Play Type Match below.'
-              : 'Shot Distribution Match only — no Play Type data available for this pair.'
+              ? 'Calibrated shot-distribution fit; Play Type Match is supporting context below.'
+              : 'Calibrated shot-distribution fit; no Play Type data available for this pair.'
           }
         />
         <Divider sx={{ mb: 2 }} />
@@ -610,7 +614,7 @@ export default function FitScorePage() {
 
         <SchemeCategoryHeader
           label="Shot Distribution Match"
-          score={fit.scheme_fit}
+          score={fit.raw_components.scheme_fit}
           note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
         />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
@@ -692,7 +696,7 @@ export default function FitScorePage() {
 
       {/* Gap Match breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="20%" component="gap_match" />
+        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="30%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
@@ -753,7 +757,7 @@ export default function FitScorePage() {
 
       {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
+        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
         <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>

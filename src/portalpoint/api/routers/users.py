@@ -1,7 +1,5 @@
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.exc import IntegrityError
 
 from portalpoint.api.deps import CurrentUser, DbSession
@@ -20,7 +18,15 @@ from portalpoint.api.schemas.user import (
     UserPreferences,
     UserPreferencesUpdate,
 )
-from portalpoint.db.models import Player, School, User, UserPreference, UserPreferenceProfile, UserShortlist
+from portalpoint.db.models import (
+    Player,
+    PlayerTeamFitScore,
+    School,
+    User,
+    UserPreference,
+    UserPreferenceProfile,
+    UserShortlist,
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -59,7 +65,9 @@ async def update_school(
     user_id: int, body: UpdateSchoolRequest, current_user: CurrentUser, db: DbSession
 ):
     _check_auth(user_id, current_user)
-    school = (await db.execute(select(School).where(School.id == body.school_id))).scalar_one_or_none()
+    school = (
+        await db.execute(select(School).where(School.id == body.school_id))
+    ).scalar_one_or_none()
     if school is None:
         raise HTTPException(status_code=404, detail="School not found")
 
@@ -96,13 +104,13 @@ async def update_preferences(
 
     if body.importance_weights is not None:
         prefs.importance_scheme_fit = body.importance_weights.scheme_fit
-        prefs.importance_role_fit   = body.importance_weights.role_fit
-        prefs.importance_gap_match  = body.importance_weights.gap_match
+        prefs.importance_role_fit = body.importance_weights.role_fit
+        prefs.importance_gap_match = body.importance_weights.gap_match
         prefs.importance_program_fit = body.importance_weights.program_fit
     if body.fit_weights is not None:
-        prefs.weight_gap     = body.fit_weights.gap
-        prefs.weight_scheme  = body.fit_weights.scheme
-        prefs.weight_role    = body.fit_weights.role_fit
+        prefs.weight_gap = body.fit_weights.gap
+        prefs.weight_scheme = body.fit_weights.scheme
+        prefs.weight_role = body.fit_weights.role_fit
         prefs.weight_program = body.fit_weights.program_fit
     if body.filters is not None:
         prefs.filters = body.filters.model_dump(exclude_none=True)
@@ -138,31 +146,45 @@ async def get_shortlist(user_id: int, current_user: CurrentUser, db: DbSession):
 
 
 @router.post("/{user_id}/shortlist/{player_id}", response_model=ShortlistItem, status_code=201)
-async def add_to_shortlist(
-    user_id: int, player_id: int, current_user: CurrentUser, db: DbSession
-):
+async def add_to_shortlist(user_id: int, player_id: int, current_user: CurrentUser, db: DbSession):
     _check_auth(user_id, current_user)
 
-    player = (
-        await db.execute(select(Player).where(Player.id == player_id))
-    ).scalar_one_or_none()
+    player = (await db.execute(select(Player).where(Player.id == player_id))).scalar_one_or_none()
     if player is None:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
 
-    entry = UserShortlist(user_id=user_id, player_id=player_id)
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one()
+    overall_fit = None
+    if user.school_id is not None:
+        overall_fit = (
+            await db.execute(
+                select(PlayerTeamFitScore.overall_fit)
+                .where(
+                    PlayerTeamFitScore.player_id == player_id,
+                    PlayerTeamFitScore.school_id == user.school_id,
+                    PlayerTeamFitScore.calibration_version.is_not(None),
+                )
+                .order_by(desc(PlayerTeamFitScore.season))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    entry = UserShortlist(user_id=user_id, player_id=player_id, overall_fit=overall_fit)
     db.add(entry)
     try:
         await db.commit()
         await db.refresh(entry)
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Player already on shortlist")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Player already on shortlist"
+        )
 
     return ShortlistItem(
         player_id=str(player_id),
         player_name=player.full_name,
         position=player.position,
-        overall_fit=None,
+        overall_fit=entry.overall_fit,
         added_at=entry.added_at,
     )
 
@@ -190,13 +212,17 @@ async def remove_from_shortlist(
 # copies its fields into that row; this table is never read by the fit-score
 # computation path itself.
 
+
 def _profile_to_schema(p: UserPreferenceProfile) -> PreferenceProfile:
     return PreferenceProfile(
         id=p.id,
         name=p.name,
         created_at=p.created_at,
         fit_weights=FitWeights(
-            gap=p.weight_gap, scheme=p.weight_scheme, role_fit=p.weight_role, program_fit=p.weight_program,
+            gap=p.weight_gap,
+            scheme=p.weight_scheme,
+            role_fit=p.weight_role,
+            program_fit=p.weight_program,
         ),
         importance_weights=ImportanceWeights(
             scheme_fit=p.importance_scheme_fit,
@@ -212,12 +238,16 @@ def _profile_to_schema(p: UserPreferenceProfile) -> PreferenceProfile:
 async def list_preference_profiles(user_id: int, current_user: CurrentUser, db: DbSession):
     _check_auth(user_id, current_user)
     rows = (
-        await db.execute(
-            select(UserPreferenceProfile)
-            .where(UserPreferenceProfile.user_id == user_id)
-            .order_by(UserPreferenceProfile.created_at)
+        (
+            await db.execute(
+                select(UserPreferenceProfile)
+                .where(UserPreferenceProfile.user_id == user_id)
+                .order_by(UserPreferenceProfile.created_at)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return PreferenceProfileListResponse(profiles=[_profile_to_schema(p) for p in rows])
 
 

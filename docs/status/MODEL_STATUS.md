@@ -43,7 +43,7 @@ Immediate modeling order:
 ✅ Recommendation Engine v1.2    (scheme+gap+role+team_impact_fit ranking; M6 delta_adj_em wired in and run for real, 2026-07-11)
 ✅ /api/recommendations wiring   (computes live per request now, 2026-07-15 — was a hardcoded stub since the original scaffold)
 ✳️ Program Fit                    (descoped from active roadmap, 2026-07-11 — not blocking anything below)
-→  fit_scores.py full scoring    (decide whether to reweight overall_fit to 3 real components now that program_fit is descoped)
+✅ fit_scores.py calibrated scoring (`fit-cal-v1` code + migration; shared DB backfill pending) — Scheme 25%, Gap 30%, Role 25%, Program Fit 20% (still the descoped stub)
 ```
 
 ---
@@ -55,20 +55,26 @@ PortalPoint is program-facing: coaching staffs evaluate transfer players for fit
 1. `scheme_fit` - player shot profile vs team shot profile.
 2. `gap_match` - player skills vs roster needs.
 3. `role_fit` - projected opportunity / rotation fit.
-4. `program_fit` - program constraints and preferences.
+4. `program_fit` - program constraints and preferences (descoped placeholder).
 
 Current composite state:
 
 ```text
-overall_fit = weighted(scheme_fit, gap_match, role_fit, program_fit)
+weighted_fit = 0.25*scheme_fit + 0.30*gap_match + 0.25*role_fit + 0.20*program_fit
+overall_fit = school_relative_calibration(weighted_fit)
 ```
 
-`scheme_fit`, `gap_match`, and 2027 `role_fit` are real where the relevant model
-rows exist. `program_fit` is still the 50.0 placeholder — **Program Fit is
-descoped from the active roadmap (2026-07-11)**, so this is no longer "pending
-a model," it's an accepted product decision. `overall_fit` should still be
-treated as partial/compressed until either Program Fit is revisited or the
-formula is deliberately reweighted to 3 real components (not yet decided).
+`fit-cal-v1` converts the four raw signals to a comparable school-relative
+candidate scale, shrinks low-confidence information toward neutral 50, and
+persists canonical Overall Fit. Program Fit remains the 50.0 descoped
+placeholder — calibrating a constant collapses everyone to 50, so its 20%
+weight is real but currently inert until/unless real NIL/geography/academic
+proxy data lands. This canonical formula is intentionally separate from the
+Recommendation Engine's own `team_impact_fit`-based ranking (`rec-v1.2`,
+scheme=0.25/gap=0.30/role=0.25/team_impact_fit=0.20), which predates this
+change and is unaffected by it. Code and migration are complete; the shared
+2027 database backfill is a separate operational step. See
+`../models/fit_score_calibration.md`.
 
 ---
 

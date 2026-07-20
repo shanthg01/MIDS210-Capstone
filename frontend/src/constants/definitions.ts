@@ -41,7 +41,7 @@ export const FIT_COMPONENTS: Record<
 
 export const OVERALL_FIT: Definition = {
   label: 'Overall Fit',
-  short: 'A weighted blend of Gap Match, Scheme Fit, Role Fit, and Program Fit, using your Settings weights.',
+  short: 'The canonical calibrated blend of Scheme Fit (25%), Gap Match (30%), Role Fit (25%), and Program Fit (20%). Program Fit remains a neutral 50 placeholder.',
 };
 
 export const SKILLS: Record<string, Definition> = {

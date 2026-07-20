@@ -115,7 +115,8 @@ async def get_recommendations(
             player_id=str(row["player_id"]),
             player_name=row["player_name"],
             position=row["position"],
-            overall_fit=row["personalized_fit"],
+            overall_fit=row["overall_fit"],
+            personalized_fit=row["personalized_fit"],
             components=FitComponents(
                 gap_match=row["gap_match"],
                 scheme_fit=row["scheme_fit"],

@@ -221,7 +221,7 @@ ON CONFLICT (email) DO UPDATE SET
 INSERT INTO user_preferences
     (user_id, importance_scheme_fit, importance_role_fit, importance_gap_match, importance_program_fit,
      weight_gap, weight_scheme, weight_role, weight_program, filters)
-SELECT id, 7, 5, 5, 5, 0.20, 0.30, 0.25, 0.25, '{}'::jsonb
+SELECT id, 7, 5, 5, 5, 0.30, 0.25, 0.25, 0.20, '{}'::jsonb
 FROM users
 WHERE email = :test_email
 ON CONFLICT (user_id) DO NOTHING;
