@@ -23,7 +23,7 @@ import {
 function DefinitionRow({ def }: { def: Definition }) {
   return (
     <Box sx={{ py: 1 }}>
-      <Typography variant="body2" fontWeight={700}>
+      <Typography variant="body2" sx={{ fontWeight: 700 }}>
         {def.label}
       </Typography>
       <Typography variant="body2" color="text.secondary">
@@ -45,7 +45,7 @@ function Section({
   return (
     <Accordion defaultExpanded={defaultExpanded} variant="outlined" disableGutters sx={{ mb: 1.5 }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Typography variant="subtitle1" fontWeight={700}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
           {title}
         </Typography>
       </AccordionSummary>
@@ -63,8 +63,8 @@ function Section({
 
 export default function GlossaryPage() {
   return (
-    <Box maxWidth={720}>
-      <Typography variant="h4" fontWeight={800} gutterBottom>
+    <Box sx={{ maxWidth: 720 }}>
+      <Typography variant="h4" sx={{ fontWeight: 800 }} gutterBottom>
         Glossary
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>

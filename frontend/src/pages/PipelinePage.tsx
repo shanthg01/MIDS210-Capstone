@@ -80,8 +80,7 @@ function PlayerRow({ player, userId }: { player: ShortlistItem; userId: number }
         <Box sx={{ flex: 1, minWidth: 200 }}>
           <Typography
             variant="body1"
-            fontWeight={700}
-            sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
+            sx={{ fontWeight: 700, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
             onClick={() => navigate(`/players/${player.player_id}`)}
           >
             {player.player_name}
@@ -100,8 +99,8 @@ function PlayerRow({ player, userId }: { player: ShortlistItem; userId: number }
             <>
               <Typography
                 variant="h5"
-                fontWeight={800}
                 color={`${color}.main`}
+                sx={{ fontWeight: 800 }}
               >
                 {player.overall_fit.toFixed(0)}
               </Typography>
@@ -205,9 +204,9 @@ export default function PipelinePage() {
   const players = sortPlayers(data?.players ?? []);
 
   return (
-    <Box maxWidth={800}>
+    <Box sx={{ maxWidth: 800 }}>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Recruiting Pipeline
         </Typography>
         <Typography variant="body2" color="text.secondary">

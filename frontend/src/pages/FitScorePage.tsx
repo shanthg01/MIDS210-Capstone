@@ -79,7 +79,7 @@ function ScoreHeader({
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <DefinitionTooltip title={FIT_COMPONENTS[component as keyof typeof FIT_COMPONENTS]?.short ?? ''}>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {label}
             </Typography>
           </DefinitionTooltip>
@@ -94,9 +94,9 @@ function ScoreHeader({
           </Typography>
         )}
       </Box>
-      <Typography variant="h4" fontWeight={800} color={`${color}.main`}>
+      <Typography variant="h4" color={`${color}.main`} sx={{ fontWeight: 800 }}>
         {fmtScore(score)}
-        <Typography component="span" variant="body2" color="text.secondary" fontWeight={400}>
+        <Typography component="span" variant="body2" color="text.secondary" sx={{ fontWeight: 400 }}>
           /100
         </Typography>
       </Typography>
@@ -127,7 +127,7 @@ function SubBar({
         ) : (
           <Typography variant="body2">{label}</Typography>
         )}
-        <Typography variant="body2" fontWeight={600}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {fmtScore(value)}
         </Typography>
       </Box>
@@ -148,7 +148,7 @@ function SubBar({
 function SchemeCategoryHeader({ label, score, note }: { label: string; score: number; note?: string }) {
   return (
     <Box sx={{ mb: 1 }}>
-      <Typography variant="subtitle2" fontWeight={700}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
         {label} — {fmtScore(score)}/100
       </Typography>
       {note && (
@@ -201,7 +201,7 @@ function OverallPanel({
         Overall Fit Score
       </Typography>
       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
-        <Typography variant="h2" fontWeight={900} color={`${color}.main`}>
+        <Typography variant="h2" color={`${color}.main`} sx={{ fontWeight: 900 }}>
           {fmtScore(overall)}
         </Typography>
         <Typography variant="h5" color="text.secondary">
@@ -233,7 +233,7 @@ function OverallPanel({
                     {label}
                   </Typography>
                 </Box>
-                <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
+                <Typography variant="body2" color={`${c}.main`} sx={{ fontWeight: 700 }}>
                   {fmtScore(value)}
                 </Typography>
               </Box>
@@ -289,7 +289,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
 
   return (
     <SectionPaper>
-      <Typography variant="h6" fontWeight={700} gutterBottom>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
         Team Rating Projection
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
@@ -310,7 +310,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Current AdjEM
           </Typography>
-          <Typography variant="h5" fontWeight={700}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             {fmtAdjEM(data.current_adjEM)}
           </Typography>
         </Box>
@@ -321,7 +321,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Projected AdjEM
           </Typography>
-          <Typography variant="h5" fontWeight={700}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             {fmtAdjEM(data.projected_adjEM)}
           </Typography>
         </Box>
@@ -338,20 +338,20 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
           {data.baseline_adj_o != null && data.projected_adj_o != null && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Offense (AdjO)
               </Typography>
-              <Typography variant="body2" fontWeight={600}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
                 {fmtAdjEM(data.baseline_adj_o)} → {fmtAdjEM(data.projected_adj_o)}
               </Typography>
             </Box>
           )}
           {data.baseline_adj_d != null && data.projected_adj_d != null && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Defense (AdjD) ↓ better
               </Typography>
-              <Typography variant="body2" fontWeight={600}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
                 {fmtAdjEM(data.baseline_adj_d)} → {fmtAdjEM(data.projected_adj_d)}
               </Typography>
             </Box>
@@ -366,7 +366,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             80% CI
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {fmtAdjEM(data.confidence_interval[0])} to {fmtAdjEM(data.confidence_interval[1])}
           </Typography>
         </Box>
@@ -374,7 +374,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             National Percentile
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {data.national_percentile}th
           </Typography>
         </Box>
@@ -382,7 +382,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Conference Rank
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             #{data.conference_rank}
           </Typography>
         </Box>
@@ -467,7 +467,7 @@ export default function FitScorePage() {
 
   if (isLoading) {
     return (
-      <Box maxWidth={720}>
+      <Box sx={{ maxWidth: 720 }}>
         <Skeleton width={300} height={28} sx={{ mb: 2 }} />
         <Skeleton width={200} height={44} sx={{ mb: 1 }} />
         <Skeleton variant="rectangular" height={140} sx={{ mb: 2, borderRadius: 1 }} />
@@ -507,7 +507,7 @@ export default function FitScorePage() {
   }
 
   return (
-    <Box maxWidth={720}>
+    <Box sx={{ maxWidth: 720 }}>
       <Breadcrumbs sx={{ mb: 2 }}>
         <Link
           component="button"
@@ -535,7 +535,7 @@ export default function FitScorePage() {
       {/* Player name */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <Box>
-          <Typography variant="h4" fontWeight={800}>
+          <Typography variant="h4" sx={{ fontWeight: 800 }}>
             {playerName}
           </Typography>
           <Box sx={{ display: 'flex', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
@@ -567,7 +567,7 @@ export default function FitScorePage() {
 
       {/* Key insight — plain-language takeaway ahead of the detailed breakdowns */}
       <Alert severity="info" sx={{ mb: 2 }}>
-        <Typography variant="body2" fontWeight={700}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
           {fitInsight.headline}
         </Typography>
         {fitInsight.bullets.map((b) => (
@@ -659,7 +659,7 @@ export default function FitScorePage() {
                 Projected MPG
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {fmt1(fit.breakdown.role_fit.projected_minutes)}
             </Typography>
             <Typography variant="caption" color="text.secondary">
@@ -673,7 +673,7 @@ export default function FitScorePage() {
                 Starter Probability
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {(fit.breakdown.role_fit.starter_probability * 100).toFixed(0)}%
             </Typography>
           </Box>
@@ -682,7 +682,7 @@ export default function FitScorePage() {
               <Typography variant="caption" color="text.secondary">
                 Depth Chart Position
               </Typography>
-              <Typography variant="h6" fontWeight={700}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
                 #{fit.breakdown.role_fit.depth_chart_position}
               </Typography>
             </Box>
@@ -714,7 +714,7 @@ export default function FitScorePage() {
                 Position Depth Score
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {fmtScore(fit.breakdown.gap.position_depth_score)}
             </Typography>
           </Box>
@@ -723,7 +723,7 @@ export default function FitScorePage() {
               <Typography variant="caption" color="text.secondary">
                 Gap Confidence
               </Typography>
-              <Typography variant="h6" fontWeight={700}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
                 {(fit.breakdown.gap.gap_reliability * 100).toFixed(0)}%
               </Typography>
             </Box>

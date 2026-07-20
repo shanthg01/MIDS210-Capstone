@@ -139,7 +139,7 @@ function SliderRow({
     <Box sx={{ mb: 2.5 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
         <Box>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {label}
           </Typography>
           {description && (
@@ -148,7 +148,7 @@ function SliderRow({
             </Typography>
           )}
         </Box>
-        <Typography variant="body2" fontWeight={700} minWidth={40} textAlign="right">
+        <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 40, textAlign: 'right' }}>
           {value}{suffix}
         </Typography>
       </Box>
@@ -185,7 +185,7 @@ function MechanismHeader({
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, mb: 1.5, mt: 4 }}>
       <Box sx={{ color, display: 'flex', alignItems: 'center' }}>{icon}</Box>
       <Box>
-        <Typography variant="subtitle1" fontWeight={700} lineHeight={1.2}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
           {title}
         </Typography>
         <Typography variant="caption" color="text.secondary">
@@ -396,7 +396,7 @@ export default function SettingsPage() {
 
   if (isLoading) {
     return (
-      <Box maxWidth={600}>
+      <Box sx={{ maxWidth: 600 }}>
         <Skeleton width={200} height={36} sx={{ mb: 3 }} />
         <Skeleton variant="rectangular" height={280} sx={{ mb: 2, borderRadius: 1 }} />
         <Skeleton variant="rectangular" height={260} sx={{ borderRadius: 1 }} />
@@ -405,8 +405,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <Box maxWidth={600}>
-      <Typography variant="h5" fontWeight={700} gutterBottom>
+    <Box sx={{ maxWidth: 600 }}>
+      <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
         Program Settings
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
@@ -414,7 +414,7 @@ export default function SettingsPage() {
       </Typography>
 
       <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
-        <Typography variant="h6" fontWeight={700} gutterBottom>
+        <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
           Program
         </Typography>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
@@ -546,7 +546,7 @@ export default function SettingsPage() {
       <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Box>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               Fit Component Weights
             </Typography>
             <Typography variant="caption" color="text.secondary">
@@ -586,7 +586,7 @@ export default function SettingsPage() {
       {/* Priority/importance weights */}
       <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'info.main' }}>
         <Box sx={{ mb: 2 }}>
-          <Typography variant="h6" fontWeight={700}>
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
             Priority Weights
           </Typography>
           <Typography variant="caption" color="text.secondary">
@@ -620,7 +620,7 @@ export default function SettingsPage() {
       {/* Recruiting filters */}
       <Paper variant="outlined" sx={{ p: 3, mb: 3, borderLeft: '4px solid', borderLeftColor: 'warning.main' }}>
         <Box sx={{ mb: 2 }}>
-          <Typography variant="h6" fontWeight={700}>
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
             Recruiting Filters
           </Typography>
           <Typography variant="caption" color="text.secondary">
@@ -696,7 +696,7 @@ export default function SettingsPage() {
           />
 
           <Box>
-            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
               Stat thresholds
             </Typography>
             <Stack spacing={1.5}>

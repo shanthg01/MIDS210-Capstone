@@ -16,7 +16,7 @@ export default function DashboardPage() {
   return (
     <Box>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Portal Recommendations
         </Typography>
         <Typography variant="body2" color="text.secondary">

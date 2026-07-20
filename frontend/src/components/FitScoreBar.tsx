@@ -65,7 +65,7 @@ export default function FitScoreBar({ label, value }: Props) {
             {LABEL_MAP[label] ?? label}
           </Typography>
         </DefinitionTooltip>
-        <Typography variant="caption" fontWeight={700}>
+        <Typography variant="caption" sx={{ fontWeight: 700 }}>
           {Math.round(value)}
         </Typography>
       </Box>

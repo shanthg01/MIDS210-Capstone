@@ -52,7 +52,7 @@ function ImpactRow({ item, rank }: { item: RosterImpactItem; rank: number }) {
     >
       <TableCell sx={{ color: 'text.secondary', width: 40 }}>{rank}</TableCell>
       <TableCell>
-        <Typography variant="body2" fontWeight={600}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {item.player_name}
         </Typography>
       </TableCell>
@@ -112,7 +112,7 @@ export default function RosterImpactPage() {
   return (
     <Box>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Roster Impact Rankings
         </Typography>
         <Typography variant="body2" color="text.secondary">
