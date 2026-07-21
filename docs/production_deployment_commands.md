@@ -649,6 +649,51 @@ aws ssm start-session --target i-0a6e1bafc1cb6f379 \
 
 ---
 
+## Routine redeploy (Day 2 — what to run after every code change)
+
+The one-time setup above (Phases 1-6) doesn't need repeating. This is what actually runs every time
+frontend or backend code changes, assembled here as one unit since it's the recurring operational
+sequence, not a setup step.
+
+**Frontend changed:**
+```bash
+cd frontend
+npm run build
+aws s3 sync dist/ s3://portalpoint-frontend --delete
+aws cloudfront create-invalidation --distribution-id E2HF7HKH8Y1FKD --paths "/*"
+```
+No verification step needed beyond a hard-refresh — CloudFront invalidation is fire-and-forget (check
+`aws cloudfront get-distribution --id E2HF7HKH8Y1FKD --query 'Distribution.Status'` if a stale response
+is suspected after a couple minutes).
+
+**Backend changed** (do this *before* the frontend steps if both changed, since the frontend may be
+calling a new/changed endpoint):
+```bash
+docker build -t portalpoint-backend:local .
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 424056758764.dkr.ecr.us-east-1.amazonaws.com
+docker tag portalpoint-backend:local 424056758764.dkr.ecr.us-east-1.amazonaws.com/portalpoint-backend:latest
+docker push 424056758764.dkr.ecr.us-east-1.amazonaws.com/portalpoint-backend:latest
+aws ecs update-service --cluster portalpoint-prod --service portalpoint-backend --force-new-deployment
+```
+
+**Verify the backend actually came up healthy** (don't skip — a redeploy can silently fail to place a
+new task, per the real IAM/secrets incidents earlier in this doc):
+```bash
+aws ecs describe-services --cluster portalpoint-prod --services portalpoint-backend \
+  --query 'services[0].{Running:runningCount,Desired:desiredCount}'
+
+aws elbv2 describe-target-health \
+  --target-group-arn arn:aws:elasticloadbalancing:us-east-1:424056758764:targetgroup/portalpoint-tg/6ef1d9f046971e12 \
+  --query 'TargetHealthDescriptions[].TargetHealth.State'
+```
+Want `Running: 1` and `healthy`. If a new migration is included in the code change, `deploy.yml`'s
+CI path runs it automatically on merge to `main` (added 2026-07-21) — but a manual redeploy like this
+one (pushing straight to ECR without going through `main`) does **not** run it; run
+`alembic upgrade head` yourself first in that case (see `docs/aws_rds_setup.md` for the tunnel + master
+user needed for DDL).
+
+---
+
 ## Local verification commands (run before touching any shared infra)
 
 ```bash
