@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+from psycopg2.extras import execute_values
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -437,7 +438,8 @@ def score_active_candidates(
         target_season: Season being scored (play year, e.g. 2027).
 
     Returns:
-        Only the active candidate rows, with success_probability and tier.
+        Only the active candidate rows, with success_probability, tier,
+        similar_transfers, and explanation all populated.
     """
     # Align columns: active frame has no success/label columns yet.
     active = df_active.copy()
@@ -446,21 +448,45 @@ def score_active_candidates(
     active["success_label"] = pd.NA
     active["has_prior_history"] = False
 
+    # df_historical already carries its own scored/derived columns
+    # (cluster_success_rate, cell_success_rate, cell_n, shrinkage_w,
+    # success_probability, success_tier, has_prior_history, similar_transfers,
+    # explanation) from run_backtest's full run_transfer_success_pipeline pass.
+    # Drop them all before concatenating — otherwise the merge inside
+    # compute_success_probability's per-season loop collides with the
+    # pre-existing same-named columns (pandas suffixes duplicates _x/_y instead
+    # of the plain name it expects), breaking the very next .fillna() call with
+    # a KeyError. Recomputing them fresh across the combined frame is correct
+    # (and cheap) regardless — it's what already happens for historical seasons
+    # on every standalone backtest run. Real bug this fixes: without also
+    # dropping similar_transfers/explanation here and recomputing them below,
+    # every forward-scored active row silently got NaN for both — attach_similar_
+    # transfers/build_explanation were never being called on the active rows at all.
+    _DERIVED_COLS = [
+        "cluster_success_rate", "cell_success_rate", "cell_n",
+        "shrinkage_w", "success_probability", "success_tier", "has_prior_history",
+        "similar_transfers", "explanation",
+    ]
+    historical_clean = df_historical.drop(columns=_DERIVED_COLS, errors="ignore")
+    historical_clean["has_prior_history"] = False
+
     # Add any historical columns missing from active (post_*, drift, etc.)
-    for col in df_historical.columns:
+    for col in historical_clean.columns:
         if col not in active.columns:
             active[col] = np.nan
 
     # Historical rows used purely as training; active rows scored in their season.
     # Override historical seasons to be < target_season (they already are).
     combined = pd.concat(
-        [df_historical[active.columns], active],
+        [historical_clean[active.columns], active],
         ignore_index=True,
     )
 
     scored = compute_success_probability(
         combined, shrinkage_k=shrinkage_k, decay_lambda=decay_lambda
     )
+    scored = attach_similar_transfers(scored)
+    scored["explanation"] = scored.apply(build_explanation, axis=1)
     return scored[scored["season"] == target_season].copy()
 
 
@@ -473,15 +499,7 @@ INSERT INTO transfer_success_scores (
     cell_n, shrinkage_w, cluster_success_rate, cell_success_rate,
     explanation, similar_transfers,
     model_version, computed_at, expires_at
-) VALUES (
-    %(player_id)s, %(to_school_id)s, %(season)s,
-    %(player_cluster)s, %(team_offense_cluster_id)s, %(team_defense_cluster_id)s,
-    %(team_cluster_label)s,
-    %(success_probability)s, %(success_tier)s,
-    %(cell_n)s, %(shrinkage_w)s, %(cluster_success_rate)s, %(cell_success_rate)s,
-    %(explanation)s, %(similar_transfers)s,
-    %(model_version)s, %(computed_at)s, %(expires_at)s
-)
+) VALUES %s
 ON CONFLICT (player_id, to_school_id, season, model_version)
 DO UPDATE SET
     player_cluster             = EXCLUDED.player_cluster,
@@ -501,12 +519,88 @@ DO UPDATE SET
 """
 
 
+def _coerce_json_scalar(val):
+    """NaN -> None (json.dumps would otherwise emit the bare token NaN, valid
+    Python JSON but rejected by Postgres's stricter JSON parser), numpy
+    int/float/bool -> native Python types (json.dumps can't serialize numpy
+    scalars directly)."""
+    if isinstance(val, float) and np.isnan(val):
+        return None
+    if isinstance(val, np.integer):
+        return int(val)
+    if isinstance(val, np.floating):
+        return None if np.isnan(val) else float(val)
+    if isinstance(val, np.bool_):
+        return bool(val)
+    return val
+
+
+def _sanitize_similar_transfers(sim) -> list[dict]:
+    """Sanitize each comp dict's values before json.dumps.
+
+    Comp dicts (minutes_drift/usage_drift/etc, from compute_drift()) can be
+    NaN when either side of a comp's drift is missing — real error hit on the
+    first run that actually populated similar_transfers: "invalid input syntax
+    for type json ... Token 'NaN' is invalid".
+    """
+    if not isinstance(sim, list):
+        return []
+    return [{k: _coerce_json_scalar(v) for k, v in comp.items()} for comp in sim]
+
+
+def build_upsert_rows(
+    records: list[dict],
+    model_version: str = MODEL_VERSION,
+    computed_at: datetime | None = None,
+    expires_days: int = 7,
+) -> list[tuple]:
+    """Build the tuple rows upsert_transfer_success_scores writes via execute_values.
+
+    Pulled out as its own pure function so the NaN-sanitization above is
+    testable without a DB connection.
+    """
+    now = computed_at or datetime.now(tz=timezone.utc)
+    expires = now + timedelta(days=expires_days)
+
+    rows = []
+    for rec in records:
+        sim = _sanitize_similar_transfers(rec.get("similar_transfers") or [])
+        rows.append((
+            int(rec["player_id"]),
+            int(rec["to_school_id"]),
+            int(rec["season"]),
+            _coerce_json_scalar(rec.get("player_cluster")),
+            _coerce_json_scalar(rec.get("team_offense_cluster_id")),
+            _coerce_json_scalar(rec.get("team_defense_cluster_id")),
+            rec.get("team_cluster_label"),
+            float(rec["success_probability"]),
+            str(rec["success_tier"]) if pd.notna(rec.get("success_tier")) else None,
+            _coerce_json_scalar(rec.get("cell_n")),
+            _coerce_json_scalar(rec.get("shrinkage_w")),
+            _coerce_json_scalar(rec.get("cluster_success_rate")),
+            _coerce_json_scalar(rec.get("cell_success_rate")),
+            rec.get("explanation"),
+            json.dumps(sim),
+            model_version,
+            now,
+            expires,
+        ))
+    return rows
+
+
 def upsert_transfer_success_scores(
     engine,
     records: list[dict],
     expires_days: int = 7,
 ) -> int:
     """Upsert scored active candidates into transfer_success_scores.
+
+    Uses execute_values (batched multi-row INSERT) rather than executemany —
+    real bug found running this against 456K real candidate rows: plain
+    psycopg2 executemany issues one round-trip per row, which over an SSM
+    tunnel took 90+ minutes with no progress and no end in sight. execute_values
+    batches many rows per round-trip, matching destination_projection.py's
+    own pattern for its similarly-sized (~450K row) upsert.
 
     Args:
         engine:      SQLAlchemy sync engine.
@@ -519,53 +613,19 @@ def upsert_transfer_success_scores(
     if not records:
         return 0
 
-    now = datetime.now(tz=timezone.utc)
-    expires = now + timedelta(days=expires_days)
-
-    def _coerce(val):
-        if isinstance(val, float) and np.isnan(val):
-            return None
-        if isinstance(val, (np.integer,)):
-            return int(val)
-        if isinstance(val, (np.floating,)):
-            return float(val)
-        return val
-
-    rows = []
-    for rec in records:
-        sim = rec.get("similar_transfers") or []
-        if not isinstance(sim, (list, str)):
-            sim = []
-        rows.append({
-            "player_id":                int(rec["player_id"]),
-            "to_school_id":             int(rec["to_school_id"]),
-            "season":                   int(rec["season"]),
-            "player_cluster":           _coerce(rec.get("player_cluster")),
-            "team_offense_cluster_id":  _coerce(rec.get("team_offense_cluster_id")),
-            "team_defense_cluster_id":  _coerce(rec.get("team_defense_cluster_id")),
-            "team_cluster_label":       rec.get("team_cluster_label"),
-            "success_probability":      float(rec["success_probability"]),
-            "success_tier":             str(rec["success_tier"]) if pd.notna(rec.get("success_tier")) else None,
-            "cell_n":                   _coerce(rec.get("cell_n")),
-            "shrinkage_w":              _coerce(rec.get("shrinkage_w")),
-            "cluster_success_rate":     _coerce(rec.get("cluster_success_rate")),
-            "cell_success_rate":        _coerce(rec.get("cell_success_rate")),
-            "explanation":              rec.get("explanation"),
-            "similar_transfers":        json.dumps(sim),
-            "model_version":            MODEL_VERSION,
-            "computed_at":              now,
-            "expires_at":               expires,
-        })
+    rows = build_upsert_rows(records, expires_days=expires_days)
 
     conn = engine.raw_connection()
     try:
         cur = conn.cursor()
-        cur.executemany(UPSERT_SQL, rows)
-        n = cur.rowcount
+        # cur.rowcount after execute_values only reflects the last page, not the
+        # full batch (page_size=1000 chunks a 456K-row write into ~457 statements) —
+        # return len(rows) directly, same fix destination_projection.py already needed.
+        execute_values(cur, UPSERT_SQL, rows, page_size=1000)
         conn.commit()
     finally:
         conn.close()
-    return n
+    return len(rows)
 
 
 def run_transfer_success_pipeline(

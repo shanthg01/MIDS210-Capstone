@@ -5,6 +5,8 @@ test_gap_matching.py.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,10 +15,12 @@ from portalpoint.modeling.transfer_success import (
     SHRINKAGE_K,
     attach_similar_transfers,
     build_explanation,
+    build_upsert_rows,
     compute_drift,
     compute_success_probability,
     label_transfer_success,
     run_transfer_success_pipeline,
+    score_active_candidates,
     upsert_transfer_success_scores,
 )
 
@@ -238,8 +242,87 @@ def test_pipeline_end_to_end_produces_all_columns():
 
 
 # ---------------------------------------------------------------------------
-# upsert_transfer_success_scores
+# score_active_candidates
+# ---------------------------------------------------------------------------
+
+def test_score_active_candidates_handles_already_scored_historical_frame():
+    # Real bug (found running against production data): df_historical here is
+    # already-scored output of run_transfer_success_pipeline (carries its own
+    # cluster_success_rate/cell_success_rate/cell_n/shrinkage_w/success_tier/
+    # has_prior_history columns). Concatenating it with the active frame and
+    # re-running compute_success_probability used to collide on those same-named
+    # columns (pandas merge suffixes duplicates _x/_y), raising
+    # KeyError: 'cluster_success_rate' on the very next .fillna() call.
+    historical_rows = [
+        _base_row(
+            season=2021, player_id=i, actual_value_per_100=5.0, projected_value_per_100=4.0,
+            to_school_id=42, player_cluster_label="Test Archetype",
+        )
+        for i in range(SHRINKAGE_K * 5)
+    ]
+    df_historical = run_transfer_success_pipeline(_make_df(historical_rows))
+    assert "cluster_success_rate" in df_historical.columns  # precondition for the bug
+
+    df_active = pd.DataFrame([{
+        "player_id": 999,
+        "player_name": "Active Candidate",
+        "to_school_id": 42,
+        "season": 2022,
+        "player_cluster": 1,
+        "player_cluster_label": "Test Archetype",
+        "team_cluster_label": "Motion / Pack Line",
+        "team_offense_cluster_id": 2,
+        "team_defense_cluster_id": 3,
+    }])
+
+    scored = score_active_candidates(df_active, df_historical, target_season=2022)
+
+    assert len(scored) == 1
+    row = scored.iloc[0]
+    assert row["season"] == 2022
+    assert 0.0 <= row["success_probability"] <= 1.0
+    assert row["cell_n"] > 0.0  # matched the sparse historical cell built above
+
+    # Real bug #2 (also found against production, same run): score_active_candidates
+    # never called attach_similar_transfers/build_explanation on the forward-scored
+    # rows at all — every real row written to transfer_success_scores had NaN
+    # explanation and an empty similar_transfers list despite the matching
+    # historical cell built above. explanation is a required (non-Optional) field
+    # on PredictionResponse, so a NaN here breaks API serialization, not just display.
+    assert isinstance(row["explanation"], str) and row["explanation"]
+    assert isinstance(row["similar_transfers"], list) and len(row["similar_transfers"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# upsert_transfer_success_scores / build_upsert_rows
 # ---------------------------------------------------------------------------
 
 def test_upsert_empty_records_is_noop():
     assert upsert_transfer_success_scores(engine=None, records=[]) == 0
+
+
+def test_build_upsert_rows_sanitizes_nan_in_similar_transfers():
+    # Real bug (found on the first run that actually populated similar_transfers,
+    # after the score_active_candidates fix above): a comp dict's minutes_drift/
+    # usage_drift can be NaN when either side is missing (compute_drift's
+    # subtraction). json.dumps serializes Python float('nan') as the bare
+    # token NaN — valid Python JSON, rejected by Postgres's JSON parser with
+    # "invalid input syntax for type json ... Token 'NaN' is invalid".
+    record = {
+        "player_id": 1, "to_school_id": 2, "season": 2027,
+        "player_cluster": 1, "team_offense_cluster_id": 2, "team_defense_cluster_id": 3,
+        "team_cluster_label": "Motion / Pack Line",
+        "success_probability": 0.6, "success_tier": "Moderate",
+        "cell_n": 5.0, "shrinkage_w": 0.5,
+        "cluster_success_rate": 0.55, "cell_success_rate": 0.6,
+        "explanation": "test",
+        "similar_transfers": [
+            {"player_name": "X", "minutes_drift": float("nan"), "usage_drift": 1.0},
+        ],
+    }
+    rows = build_upsert_rows([record])
+    assert len(rows) == 1
+    sim_json = rows[0][14]  # similar_transfers column position in the tuple
+    parsed = json.loads(sim_json)  # must not raise, and must round-trip through real JSON
+    assert parsed[0]["minutes_drift"] is None
+    assert parsed[0]["usage_drift"] == 1.0
