@@ -47,6 +47,47 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
+      - name: Run DB migrations (one-off ECS task, must succeed before deploy)
+        run: |
+          # Reuse the running service's own network config (subnets/SG) instead of
+          # hardcoding IDs here — stays correct automatically if that ever changes.
+          NETWORK_CONFIG=$(aws ecs describe-services \
+            --cluster portalpoint-prod --services portalpoint-backend \
+            --query 'services[0].networkConfiguration' --output json)
+
+          # Overrides the container command to run the migration instead of uvicorn,
+          # and swaps DATABASE_URL to portalpoint_master — some tables aren't owned
+          # by portalpoint_app (the app's runtime user), so DDL fails under it (real
+          # incident, 2026-07-20: see docs/status/ARCHITECTURE_STATUS.md).
+          TASK_ARN=$(aws ecs run-task \
+            --cluster portalpoint-prod \
+            --task-definition portalpoint-backend \
+            --launch-type FARGATE \
+            --network-configuration "$NETWORK_CONFIG" \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "backend",
+                "command": ["alembic", "upgrade", "head"],
+                "secrets": [
+                  {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:424056758764:secret:portalpoint/database-master-url"}
+                ]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster portalpoint-prod --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster portalpoint-prod --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration failed with exit code $EXIT_CODE — aborting deploy, service is untouched."
+            aws logs tail /ecs/portalpoint-backend --since 10m || true
+            exit 1
+          fi
+          echo "Migrations applied successfully."
+
       - name: Force new ECS deployment
         run: |
           aws ecs update-service \

@@ -25,7 +25,8 @@ build/
 
 # uv
 .python-version
-uv.lock
+# uv.lock is committed intentionally — Dockerfile needs it for `uv sync --frozen`,
+# and CI/fresh clones have no local copy otherwise (real build break found via PR #65 review)
 
 # Testing & coverage
 .pytest_cache/
