@@ -10,6 +10,7 @@ def _fit_score_row(breakdown: dict) -> SimpleNamespace:
     return SimpleNamespace(
         player_id=1,
         school_id=10,
+        season=2026,
         overall_fit=70.0,
         gap_match=65.0,
         scheme_fit=80.0,

@@ -39,6 +39,7 @@ from portalpoint.db.models import (
     PlayingTimeProjection as PlayingTimeProjectionORM,
 )
 from portalpoint.modeling.availability import AVAILABLE_STATUSES
+from portalpoint.modeling.destination_projection import recompute_box_score_for_minutes
 from portalpoint.modeling.minutes import resolved_minutes_per_game
 from portalpoint.modeling.player_projection import (
     MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
@@ -288,6 +289,17 @@ async def get_player_projection(
             "Omit for the neutral (context-independent) talent projection."
         ),
     ),
+    minutes_override: float | None = Query(
+        default=None,
+        ge=0,
+        le=40,
+        description=(
+            "Destination mode only. Recomputes projected_box_score_at_minutes for this "
+            "hypothetical minutes value, using the same fitted usage/assist/turnover/"
+            "rebound/block factors — no model rerun. projected_minutes/projected_box_score "
+            "are left as the model's own output for comparison."
+        ),
+    ),
 ):
     """Player talent/value projection — neutral or destination-adjusted.
 
@@ -351,6 +363,13 @@ async def get_player_projection(
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
+    projected_box_score_at_minutes = None
+    if minutes_override is not None and school_id is not None:
+        adjustments = (row.explanation or {}).get("box_score_adjustments")
+        projected_box_score_at_minutes = recompute_box_score_for_minutes(
+            row.projected_rates, adjustments, minutes_override
+        )
+
     return PlayerProjectionResponse(
         player_id=str(row.player_id),
         season=row.season,
@@ -367,6 +386,8 @@ async def get_player_projection(
         skill_percentiles=row.skill_percentiles,
         uncertainty=row.uncertainty,
         explanation=row.explanation,
+        minutes_override=minutes_override if school_id is not None else None,
+        projected_box_score_at_minutes=projected_box_score_at_minutes,
         model_version=row.model_version,
         computed_at=row.computed_at,
     )

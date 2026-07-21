@@ -35,3 +35,10 @@ class PlayerProjectionResponse(BaseModel):
     explanation: dict | None = None
     model_version: str
     computed_at: datetime
+    # Set only when ?minutes_override=X is passed (destination mode only) — a
+    # recomputed per-game box score for that hypothetical minutes value, using
+    # the same usage/assist/turnover/rebound/block factors the real projection
+    # fit, just with expected_minutes swapped out. projected_minutes/projected_box_score
+    # above are left untouched (the model's own output), so the two can be compared.
+    minutes_override: float | None = None
+    projected_box_score_at_minutes: dict | None = None

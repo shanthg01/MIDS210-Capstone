@@ -162,6 +162,44 @@ aws iam attach-role-policy --role-name portalpoint-gha-deploy \
   --policy-arn arn:aws:iam::aws:policy/AmazonECS_FullAccess
 ```
 
+**Required before `deploy.yml`'s `deploy-frontend` job (added 2026-07-21) will work** — the role above
+has no S3/CloudFront permissions yet. Scoped inline policy, not `*FullAccess` — save the document below
+as a local file first (policy JSON files are gitignored in this repo, same as `s3-bucket-policy.json`/
+`logs-policy.json` above — not meant to be committed):
+```bash
+cat > gha-frontend-deploy-policy.json <<'JSON'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PortalPointFrontendS3Sync",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::portalpoint-frontend"
+    },
+    {
+      "Sid": "PortalPointFrontendS3Objects",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:GetObject"],
+      "Resource": "arn:aws:s3:::portalpoint-frontend/*"
+    },
+    {
+      "Sid": "PortalPointCloudFrontInvalidate",
+      "Effect": "Allow",
+      "Action": ["cloudfront:CreateInvalidation"],
+      "Resource": "arn:aws:cloudfront::424056758764:distribution/E2HF7HKH8Y1FKD"
+    }
+  ]
+}
+JSON
+
+aws iam put-role-policy --role-name portalpoint-gha-deploy \
+  --policy-name portalpoint-frontend-deploy \
+  --policy-document file://gha-frontend-deploy-policy.json
+```
+Needs infra-account IAM write access (Justin) — same access tier as the role creation above, separate
+from every app-level credential elsewhere in this doc.
+
 `gha-trust-policy.json`:
 ```json
 {
@@ -655,7 +693,13 @@ The one-time setup above (Phases 1-6) doesn't need repeating. This is what actua
 frontend or backend code changes, assembled here as one unit since it's the recurring operational
 sequence, not a setup step.
 
-**Frontend changed:**
+**Merging to `main` now deploys both sides automatically** (`deploy-frontend` job added to `deploy.yml`
+2026-07-21, `needs: build-and-push` + waits on `aws ecs wait services-stable` before publishing, so the
+frontend never ships ahead of a backend it depends on). `git push origin main` (or merge a PR) is enough
+for the common case — the manual commands below are the fallback for a one-off/local redeploy that
+doesn't go through `main`.
+
+**Frontend changed (manual fallback only):**
 ```bash
 cd frontend
 npm run build

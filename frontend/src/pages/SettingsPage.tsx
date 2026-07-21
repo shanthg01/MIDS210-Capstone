@@ -401,7 +401,7 @@ export default function SettingsPage() {
 
   if (isLoading) {
     return (
-      <Box sx={{ maxWidth: 600 }}>
+      <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
         <Skeleton width={200} height={36} sx={{ mb: 3 }} />
         <Skeleton variant="rectangular" height={280} sx={{ mb: 2, borderRadius: 1 }} />
         <Skeleton variant="rectangular" height={260} sx={{ borderRadius: 1 }} />
@@ -410,7 +410,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 600 }}>
+    <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
       <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
         Program Settings
       </Typography>

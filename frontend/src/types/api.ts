@@ -184,6 +184,9 @@ export interface PlayerProjectionResponse {
   value_per_100: number;
   value_ci_lower: number | null;
   value_ci_upper: number | null;
+  school_id: number | null; // set for destination rows, null for neutral
+  projected_minutes: number | null; // destination mode only — from Playing Time model
+  projected_usage: number | null;   // destination mode only — from Playing Time model
   projected_box_score: Record<string, number> | null;
   projected_rates: Record<string, number> | null;
   skill_states: Record<string, number> | null;
@@ -192,6 +195,11 @@ export interface PlayerProjectionResponse {
   explanation: Record<string, unknown> | null;
   model_version: string;
   computed_at: string;
+  // Set only when ?minutes_override=X was passed (destination mode only) — a
+  // recomputed per-game box score for that hypothetical minutes value.
+  // projected_minutes/projected_box_score above stay the model's real output.
+  minutes_override: number | null;
+  projected_box_score_at_minutes: Record<string, number> | null;
 }
 
 // ── Schools ───────────────────────────────────────────────────────────────────
@@ -270,6 +278,7 @@ export interface FitComponentValues {
 export interface FitScoreResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
+  season: number;
   overall_fit: number;
   personalized_fit: number | null;
   gap_match: number;
@@ -294,6 +303,28 @@ export interface FitScoreResponse {
   // Gate 7 (PR #50) — set when news-monitoring agent detects a coaching change
   scheme_fit_stale: boolean;
   scheme_fit_stale_reason: string | null;
+  // This user's manual qualitative "off the court" grade for this pair, if
+  // they've entered one. Substitutes into personalized_fit only — program_fit
+  // above stays the shared 50.0 placeholder pending the full Program Fit calculator.
+  program_fit_user_input: number | null;
+  program_fit_user_input_notes: string | null;
+}
+
+export interface ProgramFitUserInputRequest {
+  player_id: number;
+  school_id: number;
+  season: number;
+  qualitative_score: number;
+  notes?: string | null;
+}
+
+export interface ProgramFitUserInputResponse {
+  player_id: string;
+  school_id: number;
+  season: number;
+  qualitative_score: number;
+  notes: string | null;
+  updated_at: string;
 }
 
 // ── Roster Impact Ranking ─────────────────────────────────────────────────────

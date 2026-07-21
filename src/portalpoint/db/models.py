@@ -1095,6 +1095,35 @@ class PlayerTeamFitScore(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ProgramFitUserInput(Base):
+    """A user's manual qualitative "off the court" grade for one player x school
+    pair — how well they judge the player's non-statistical fit (culture, work
+    ethic, coachability, etc). Per-user, not written into player_team_fit_scores
+    (that row stays the shared, neutral 50.0 placeholder pending the full
+    Program Fit calculator, see docs/models/program_fit_model_plan.md) — this
+    substitutes into personalized_fit only, the same pattern user_preferences'
+    weight overrides already use."""
+
+    __tablename__ = "program_fit_user_inputs"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "player_id", "school_id", "season", name="uq_program_fit_user_input"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    player_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("players.id"), nullable=False)
+    school_id: Mapped[int] = mapped_column(ForeignKey("schools.id"), nullable=False)
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
+    qualitative_score: Mapped[float] = mapped_column(Float, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Prediction(Base):
     __tablename__ = "predictions"
     __table_args__ = (
