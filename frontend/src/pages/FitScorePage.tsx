@@ -226,8 +226,8 @@ function OverallPanel({
       <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
           {[
-            { label: 'Gap Match', value: gap, component: 'gap_match' },
-            { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+            { label: 'Roster Need', value: gap, component: 'gap_match' },
+            { label: 'System', value: scheme, component: 'scheme_fit' },
             { label: 'Role Fit', value: role, component: 'role_fit' },
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
@@ -260,8 +260,8 @@ function OverallPanel({
           <FitRadarChart
             size={180}
             data={[
-              { label: 'Gap Match', value: gap, component: 'gap_match' },
-              { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+              { label: 'Roster Need', value: gap, component: 'gap_match' },
+              { label: 'System', value: scheme, component: 'scheme_fit' },
               { label: 'Role Fit', value: role, component: 'role_fit' },
               { label: 'Program Fit', value: program, component: 'program_fit' },
             ]}
@@ -719,11 +719,11 @@ export default function FitScorePage() {
         modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown — headline is calibrated; the category scores
+      {/* System Match breakdown — headline is calibrated; the category scores
           below remain raw model diagnostics. */}
       <SectionPaper>
         <ScoreHeader
-          label="Scheme Fit"
+          label="System Match"
           score={schemeDisplay}
           weight="25%"
           component="scheme_fit"
@@ -828,9 +828,9 @@ export default function FitScorePage() {
         teamRatingSeason={proj?.season ?? null}
       />
 
-      {/* Gap Match breakdown */}
+      {/* Roster Need breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="30%" component="gap_match" />
+        <ScoreHeader label="Roster Need" score={fit.gap_match} weight="30%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>

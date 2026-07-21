@@ -38,8 +38,8 @@ import type { CompareResponse, ComparisonMatrix } from '../types/api';
 // overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
-  { key: 'scheme_fit', label: 'Scheme Fit' },
-  { key: 'gap_match', label: 'Gap Match' },
+  { key: 'scheme_fit', label: 'System Match' },
+  { key: 'gap_match', label: 'Roster Need' },
   { key: 'role_fit', label: 'Role Fit' },
   { key: 'program_fit', label: 'Program Fit' },
 ];

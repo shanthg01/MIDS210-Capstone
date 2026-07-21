@@ -92,7 +92,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
         <Box>
           <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            Player Projection
+            Player Impact
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {isDestination ? 'Adjusted for fit at this program' : 'Context-neutral talent value'} · {projection.season} season

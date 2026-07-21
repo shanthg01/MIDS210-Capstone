@@ -3,11 +3,11 @@ import { DATA_STATUS, FIT_COMPONENTS, ROLE_FIT_LIVE_MODEL_VERSION } from '../con
 import DefinitionTooltip from './DefinitionTooltip';
 
 const LABEL_MAP: Record<string, string> = {
-  gap_match: 'Gap Match',
-  scheme_fit: 'Scheme Fit',
+  gap_match: 'Roster Need',
+  scheme_fit: 'System Match',
   role_fit: 'Role Fit',
   program_fit: 'Program Fit',    // FitScorePage breakdown (stubbed, descoped)
-  team_impact_fit: 'Team Impact', // RecommendationCard — M6 delta_adjEM normalized
+  team_impact_fit: 'Team Rating', // RecommendationCard — M6 delta_adjEM normalized
 };
 
 export function scoreColor(v: number): 'success' | 'warning' | 'error' {

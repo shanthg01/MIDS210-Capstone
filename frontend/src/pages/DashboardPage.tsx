@@ -185,10 +185,10 @@ export default function DashboardPage() {
                     {SORT_LABELS.overall_fit}
                   </TableSortLabel>
                 </TableCell>
-                <TableCell>Scheme</TableCell>
-                <TableCell>Gap</TableCell>
+                <TableCell>System</TableCell>
+                <TableCell>Need</TableCell>
                 <TableCell>Role</TableCell>
-                <TableCell>Team Impact</TableCell>
+                <TableCell>Team Rating</TableCell>
                 <TableCell sortDirection={sortKey === 'value_per_100' ? sortDir : false}>
                   <TableSortLabel
                     active={sortKey === 'value_per_100'}
