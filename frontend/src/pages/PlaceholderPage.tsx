@@ -20,11 +20,11 @@ export default function PlaceholderPage({ title, description }: Props) {
       }}
     >
       <ConstructionIcon sx={{ fontSize: 56, color: 'warning.main' }} />
-      <Typography variant="h5" fontWeight={600}>
+      <Typography variant="h5" sx={{ fontWeight: 600 }}>
         {title}
       </Typography>
       {description && (
-        <Typography variant="body1" textAlign="center" maxWidth={480}>
+        <Typography variant="body1" sx={{ textAlign: 'center', maxWidth: 480 }}>
           {description}
         </Typography>
       )}

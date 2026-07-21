@@ -56,7 +56,7 @@ export default function DivergingBar({ entries }: { entries: DivergingBarEntry[]
                 }}
               />
             </Box>
-            <Typography variant="caption" fontWeight={700} sx={{ width: 30, flexShrink: 0 }}>
+            <Typography variant="caption" sx={{ fontWeight: 700, width: 30, flexShrink: 0 }}>
               {e.value.toFixed(0)}
             </Typography>
           </Box>

@@ -94,7 +94,7 @@ export default function DashboardPage() {
     <Box>
       <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 2 }}>
         <Box>
-          <Typography variant="h5" fontWeight={700}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             Portal Recommendations
           </Typography>
           <Typography variant="body2" color="text.secondary">
@@ -185,10 +185,10 @@ export default function DashboardPage() {
                     {SORT_LABELS.overall_fit}
                   </TableSortLabel>
                 </TableCell>
-                <TableCell>Scheme</TableCell>
-                <TableCell>Gap</TableCell>
+                <TableCell>System</TableCell>
+                <TableCell>Need</TableCell>
                 <TableCell>Role</TableCell>
-                <TableCell>Team Impact</TableCell>
+                <TableCell>Team Rating</TableCell>
                 <TableCell sortDirection={sortKey === 'value_per_100' ? sortDir : false}>
                   <TableSortLabel
                     active={sortKey === 'value_per_100'}
@@ -217,8 +217,7 @@ export default function DashboardPage() {
                   <TableCell>
                     <Typography
                       variant="body2"
-                      fontWeight={600}
-                      sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
+                      sx={{ fontWeight: 600, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
                       onClick={() => navigate(`/players/${item.player_id}`)}
                     >
                       {item.player_name}
@@ -226,7 +225,7 @@ export default function DashboardPage() {
                   </TableCell>
                   <TableCell><Chip label={item.position} size="small" /></TableCell>
                   <TableCell>
-                    <Typography fontWeight={700} color={`${scoreColor(item.overall_fit)}.main`}>
+                    <Typography color={`${scoreColor(item.overall_fit)}.main`} sx={{ fontWeight: 700 }}>
                       {Math.round(item.overall_fit)}
                     </Typography>
                   </TableCell>

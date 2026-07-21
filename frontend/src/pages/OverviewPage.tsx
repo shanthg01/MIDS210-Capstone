@@ -27,8 +27,8 @@ export default function OverviewPage() {
   const navigate = useNavigate();
 
   return (
-    <Box maxWidth={860}>
-      <Typography variant="h4" fontWeight={800} gutterBottom>
+    <Box sx={{ maxWidth: 860 }}>
+      <Typography variant="h4" sx={{ fontWeight: 800 }} gutterBottom>
         Welcome to PortalPoint
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 4, maxWidth: 640 }}>
@@ -48,7 +48,7 @@ export default function OverviewPage() {
         {TILES.map((tile) => (
           <Paper key={tile.title} variant="outlined" sx={{ p: 2.5 }}>
             <Box sx={{ mb: 1.5 }}>{tile.icon}</Box>
-            <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }} gutterBottom>
               {tile.title}
             </Typography>
             <Typography variant="body2" color="text.secondary">

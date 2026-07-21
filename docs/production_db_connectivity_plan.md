@@ -1,10 +1,24 @@
 # Production DB Connectivity Plan
 
-**Status:** Not started. Written 2026-07-13 after a dev incident (search/login/signup all
+**Status:** Done (2026-07-20). Written 2026-07-13 after a dev incident (search/login/signup all
 failing — root cause: local SSH bastion tunnel to RDS had closed, so every DB-backed
 endpoint 500'd; `/health` stayed green throughout because it doesn't touch the DB).
 See `docs/aws_rds_setup.md` for the current dev-only bastion tunnel setup this plan replaces
 for the production path.
+
+**Progress against the numbered items below (2026-07-20): all 6 done.** Item 3 (secrets management)
+done for `DATABASE_URL`/`JWT_SECRET`; Tavily/Gemini keys deferred until the news-monitoring PR merges
+and their real env var names can be confirmed — not a blocker for this plan. Item 5 (Multi-AZ RDS)
+done. Item 6 (bastion break-glass only) done — SSH closed, SSM Session Manager wired up, teammate IAM
+access via a `PortalPoint-Dev` group in the infra account. Item 2 (SG scoping) done for the ECS task
+SG. Items 1 (ECS Fargate, no tunnel in the request path) and 4 (`/ready` endpoint) done together — real
+near-miss caught in the process: the ALB target group's health check was configured against `/ready`
+*before* the endpoint actually existed in code, which would have made every ECS task fail health
+checks and cycle indefinitely. Caught before the service went live; `/ready` now does a real
+`SELECT 1`, returns 503 on DB failure — this is the direct fix for the incident that started this plan.
+Foundation work also done: private subnets + NAT gateway + S3 gateway endpoint, ECR repo + working
+`Dockerfile`, GitHub Actions OIDC deploy role (`deploy.yml`, now including the ECS `update-service`
+step). Full command log: `docs/production_deployment_commands.md`.
 
 ## Why the current dev setup doesn't carry over
 
@@ -45,10 +59,13 @@ away.
 
 ## Open items before implementation
 
-- Confirm target VPC/subnet layout for ECS tasks (private subnets + NAT vs. fully private
-  with VPC endpoints for S3/ECR).
-- Decide Secrets Manager vs. SSM Parameter Store (cost/rotation tradeoff).
-- Define `/ready` failure semantics — fail fast vs. short retry/backoff before reporting
-  unhealthy, to avoid flapping on transient DB blips.
+- ~~Confirm target VPC/subnet layout for ECS tasks~~ ✅ Decided 2026-07-20 — private subnets + NAT
+  gateway (+ S3 gateway endpoint), not fully-private-with-interface-endpoints, for cost/simplicity
+  at this team's scale.
+- ~~Decide Secrets Manager vs. SSM Parameter Store~~ ✅ Decided 2026-07-20 — Secrets Manager (native
+  RDS rotation support; per-secret cost is trivial at this secret count).
+- ~~Define `/ready` failure semantics~~ ✅ Implemented 2026-07-20 — fails fast (single `SELECT 1`,
+  503 on any exception), no retry/backoff. Fine at current traffic; revisit if transient DB blips
+  cause target-group flapping under real load.
 - CloudWatch alarm wiring for repeated `/ready` failures (paging vs. Slack notification —
-  no monitoring channel decided yet).
+  no monitoring channel decided yet). **Still open — this is Phase 6 in `docs/road_to_production.md`.**

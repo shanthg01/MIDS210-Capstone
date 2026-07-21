@@ -522,12 +522,24 @@ export interface AgentRunAccepted {
   status: 'running';
 }
 
+export interface AgentReviewNeededItem {
+  tool: string;
+  status: string;
+  queried_name: string | null;
+  school_from: string | null;
+  message: string | null;
+}
+
 export interface AgentRunSummary {
   run_window_start: string;
   run_window_end: string;
   events_detected: number;
   portal_updates: number;
   errors: string[];
+  // Real events found but not confidently matched to a player - expected
+  // outcome, not a system failure. Separate from errors so a clean run that
+  // surfaces one of these still reports success: true.
+  review_needed: AgentReviewNeededItem[];
   dry_run: boolean;
   season: number;
   window_days: number;

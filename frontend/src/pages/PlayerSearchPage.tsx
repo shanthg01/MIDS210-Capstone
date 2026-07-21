@@ -50,9 +50,9 @@ export default function PlayerSearchPage() {
   const showResults = query.length >= 2;
 
   return (
-    <Box maxWidth={680}>
+    <Box sx={{ maxWidth: 680 }}>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Player Search
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -75,17 +75,19 @@ export default function PlayerSearchPage() {
         value={input}
         onChange={(e) => setInput(e.target.value)}
         autoFocus
-        InputProps={{
-          startAdornment: (
-            <InputAdornment position="start">
-              <SearchIcon color="action" />
-            </InputAdornment>
-          ),
-          endAdornment: isLoading ? (
-            <InputAdornment position="end">
-              <CircularProgress size={18} />
-            </InputAdornment>
-          ) : null,
+        slotProps={{
+          input: {
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon color="action" />
+              </InputAdornment>
+            ),
+            endAdornment: isLoading ? (
+              <InputAdornment position="end">
+                <CircularProgress size={18} />
+              </InputAdornment>
+            ) : null,
+          },
         }}
         sx={{ mb: 2 }}
       />
@@ -120,7 +122,7 @@ export default function PlayerSearchPage() {
                       <ListItemText
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography fontWeight={600}>{player.full_name}</Typography>
+                            <Typography sx={{ fontWeight: 600 }}>{player.full_name}</Typography>
                             <Chip label={player.position} size="small" />
                             <Chip label={player.class_year} size="small" variant="outlined" />
                           </Box>
@@ -137,7 +139,7 @@ export default function PlayerSearchPage() {
       )}
 
       {!showResults && (
-        <Typography variant="body2" color="text.secondary" textAlign="center" sx={{ mt: 4 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', mt: 4 }}>
           Start typing to search players
         </Typography>
       )}

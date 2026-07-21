@@ -38,8 +38,8 @@ import type { CompareResponse, ComparisonMatrix } from '../types/api';
 // overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
-  { key: 'scheme_fit', label: 'Scheme Fit' },
-  { key: 'gap_match', label: 'Gap Match' },
+  { key: 'scheme_fit', label: 'System Match' },
+  { key: 'gap_match', label: 'Roster Need' },
   { key: 'role_fit', label: 'Role Fit' },
   { key: 'program_fit', label: 'Program Fit' },
 ];
@@ -79,7 +79,7 @@ function ComparisonResults({
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h6" fontWeight={700}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>
           Comparison Matrix
         </Typography>
         <Button size="small" startIcon={<RefreshIcon />} onClick={onReset}>
@@ -89,7 +89,7 @@ function ComparisonResults({
 
       {/* Verdict — plain-language summary, leads before the detailed matrix */}
       <Alert severity="info" sx={{ mb: 3 }}>
-        <Typography variant="body2" fontWeight={700}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
           {verdict.headline}
         </Typography>
         {verdict.bullets.map((b) => (
@@ -110,8 +110,7 @@ function ComparisonResults({
                   <TableCell key={e.player.player_id} align="center">
                     <Typography
                       variant="body2"
-                      fontWeight={700}
-                      sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
+                      sx={{ fontWeight: 700, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
                       onClick={() => navigate(`/players/${e.player.player_id}`)}
                     >
                       {e.player.full_name}
@@ -213,14 +212,14 @@ function ComparisonResults({
       </Paper>
 
       {/* Trade-offs */}
-      <Typography variant="h6" fontWeight={700} gutterBottom>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
         Trade-offs
       </Typography>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
         {result.trade_offs.map((t) => (
           <Paper key={t.factor} variant="outlined" sx={{ p: 2 }}>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline', mb: 0.5 }}>
-              <Typography variant="subtitle2" fontWeight={700} color="primary">
+              <Typography variant="subtitle2" color="primary" sx={{ fontWeight: 700 }}>
                 {t.factor}
               </Typography>
               <Chip label={t.best_player_name} size="small" color="success" variant="outlined" />
@@ -288,8 +287,8 @@ export default function ComparePage() {
   // Show results if mutation succeeded
   if (result) {
     return (
-      <Box maxWidth={900}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+      <Box sx={{ maxWidth: 900 }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players
         </Typography>
         <ComparisonResults result={result} onReset={handleReset} />
@@ -300,9 +299,9 @@ export default function ComparePage() {
   const players = shortlist?.players ?? [];
 
   return (
-    <Box maxWidth={700}>
+    <Box sx={{ maxWidth: 700 }}>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -382,7 +381,7 @@ export default function ComparePage() {
                       sx={{ mr: 0 }}
                     />
                     <Box sx={{ flex: 1 }}>
-                      <Typography variant="body2" fontWeight={700}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
                         {p.player_name}
                       </Typography>
                       <Chip label={p.position} size="small" sx={{ mt: 0.25 }} />
@@ -390,8 +389,8 @@ export default function ComparePage() {
                     {p.overall_fit !== null ? (
                       <Typography
                         variant="h6"
-                        fontWeight={800}
                         color={color ? `${color}.main` : undefined}
+                        sx={{ fontWeight: 800 }}
                       >
                         {p.overall_fit.toFixed(0)}
                       </Typography>

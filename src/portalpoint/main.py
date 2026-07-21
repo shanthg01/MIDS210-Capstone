@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from portalpoint.api.routers import (
     agent,
@@ -14,6 +15,7 @@ from portalpoint.api.routers import (
     users,
 )
 from portalpoint.core.config import settings
+from portalpoint.db.session import AsyncSessionLocal
 
 app = FastAPI(
     title="PortalPoint API",
@@ -46,3 +48,18 @@ app.include_router(agent.router)
 @app.get("/health", tags=["health"])
 async def health() -> dict[str, str]:
     return {"status": "ok", "environment": settings.environment}
+
+
+@app.get("/ready", tags=["health"])
+async def ready(response: Response) -> dict[str, str]:
+    """DB-aware readiness check — wired into the ALB target group health check,
+    not /health, so a DB outage marks the ECS task unhealthy instead of every
+    real request silently 500ing (see docs/production_db_connectivity_plan.md).
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not ready", "database": "unreachable"}
+    return {"status": "ready", "database": "ok"}

@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS)
+**Last updated:** July 21, 2026 (real ElastiCache Redis stood up in production, resolving the Cache row's deferred decision below; news-monitoring agent's `POST /api/agent/news-monitoring/run` fixed end-to-end — `is_admin` grant, `TAVILY_API_KEY`/`GOOGLE_API_KEY` secrets, and a real `errors` vs. `review_needed` split so an unmatched-player outcome no longer looks like a crash). Previously: July 20, 2026 — first production incident, same day as go-live: broken login/signup (12 migrations from the `origin/main` merge had never been applied to RDS) plus 5+ minute dashboard/fit/compare hangs from an unindexed `MAX(season)` scan; both root-caused and fixed same day, alongside frontend going live on S3+CloudFront, a CloudWatch alarm, and backend going live on ECS Fargate with SSH→SSM bastion migration. Earlier still: July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS).
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -10,18 +10,19 @@ Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/AP
 
 ## Deployment Stance
 
-PortalPoint is local-first until beta.
+PortalPoint moved off "local-first" for both backend and frontend on 2026-07-20 — the API runs on ECS Fargate and the frontend is served from S3+CloudFront. Scheduled jobs remain manual, by explicit decision, not oversight.
 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
 | App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
-| Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
-| API | Local FastAPI via `uvicorn` | EC2/ECS deferred |
+| Cache | **Real ElastiCache Redis (`portalpoint-cache`, cache.t3.micro, single node), live 2026-07-21** — `portalpoint-cache-subnets` subnet group (same private subnets as ECS), `portalpoint-cache-sg` allowing 6379 from both the ECS task SG (app traffic) and the bastion SG (debugging via SSM tunnel — this second rule was missed initially and had to be added after a tunnel attempt failed). `REDIS_URL` added to `task-def.json` as a plain env var (no auth token on this cluster, not a secret). Resolves both failure modes found in production on 2026-07-20: `fit_score_service`'s cache-aside layer (was failing open to raw DB queries — already separately fixed via the `ix_fit_scores_season` index, this now additionally restores real caching) and `api/routers/agent.py`'s news-monitoring run-tracking (was failing closed with a 503, PR #65 review — now actually works, not just fails gracefully). | ✅ Done |
+| API | **ECS Fargate** (`portalpoint-prod` cluster, `portalpoint-backend` service, behind an ALB) — deployed 2026-07-20, image built from the repo-root `Dockerfile`, deployed via GitHub Actions OIDC on merge to `main` | ✅ Done |
+| Frontend | **Live: https://d331zwrxbrp79d.cloudfront.net** — S3 (`portalpoint-frontend`) + CloudFront (`E2HF7HKH8Y1FKD`), deployed 2026-07-20; bucket has no public access, read-only via Origin Access Control scoped to this distribution's ARN; `/api/*` routed to the ALB at the CDN layer, so the SPA still calls relative `/api/*` paths, no separate API base URL needed. Deploy is manual (`npm run build` → `aws s3 sync` → `aws cloudfront create-invalidation`), no CI step yet | ✅ Done (deploy automation not done) |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
 | MLflow tracking metadata | Local `mlruns.db` SQLite | Could move to hosted DB or MLflow server later |
 | MLflow artifacts | Local/S3 depending script/notebook setup | `s3://portalpoint-data/mlflow/` |
 
-No EC2/ECS container deployment is planned before beta. GitHub Actions cron is preferred before Airflow; Airflow remains a later option if orchestration complexity justifies it.
+ECS/Fargate backend and S3+CloudFront frontend deployment both landed ahead of beta (`docs/production_db_connectivity_plan.md`, `docs/road_to_production.md` Phases 3-4) — backend not yet autoscaled (fixed task count) and CORS still points at local dev origins (frontend is live, but the CORS finalization sub-item wasn't revisited). One CloudWatch alarm exists (`portalpoint-unhealthy-targets` on ALB `UnHealthyHostCount` → SNS `portalpoint-alerts`) — the rest of observability (Sentry, Prometheus/Grafana, drift detection) is explicitly deferred. Scheduled jobs (GitHub Actions cron vs. Airflow) remain unimplemented by explicit decision — no automated freshness need exists yet; see `docs/road_to_production.md` Phase 5 for the revisit conditions.
 
 ---
 
@@ -99,7 +100,7 @@ S3 onboarding guide: [`../aws_s3_setup.md`](../aws_s3_setup.md).
 | Async app access | `postgresql+asyncpg://...?ssl=require` — `ssl=require` required (RDS enforces TLS) |
 | Modeling sync access | `src/portalpoint/modeling/io.py` converts the async app URL to a sync psycopg2 URL (`ssl=require` → `sslmode=require` translation added 2026-06-29) |
 | App user | `portalpoint_app` — scoped runtime user; master user (`portalpoint_master`) reserved for admin ops only |
-| Security group | RDS SG `sg-0ec78cb4f641ee901` — port 5432 only from bastion SG `sg-06d79bdd59fea641a` (source-group rule, not per-IP). No public access. Connect via SSH tunnel through the bastion (`portalpoint-bastion.pem` from Justin) — see `docs/aws_rds_setup.md`. Replaced an earlier per-teammate static-IP allowlist (broke on network changes) |
+| Security group | RDS SG `sg-0ec78cb4f641ee901` — port 5432 only from bastion SG `sg-06d79bdd59fea641a` (source-group rule, not per-IP). No public access. Connect via **AWS SSM Session Manager port-forwarding** through the bastion (`i-0a6e1bafc1cb6f379`) — see `docs/aws_rds_setup.md`. Replaced an earlier per-teammate static-IP allowlist (broke on network changes), then (2026-07-20) the bastion's SSH port itself was closed (`0.0.0.0/0` ingress on port 22 revoked — had been open to the entire internet, not just the team) in favor of IAM-authenticated SSM access, logged per-identity in CloudTrail |
 
 Applied migration chain:
 
@@ -129,6 +130,16 @@ Applied migration chain:
 | `b1d3f5a7c9e2` | `team_system_profiles.stale_flag` / `stale_reason` (Gate 7 coaching-change signal) |
 | `c9e2a1f4b8d3` | News agent catch-up: partial unique indexes on `program_events` for idempotent `ON CONFLICT DO NOTHING` (transfer + coach events) |
 | `d7f3b2e1a904` | Merge head for news-agent catch-up branch |
+| `d2f6a8c1b3e7` | Adds `users.is_admin` |
+| `a6c1f9e2d4b8` | Adds calibrated fit-score columns to `player_team_fit_scores` (`calibrated_scheme_fit`/`calibrated_gap_match`/`calibrated_role_fit`/`calibrated_program_fit`, `overall_confidence`, `component_confidences`, `data_quality_flags`, `calibration_version`) — all nullable, no default, so this one is a fast metadata-only `ADD COLUMN` on the ~10M-row table, not a rewrite |
+| `d7f54d0a43bb` | Merge head: `d2f6a8c1b3e7` + `a6c1f9e2d4b8` |
+| `e9f2a7b3c4d5` | Adds `transfer_success_scores` table |
+| `e5a8c2d4f901` | Adds playing-time explanation payload column |
+| `e11d8f65109c` | Merge head: news-agent branch + main |
+| `f8db53b163a8` | Merge head: news-agent branch + team-rating-v2 branch |
+| `b3f8e21a6c94` | `CREATE INDEX CONCURRENTLY ix_fit_scores_season ON player_team_fit_scores (season)` — real production fix, 2026-07-20; see the incident note below and `docs/status/STATUS.md`'s dated entry for the full story |
+
+**Real production incident, 2026-07-20 — 12 migrations (everything from `d2f6a8c1b3e7` through `f8db53b163a8` above) had never been applied to the shared RDS after the `origin/main` merge landed in code.** Broke login/signup (`column users.is_admin does not exist`) until `alembic upgrade head` was run for real. That run hit the same table-ownership gotcha the 2026-07-16 note below already flagged, just on a different table (`playing_time_projections`, not `coaches`) — confirms this is a recurring pattern, not a one-off: **some tables in this DB are owned by a user other than `portalpoint_app`, so any DDL touching them must run as `portalpoint_master`.** Separately, the missing `ix_fit_scores_season` index (now fixed by `b3f8e21a6c94`) was letting `SELECT MAX(season) FROM player_team_fit_scores` — called on every Dashboard/FitScorePage/Compare request via `fit_score_service.get_current_season()` — run as a genuine ~200-300s full sequential scan each time, because the query's documented Redis cache was silently never wired into production (`REDIS_URL` missing from `task-def.json`; the cache fails open to the DB on any Redis error, including "can't connect at all"). Full trail in `docs/status/STATUS.md`.
 
 **Alembic note (2026-07-16):** `alembic/env.py` passes `settings.database_url` directly to SQLAlchemy (bypasses ConfigParser — URL-encoded passwords with `%` break `set_main_option`). `coaches.tenure_end`/`departure_date` DDL from `2547054ae5cb` still requires RDS table-owner; runtime migrations skip it for `portalpoint_app`.
 
@@ -312,7 +323,7 @@ Do not set `MLFLOW_TRACKING_URI` to S3. S3 is for artifacts, not tracking metada
 
 ## Architecture Open Questions
 
-1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`. Access pattern further hardened the same day: per-teammate static-IP security group rules (broke whenever someone changed networks) replaced with a bastion EC2 host + SSH tunnel — RDS SG now only allows port 5432 from the bastion's SG (source-group rule), no public/per-IP access at all. See `docs/aws_rds_setup.md`.
+1. ✅ Resolved — migrated to AWS RDS PostgreSQL 15 (shared team DB) on 2026-06-29. Local Docker Postgres no longer needed; only Redis remains in `docker compose`. Access pattern further hardened the same day: per-teammate static-IP security group rules (broke whenever someone changed networks) replaced with a bastion EC2 host + SSH tunnel — RDS SG now only allows port 5432 from the bastion's SG (source-group rule), no public/per-IP access at all. **Further hardened 2026-07-20** (start of production-DB-connectivity work, `docs/production_db_connectivity_plan.md`): the bastion's SSH port was found open to `0.0.0.0/0` (the whole internet, not just the team — a real exposure, not just a hygiene nit) and closed entirely; access moved to AWS SSM Session Manager port-forwarding, authenticated via IAM instead of a shared `.pem` key, with per-session CloudTrail logging. Same session also stood up private subnets + NAT gateway + S3 gateway endpoint, an ECR repo, an ECS task security group scoped to RDS, RDS Multi-AZ, and a GitHub Actions OIDC deploy role — see `docs/production_deployment_commands.md` for the full command log. Backend ECS Fargate hosting itself (Phase 3) has not started yet. See `docs/aws_rds_setup.md` for the current teammate access flow.
 2. ✅ Resolved — Redis caching is enabled in `fit_scores.py` (cache-aside, 30min TTL, fails open on Redis errors; see `src/portalpoint/db/redis_client.py`).
 3. Is GitHub Actions cron sufficient for scheduled ingest, or do we need Airflow near beta?
 4. Where should production MLflow tracking metadata live if multiple people need shared run history?

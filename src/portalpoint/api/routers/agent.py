@@ -110,7 +110,20 @@ async def start_news_monitoring_run(
     run_id = str(uuid4())
     now = datetime.now(timezone.utc)
 
-    acquired = await redis.set(_LOCK_KEY, run_id, nx=True, ex=_LOCK_TTL_SECONDS)
+    # Fail-closed, not open: this endpoint depends on Redis for the concurrency
+    # lock and run-status storage, and there's no ElastiCache in production yet
+    # (REDIS_URL isn't reachable — see docs/status/ARCHITECTURE_STATUS.md's Cache
+    # row). A 503 here is deliberate — the alternative (skip the lock, run anyway)
+    # was considered and deferred; revisit alongside that decision, not in isolation.
+    try:
+        acquired = await redis.set(_LOCK_KEY, run_id, nx=True, ex=_LOCK_TTL_SECONDS)
+    except Exception as exc:
+        log.exception("Redis unavailable — cannot start news-monitoring run")
+        raise HTTPException(
+            status_code=503,
+            detail="News-monitoring agent is temporarily unavailable (cache backend unreachable).",
+        ) from exc
+
     if not acquired:
         raise HTTPException(
             status_code=409,
@@ -125,7 +138,18 @@ async def start_news_monitoring_run(
         "summary": None,
         "error": None,
     }
-    await redis.set(_redis_key(run_id), json.dumps(initial_record), ex=_REDIS_TTL_SECONDS)
+    try:
+        await redis.set(_redis_key(run_id), json.dumps(initial_record), ex=_REDIS_TTL_SECONDS)
+    except Exception as exc:
+        log.exception("Redis unavailable — cannot record initial run status for %s", run_id)
+        try:
+            await redis.delete(_LOCK_KEY)
+        except Exception:
+            log.exception("Failed to release lock after initial-status write failure for %s", run_id)
+        raise HTTPException(
+            status_code=503,
+            detail="News-monitoring agent is temporarily unavailable (cache backend unreachable).",
+        ) from exc
     background_tasks.add_task(_execute_agent_run, run_id, redis, body, now.isoformat())
     return AgentRunAccepted(run_id=run_id, status="running")
 
@@ -136,7 +160,16 @@ async def get_news_monitoring_run(
     redis: RedisClient,
     run_id: str,
 ) -> AgentRunStatus:
-    raw = await redis.get(_redis_key(run_id))
+    try:
+        raw = await redis.get(_redis_key(run_id))
+    except Exception as exc:
+        log.exception("Redis unavailable — cannot fetch run status for %s", run_id)
+        raise HTTPException(
+            status_code=503,
+            detail="News-monitoring agent status is temporarily unavailable (cache backend unreachable). "
+            "Check GET /api/agent/news-monitoring/events for confirmed results instead.",
+        ) from exc
+
     if raw is None:
         raise HTTPException(
             status_code=404,

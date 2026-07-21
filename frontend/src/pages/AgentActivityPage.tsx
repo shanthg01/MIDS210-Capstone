@@ -76,10 +76,10 @@ export default function AgentActivityPage() {
   const events = eventsQuery.data?.events ?? [];
 
   return (
-    <Box maxWidth={1000}>
+    <Box sx={{ maxWidth: 1000 }}>
       <Box sx={{ mb: 3, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
         <Box>
-          <Typography variant="h5" fontWeight={700} gutterBottom>
+          <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
             Agent Activity
           </Typography>
           <Typography variant="body2" color="text.secondary">
@@ -98,21 +98,44 @@ export default function AgentActivityPage() {
 
       {startError && <Alert severity="error" sx={{ mb: 2 }}>{startError}</Alert>}
 
-      {runQuery.data && (
-        <Alert
-          severity={runQuery.data.status === 'failed' ? 'error' : runQuery.data.status === 'running' ? 'info' : 'success'}
-          sx={{ mb: 2 }}
-        >
-          {runQuery.data.status === 'running' && 'Agent run in progress — searching news, classifying events…'}
-          {runQuery.data.status === 'completed' && runQuery.data.summary && (
-            <>
-              Run complete: {runQuery.data.summary.events_detected} event(s) detected,{' '}
-              {runQuery.data.summary.portal_updates} portal update(s).
-            </>
-          )}
-          {runQuery.data.status === 'failed' && (runQuery.data.error || 'Run failed — see server logs.')}
-        </Alert>
-      )}
+      {runQuery.data && (() => {
+        const reviewNeeded = runQuery.data.summary?.review_needed ?? [];
+        const hasReviewItems = runQuery.data.status === 'completed' && reviewNeeded.length > 0;
+        const severity =
+          runQuery.data.status === 'failed' ? 'error' :
+          runQuery.data.status === 'running' ? 'info' :
+          hasReviewItems ? 'warning' : 'success';
+        return (
+          <Alert severity={severity} sx={{ mb: 2 }}>
+            {runQuery.data.status === 'running' && 'Agent run in progress — searching news, classifying events…'}
+            {runQuery.data.status === 'completed' && runQuery.data.summary && (
+              <Box>
+                <Typography variant="body2">
+                  Run complete: {runQuery.data.summary.events_detected} event(s) detected,{' '}
+                  {runQuery.data.summary.portal_updates} portal update(s) applied.
+                </Typography>
+                {hasReviewItems && (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {reviewNeeded.length} item{reviewNeeded.length !== 1 ? 's' : ''} need manual review —
+                      no confident player match found in the database:
+                    </Typography>
+                    <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2.5 }}>
+                      {reviewNeeded.map((item, i) => (
+                        <Typography component="li" variant="body2" key={i}>
+                          "{item.queried_name ?? 'unknown'}"{item.school_from ? ` from ${item.school_from}` : ''}
+                          {' — '}{item.status === 'ambiguous' ? 'multiple possible matches' : 'no matching player found'}
+                        </Typography>
+                      ))}
+                    </Box>
+                  </Box>
+                )}
+              </Box>
+            )}
+            {runQuery.data.status === 'failed' && (runQuery.data.error || 'Run failed — see server logs.')}
+          </Alert>
+        );
+      })()}
 
       {eventsQuery.isLoading ? (
         <Paper variant="outlined" sx={{ p: 3 }}>

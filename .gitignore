@@ -25,7 +25,8 @@ build/
 
 # uv
 .python-version
-uv.lock
+# uv.lock is committed intentionally — Dockerfile needs it for `uv sync --frozen`,
+# and CI/fresh clones have no local copy otherwise (real build break found via PR #65 review)
 
 # Testing & coverage
 .pytest_cache/
@@ -69,3 +70,16 @@ data/model_validation/
 
 # SSH keys (never commit private keys)
 *.pem
+
+# One-time IAM setup artifacts, not app config
+gha-trust-policy.json
+ssm-bastion-policy.json
+ecs-trust-policy.json
+secrets-read-policy.json
+s3-access-policy.json
+task-def.json
+cloudfront-config.json
+s3-bucket-policy.json
+logs-policy.json
+ssm-tunnel-params.json
+ssm-cache-tunnel-params.json

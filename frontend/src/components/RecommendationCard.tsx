@@ -65,8 +65,7 @@ export default function RecommendationCard({ item }: Props) {
           <Box>
             <Typography
               variant="subtitle1"
-              fontWeight={700}
-              sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
+              sx={{ fontWeight: 700, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
               onClick={() => navigate(`/players/${item.player_id}`)}
             >
               {item.player_name}
@@ -81,13 +80,13 @@ export default function RecommendationCard({ item }: Props) {
           </Box>
 
           <Box sx={{ textAlign: 'right', ml: 1, flexShrink: 0 }}>
-            <Typography variant="h4" fontWeight={800} color={overallColor(item.personalized_fit)} lineHeight={1}>
+            <Typography variant="h4" color={overallColor(item.personalized_fit)} sx={{ fontWeight: 800, lineHeight: 1 }}>
               {Math.round(item.personalized_fit)}
             </Typography>
             <Typography variant="caption" color="text.secondary">
               Personalized Fit
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block">
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
               Overall {Math.round(item.overall_fit)}
             </Typography>
           </Box>

@@ -1,0 +1,17 @@
+.venv
+.git
+.claude
+data/
+mlruns/
+mlruns.db
+notebooks/
+frontend/
+tests/
+docs/
+*.pyc
+__pycache__/
+.env
+.env.*
+portalpoint-bastion.pem
+*.pkl
+*.parquet
