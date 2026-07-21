@@ -1,6 +1,6 @@
 # PortalPoint Architecture Status
 
-**Last updated:** July 20, 2026 (frontend now live on S3+CloudFront; CloudWatch alarm on ALB unhealthy targets added; scheduled jobs explicitly deferred by decision — see Deployment Stance). Same-day, earlier: backend live on ECS Fargate behind an ALB, real `/ready` DB health check added; bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely. Previously: July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS).
+**Last updated:** July 20, 2026 (first production incident, same day as go-live: broken login/signup — 12 migrations from the `origin/main` merge had never been applied to RDS — plus 5+ minute dashboard/fit/compare hangs from an unindexed `MAX(season)` scan compounding with a Redis cache that was never actually wired into production; both root-caused and fixed, see Database and Deployment Stance). Earlier the same day: frontend live on S3+CloudFront; CloudWatch alarm on ALB unhealthy targets added; scheduled jobs explicitly deferred by decision. Same-day, earlier still: backend live on ECS Fargate behind an ALB, real `/ready` DB health check added; bastion access migrated from SSH tunnel to AWS SSM Session Manager port-forwarding — SSH port 22 closed entirely. Previously: July 16, 2026 (news-monitoring agent RDS migrations applied; `program_events` write pipeline verified on shared RDS).
 **Scope:** Infrastructure, data stores, database schema, ingest, S3/MLflow, and runbook context.
 
 Model-specific context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Product/API/frontend context lives in
@@ -15,7 +15,7 @@ PortalPoint moved off "local-first" for both backend and frontend on 2026-07-20 
 | Layer | Current approach | Cloud / shared path |
 |---|---|---|
 | App database | **AWS RDS PostgreSQL 15** (`portalpoint-db.con8amymqi1e.us-east-1.rds.amazonaws.com:5432`) — shared team DB, migrated 2026-06-29 | ✅ Done |
-| Cache | Docker Redis on port `6379` | Defer until real fit-score cache is needed |
+| Cache | Docker Redis on port `6379`, local dev only — **confirmed broken in production 2026-07-20** (`REDIS_URL` never added to `task-def.json`, so the cache-aside layer fails open to raw DB queries on every request, no exceptions raised). Real production incident traced to this (see Database section); fixed at the query layer instead (new index), Redis itself intentionally left unfixed | Defer — real ElastiCache stand-up needed if concurrent load ever makes the cache-hit-rate matter; not needed for POC-scale traffic once the index exists |
 | API | **ECS Fargate** (`portalpoint-prod` cluster, `portalpoint-backend` service, behind an ALB) — deployed 2026-07-20, image built from the repo-root `Dockerfile`, deployed via GitHub Actions OIDC on merge to `main` | ✅ Done |
 | Frontend | **Live: https://d331zwrxbrp79d.cloudfront.net** — S3 (`portalpoint-frontend`) + CloudFront (`E2HF7HKH8Y1FKD`), deployed 2026-07-20; bucket has no public access, read-only via Origin Access Control scoped to this distribution's ARN; `/api/*` routed to the ALB at the CDN layer, so the SPA still calls relative `/api/*` paths, no separate API base URL needed. Deploy is manual (`npm run build` → `aws s3 sync` → `aws cloudfront create-invalidation`), no CI step yet | ✅ Done (deploy automation not done) |
 | Raw/model storage | Local gitignored `data/` plus S3 | `s3://portalpoint-data/` |
@@ -130,6 +130,16 @@ Applied migration chain:
 | `b1d3f5a7c9e2` | `team_system_profiles.stale_flag` / `stale_reason` (Gate 7 coaching-change signal) |
 | `c9e2a1f4b8d3` | News agent catch-up: partial unique indexes on `program_events` for idempotent `ON CONFLICT DO NOTHING` (transfer + coach events) |
 | `d7f3b2e1a904` | Merge head for news-agent catch-up branch |
+| `d2f6a8c1b3e7` | Adds `users.is_admin` |
+| `a6c1f9e2d4b8` | Adds calibrated fit-score columns to `player_team_fit_scores` (`calibrated_scheme_fit`/`calibrated_gap_match`/`calibrated_role_fit`/`calibrated_program_fit`, `overall_confidence`, `component_confidences`, `data_quality_flags`, `calibration_version`) — all nullable, no default, so this one is a fast metadata-only `ADD COLUMN` on the ~10M-row table, not a rewrite |
+| `d7f54d0a43bb` | Merge head: `d2f6a8c1b3e7` + `a6c1f9e2d4b8` |
+| `e9f2a7b3c4d5` | Adds `transfer_success_scores` table |
+| `e5a8c2d4f901` | Adds playing-time explanation payload column |
+| `e11d8f65109c` | Merge head: news-agent branch + main |
+| `f8db53b163a8` | Merge head: news-agent branch + team-rating-v2 branch |
+| `b3f8e21a6c94` | `CREATE INDEX CONCURRENTLY ix_fit_scores_season ON player_team_fit_scores (season)` — real production fix, 2026-07-20; see the incident note below and `docs/status/STATUS.md`'s dated entry for the full story |
+
+**Real production incident, 2026-07-20 — 12 migrations (everything from `d2f6a8c1b3e7` through `f8db53b163a8` above) had never been applied to the shared RDS after the `origin/main` merge landed in code.** Broke login/signup (`column users.is_admin does not exist`) until `alembic upgrade head` was run for real. That run hit the same table-ownership gotcha the 2026-07-16 note below already flagged, just on a different table (`playing_time_projections`, not `coaches`) — confirms this is a recurring pattern, not a one-off: **some tables in this DB are owned by a user other than `portalpoint_app`, so any DDL touching them must run as `portalpoint_master`.** Separately, the missing `ix_fit_scores_season` index (now fixed by `b3f8e21a6c94`) was letting `SELECT MAX(season) FROM player_team_fit_scores` — called on every Dashboard/FitScorePage/Compare request via `fit_score_service.get_current_season()` — run as a genuine ~200-300s full sequential scan each time, because the query's documented Redis cache was silently never wired into production (`REDIS_URL` missing from `task-def.json`; the cache fails open to the DB on any Redis error, including "can't connect at all"). Full trail in `docs/status/STATUS.md`.
 
 **Alembic note (2026-07-16):** `alembic/env.py` passes `settings.database_url` directly to SQLAlchemy (bypasses ConfigParser — URL-encoded passwords with `%` break `set_main_option`). `coaches.tenure_end`/`departure_date` DDL from `2547054ae5cb` still requires RDS table-owner; runtime migrations skip it for `portalpoint_app`.
 

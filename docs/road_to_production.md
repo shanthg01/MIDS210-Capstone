@@ -119,6 +119,22 @@ blocked on Phase 4's frontend URL; item 3 is just not done yet.
 4. CORS/allowed-origins config needs the Phase 4 frontend URL decided before this can be finalized.
    Not started.
 
+**Post-launch incident, same day (2026-07-20):** first real production incident, found by manually
+testing the live site rather than by the CloudWatch alarm (the task was healthy the whole time — this
+wasn't an uptime problem). Two real, separate bugs: (1) `alembic upgrade head` had never actually been
+run against RDS after the Phase-3-adjacent `origin/main` merge landed 12 new migrations in code — broke
+login/signup (`users.is_admin` didn't exist yet). Running it hit a second gotcha — some tables (this
+time `playing_time_projections`) are owned by a DB user other than `portalpoint_app`, so DDL needs
+`portalpoint_master`, a recurring pattern already flagged once before (`coaches` table, 2026-07-16 —
+see `ARCHITECTURE_STATUS.md`). (2) Dashboard/FitScorePage/Compare hung 5+ minutes — a missing index
+let `SELECT MAX(season) FROM player_team_fit_scores` run as a genuine ~200-300s full scan on every
+request, and it piled up 15+ concurrent copies of itself because the query's Redis cache was never
+actually reachable in production (`REDIS_URL` missing from `task-def.json` — silent fail-open, not an
+error). Fixed with a new indexed migration (`b3f8e21a6c94`); Redis itself deliberately left broken —
+see the Cache row in `ARCHITECTURE_STATUS.md`'s Deployment Stance for the reasoning. **Real gap this
+surfaced:** `deploy.yml` doesn't run `alembic upgrade head` as part of deployment — still a manual step
+nobody remembered this time. Full trail in `docs/status/STATUS.md`'s 2026-07-20 incident entry.
+
 ---
 
 ## Phase 4 — Frontend hosting

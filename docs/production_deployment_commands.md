@@ -13,7 +13,12 @@ the ALB target group's health check was pointed at `/ready` before that endpoint
 all — caught before the ECS service went live; `src/portalpoint/main.py` now has a real
 `SELECT 1`-backed `/ready`. Real prerequisite found during Phase 4: `npm run build` had never been run
 before (`npm run dev` doesn't invoke `tsc`) — 92 pre-existing TypeScript errors surfaced and were fixed
-before the frontend could be built for deployment at all.
+before the frontend could be built for deployment at all. **Post-launch incident, same day:**
+`alembic upgrade head` was never actually run against RDS after the `origin/main` merge — see 3b's
+two IAM gotchas below and `docs/status/STATUS.md`'s 2026-07-20 incident entry for the full trail
+(broken login/signup + 5+ minute page hangs, both fixed). Lesson for future deploys: **run
+`alembic upgrade head` as part of any deploy that includes a merge with new migrations** — nothing
+in `deploy.yml` does this automatically today, it's still a manual step.
 
 Known values used below:
 - Region: `us-east-1`
@@ -283,8 +288,42 @@ aws ecs create-cluster --cluster-name portalpoint-prod
 
 ### 3b. Task execution + task role
 
+**Two real gotchas found the hard way on 2026-07-20 — both silent until a task actually tries to
+start, both fixed below, don't skip either:**
+
+1. **Secrets Manager `valueFrom` must use the full ARN (with the random suffix), not the partial
+   ARN.** IAM's authorization check for `secretsmanager:GetSecretValue` evaluates against the
+   literal ARN string ECS uses in the API call — not the resolved secret — so a policy resource
+   like `...:secret:portalpoint/jwt-secret-*` never matches a partial ARN `...:secret:portalpoint/jwt-secret`
+   (no trailing hyphen for the wildcard to extend from). Get the real ARNs first:
+   ```bash
+   aws secretsmanager describe-secret --secret-id portalpoint/database-url --query ARN --output text
+   aws secretsmanager describe-secret --secret-id portalpoint/jwt-secret --query ARN --output text
+   ```
+   Use those full values (e.g. `...:secret:portalpoint/jwt-secret-CxF6qe`) in `task-def.json`'s
+   `secrets[].valueFrom` in 3c — not the partial form shown in earlier drafts of this doc.
+
+2. **`AmazonECSTaskExecutionRolePolicy` (the AWS-managed policy attached below) does NOT include
+   `logs:CreateLogGroup`** — only `CreateLogStream`/`PutLogEvents` — despite `task-def.json` (3c)
+   setting `awslogs-create-group: true`. Needs a small additional inline policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+       "Resource": "arn:aws:logs:us-east-1:424056758764:log-group:/ecs/portalpoint-backend:*"
+     }]
+   }
+   ```
+   (save as `logs-policy.json`, gitignored — same pattern as the other one-time policy files)
+
+Without either fix, `describe-services` shows `Running: 0` forever with
+`ResourceInitializationError` events (secrets) or `failed to create Cloudwatch log group` — the
+task never even starts the app, so `/ready` never gets a chance to matter.
+
 ```bash
-# Execution role — lets ECS pull the image and read secrets
+# Execution role — lets ECS pull the image, read secrets, and write logs
 aws iam create-role --role-name portalpoint-ecs-execution \
   --assume-role-policy-document file://ecs-trust-policy.json
 aws iam attach-role-policy --role-name portalpoint-ecs-execution \
@@ -292,6 +331,9 @@ aws iam attach-role-policy --role-name portalpoint-ecs-execution \
 aws iam put-role-policy --role-name portalpoint-ecs-execution \
   --policy-name portalpoint-secrets-read \
   --policy-document file://secrets-read-policy.json
+aws iam put-role-policy --role-name portalpoint-ecs-execution \
+  --policy-name portalpoint-logs-write \
+  --policy-document file://logs-policy.json
 
 # Task role — the running app's own AWS permissions (S3 read/write to portalpoint-data,
 # replaces static AWS_ACCESS_KEY_ID/SECRET entirely)
