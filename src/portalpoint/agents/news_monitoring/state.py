@@ -19,6 +19,12 @@ class AgentState(TypedDict):
     run_window_start: Optional[datetime]
     run_window_end: Optional[datetime]
     errors: Annotated[list[str], operator.add]
+    # Distinct from errors: expected outcomes where a real event was found but
+    # couldn't be confidently resolved to a player (status="unmatched"/"ambiguous"
+    # from entity_resolution.match_player) - not a system failure, just needs a
+    # human to confirm the match. Kept separate so the run's success/failure
+    # status reflects real breakage, not "found something ambiguous."
+    review_needed: Annotated[list[dict], operator.add]
 
 
 # Alias used by graph.py + run_news_monitoring.py
@@ -43,4 +49,5 @@ def initial_state(
         run_window_start=run_window_start,
         run_window_end=run_window_end,
         errors=[],
+        review_needed=[],
     )

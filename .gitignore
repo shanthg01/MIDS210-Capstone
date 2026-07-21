@@ -82,3 +82,4 @@ cloudfront-config.json
 s3-bucket-policy.json
 logs-policy.json
 ssm-tunnel-params.json
+ssm-cache-tunnel-params.json

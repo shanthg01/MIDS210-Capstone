@@ -4,21 +4,23 @@ Companion to `docs/road_to_production.md`. Concrete commands for each phase, usi
 AWS CLI v2, Docker CLI, and GitHub CLI. Placeholders in `<ANGLE_BRACKETS>` — everything
 else is a real value already confirmed in `docs/status/ARCHITECTURE_STATUS.md`.
 
-**Status (2026-07-20):** Phases 1-4 and part of Phase 6 have been run for real against the live infra
-account — not just planned. Phase 5 was explicitly skipped by decision (see `docs/road_to_production.md`).
-See that doc's per-phase status notes for what's done vs. outstanding, and `docs/aws_rds_setup.md` for
-the finalized teammate-facing SSM tunnel workflow (the canonical doc for that — don't duplicate tunnel
-instructions here, this file stays the one-time infra-setup command log). Real near-miss during Phase 3:
-the ALB target group's health check was pointed at `/ready` before that endpoint existed in the app at
-all — caught before the ECS service went live; `src/portalpoint/main.py` now has a real
-`SELECT 1`-backed `/ready`. Real prerequisite found during Phase 4: `npm run build` had never been run
-before (`npm run dev` doesn't invoke `tsc`) — 92 pre-existing TypeScript errors surfaced and were fixed
-before the frontend could be built for deployment at all. **Post-launch incident, same day:**
-`alembic upgrade head` was never actually run against RDS after the `origin/main` merge — see 3b's
-two IAM gotchas below and `docs/status/STATUS.md`'s 2026-07-20 incident entry for the full trail
-(broken login/signup + 5+ minute page hangs, both fixed). Lesson for future deploys: **run
-`alembic upgrade head` as part of any deploy that includes a merge with new migrations** — nothing
-in `deploy.yml` does this automatically today, it's still a manual step.
+**Status (2026-07-21):** Phases 1-4 and all of Phase 6 (including real ElastiCache, 6c) have been run
+for real against the live infra account — not just planned. Phase 5 was explicitly skipped by decision
+(see `docs/road_to_production.md`). See that doc's per-phase status notes for what's done vs.
+outstanding, and `docs/aws_rds_setup.md` for the finalized teammate-facing SSM tunnel workflow (the
+canonical doc for that — don't duplicate tunnel instructions here, this file stays the one-time
+infra-setup command log). Real near-miss during Phase 3: the ALB target group's health check was
+pointed at `/ready` before that endpoint existed in the app at all — caught before the ECS service went
+live; `src/portalpoint/main.py` now has a real `SELECT 1`-backed `/ready`. Real prerequisite found
+during Phase 4: `npm run build` had never been run before (`npm run dev` doesn't invoke `tsc`) — 92
+pre-existing TypeScript errors surfaced and were fixed before the frontend could be built for
+deployment at all. **Post-launch incident (2026-07-20):** `alembic upgrade head` was never actually run
+against RDS after the `origin/main` merge — see 3b's two IAM gotchas below and `docs/status/STATUS.md`'s
+2026-07-20 incident entry for the full trail (broken login/signup + 5+ minute page hangs, both fixed).
+**Fixed for good in `deploy.yml`, 2026-07-21 (PR #65 review):** the deploy workflow now runs
+`alembic upgrade head` as a one-off ECS task that must exit 0 before `update-service` proceeds — no
+longer a manual step someone can forget. Same review also caught `uv.lock` being gitignored and never
+committed (Docker builds were broken for any fresh clone/CI, worked locally only by accident).
 
 Known values used below:
 - Region: `us-east-1`
@@ -31,6 +33,7 @@ Known values used below:
 - S3 bucket (frontend static site): `portalpoint-frontend`
 - CloudFront distribution: `E2HF7HKH8Y1FKD`
 - CloudWatch alarm: `portalpoint-unhealthy-targets` → SNS topic `portalpoint-alerts`
+- ElastiCache cluster: `portalpoint-cache` (`portalpoint-cache.cprchk.0001.use1.cache.amazonaws.com:6379`)
 
 Run these from a shell with `aws configure` already set to an account with sufficient
 IAM permissions (or ask Justin for a deploy-scoped IAM user/role). None of these commands
@@ -122,12 +125,16 @@ aws secretsmanager create-secret \
   --name portalpoint/jwt-secret \
   --secret-string "<GENERATE_A_LONG_RANDOM_VALUE>"
 
+# Real env var names confirmed from src/portalpoint/agents/news_monitoring/runner.py
+# (TAVILY_API_KEY, GOOGLE_API_KEY — not "gemini-api-key", corrected 2026-07-21 after
+# checking the actual code once the news-monitoring PR merged in). Created
+# 2026-07-21, done — these were originally deferred pending that merge.
 aws secretsmanager create-secret \
   --name portalpoint/tavily-api-key \
   --secret-string "<TAVILY_KEY>"
 
 aws secretsmanager create-secret \
-  --name portalpoint/gemini-api-key \
+  --name portalpoint/google-api-key \
   --secret-string "<GEMINI_KEY>"
 ```
 
@@ -559,8 +566,9 @@ aws events put-targets \
 
 ## Phase 6 — Observability
 
-**Status (2026-07-20): item 6a/6b done (the one alarm this plan called for); everything else in
-`docs/road_to_production.md` Phase 6 (Sentry, Prometheus/Grafana, drift detection) explicitly skipped.**
+**Status (2026-07-21): 6a/6b (the alarm) and 6c (real ElastiCache, added after the plan's original
+Cache deferral) both done; everything else in `docs/road_to_production.md` Phase 6 (Sentry,
+Prometheus/Grafana, drift detection) explicitly skipped.**
 `TARGET_GROUP_ARN_SUFFIX`/`ALB_ARN_SUFFIX` are not the full ARNs used elsewhere in this doc — CloudWatch
 dimensions want the ARN suffix (everything after the account ID), e.g.
 `targetgroup/portalpoint-tg/<id>` and `app/portalpoint-alb/<id>`; get them via
@@ -585,6 +593,58 @@ aws cloudwatch put-metric-alarm \
 ```bash
 aws sns create-topic --name portalpoint-alerts --query 'TopicArn' --output text
 aws sns subscribe --topic-arn <SNS_TOPIC_ARN> --protocol email --notification-endpoint <ALERT_EMAIL>
+```
+
+### 6c. Real ElastiCache Redis (done 2026-07-21, resolves the Cache deferral above)
+
+Reuses the existing private subnets + ECS task SG (Phase 1/2) — no new networking beyond a subnet
+group + a cache-specific SG. **Real gotcha found here:** the cache SG needs to allow inbound 6379 from
+**both** the ECS task SG (app traffic) *and* the bastion SG (debugging via an SSM tunnel, same
+mechanism as the RDS tunnel) — only adding the first one produces an instant "connection refused" on
+any tunnel attempt (the tell that it's a local/SG problem, not a remote timeout).
+
+```bash
+aws elasticache create-cache-subnet-group \
+  --cache-subnet-group-name portalpoint-cache-subnets \
+  --cache-subnet-group-description "PortalPoint ElastiCache" \
+  --subnet-ids <PRIVATE_SUBNET_ID_1> <PRIVATE_SUBNET_ID_2>
+
+aws ec2 create-security-group \
+  --group-name portalpoint-cache-sg \
+  --description "PortalPoint ElastiCache Redis" \
+  --vpc-id <VPC_ID> \
+  --query 'GroupId' --output text
+
+aws ec2 authorize-security-group-ingress \
+  --group-id <CACHE_SG_ID> --protocol tcp --port 6379 --source-group <ECS_TASK_SG_ID>
+aws ec2 authorize-security-group-ingress \
+  --group-id <CACHE_SG_ID> --protocol tcp --port 6379 --source-group sg-06d79bdd59fea641a
+
+aws elasticache create-cache-cluster \
+  --cache-cluster-id portalpoint-cache \
+  --engine redis \
+  --cache-node-type cache.t3.micro \
+  --num-cache-nodes 1 \
+  --cache-subnet-group-name portalpoint-cache-subnets \
+  --security-group-ids <CACHE_SG_ID>
+
+# Wait for Status: available, then get the endpoint
+aws elasticache describe-cache-clusters --cache-cluster-id portalpoint-cache --show-cache-node-info \
+  --query 'CacheClusters[0].{Status:CacheClusterStatus,Endpoint:CacheNodes[0].Endpoint}'
+```
+
+Add to `task-def.json`'s `environment` (plain value — no auth token on this cluster, not a secret):
+```json
+{ "name": "REDIS_URL", "value": "redis://<CACHE_ENDPOINT>:6379" }
+```
+Then `register-task-definition` + `update-service --force-new-deployment` as usual.
+
+**Debugging via the same tunnel pattern as RDS** (needed to inspect stored cache keys directly, e.g.
+the news-monitoring agent's run-status records):
+```bash
+aws ssm start-session --target i-0a6e1bafc1cb6f379 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters file://ssm-cache-tunnel-params.json   # {"host":["<cache-endpoint>"],"portNumber":["6379"],"localPortNumber":["6380"]}
 ```
 
 ---

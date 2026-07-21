@@ -70,6 +70,7 @@ def run(
             "events_detected": 0,
             "portal_updates": 0,
             "errors": [msg],
+            "review_needed": [],
             "dry_run": dry_run,
             "season": _season,
             "success": False,
@@ -129,6 +130,10 @@ def run(
         "events_detected": len(final_state.get("detected_events", [])),
         "portal_updates": len(final_state.get("portal_updates", [])),
         "errors": final_state.get("errors", []),
+        # Real events found but not confidently matched to a player (needs a
+        # human, not a rerun) - kept separate from `errors` so a clean run that
+        # surfaces one of these still reports success=True.
+        "review_needed": final_state.get("review_needed", []),
         "dry_run": dry_run,
         "season": _season,
         "window_days": window_days,
@@ -136,9 +141,10 @@ def run(
     }
 
     log.info(
-        "Run complete: %d events detected, %d portal updates, %d errors",
+        "Run complete: %d events detected, %d portal updates, %d errors, %d needing review",
         summary["events_detected"],
         summary["portal_updates"],
         len(summary["errors"]),
+        len(summary["review_needed"]),
     )
     return summary

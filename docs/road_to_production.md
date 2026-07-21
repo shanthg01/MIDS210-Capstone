@@ -130,10 +130,22 @@ see `ARCHITECTURE_STATUS.md`). (2) Dashboard/FitScorePage/Compare hung 5+ minute
 let `SELECT MAX(season) FROM player_team_fit_scores` run as a genuine ~200-300s full scan on every
 request, and it piled up 15+ concurrent copies of itself because the query's Redis cache was never
 actually reachable in production (`REDIS_URL` missing from `task-def.json` — silent fail-open, not an
-error). Fixed with a new indexed migration (`b3f8e21a6c94`); Redis itself deliberately left broken —
-see the Cache row in `ARCHITECTURE_STATUS.md`'s Deployment Stance for the reasoning. **Real gap this
-surfaced:** `deploy.yml` doesn't run `alembic upgrade head` as part of deployment — still a manual step
-nobody remembered this time. Full trail in `docs/status/STATUS.md`'s 2026-07-20 incident entry.
+error). Fixed with a new indexed migration (`b3f8e21a6c94`); Redis itself deliberately left broken at
+this point, deferred pending a scope decision (fail-open code change vs. real ElastiCache). **Real gap
+this surfaced:** `deploy.yml` doesn't run `alembic upgrade head` as part of deployment — still a manual
+step nobody remembered this time. Full trail in `docs/status/STATUS.md`'s 2026-07-20 incident entry.
+
+**PR #65 review + Redis resolved, 2026-07-21:** review turned up two more real bugs (`uv.lock`
+gitignored and never committed, breaking Docker builds on any fresh clone/CI; `deploy.yml`'s missing
+migration step, fixed with a pre-deploy ECS one-off `alembic upgrade head` task that must succeed before
+the service updates) — both fixed. On Redis: chose real ElastiCache over the fail-open alternative.
+Once live, fixing it required three more real, sequential bugs found by actually trying to use the
+news-monitoring agent's "Run Now" button: a missing `is_admin` grant (403, invisible in the UI), missing
+`TAVILY_API_KEY`/`GOOGLE_API_KEY` secrets (deferred since Phase 1, never circled back — silent non-
+exception failure, nothing in CloudWatch), and a real bug conflating "the pipeline crashed" with "the
+pipeline correctly declined to guess at an ambiguous player match" under one `errors`/`success=False`
+signal — split into `errors` vs. a new `review_needed` category so the UI stops saying "Run failed" for
+a run that actually worked. Full trail in `docs/status/STATUS.md`'s 2026-07-20/07-21 entries.
 
 ---
 
