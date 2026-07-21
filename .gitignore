@@ -79,3 +79,5 @@ s3-access-policy.json
 task-def.json
 cloudfront-config.json
 s3-bucket-policy.json
+logs-policy.json
+ssm-tunnel-params.json
