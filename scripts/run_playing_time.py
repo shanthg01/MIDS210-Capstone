@@ -100,13 +100,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--school-chunk-size",
         type=int,
-        default=75,
+        default=365,
         help=(
-            "Schools per INFERENCE_SQL query. Default 75 balances CTE re-evaluation overhead "
-            "(6 player-side CTEs re-run each chunk) vs. per-chunk data volume (1.66M rows at "
-            "365 causes ~88 min transfer; 75 schools = ~225K rows per chunk, ~5 chunks). "
-            "Original default of 25 caused 15x redundant CTE evaluation (~2.75h total). "
-            "Use 365 only if you want a single query and have patience."
+            "Schools per INFERENCE_SQL query. Default 365 (single query, all schools) — "
+            "confirmed via EXPLAIN (2026-07-22) that filtering player_team_fit_scores (11M "
+            "rows, not clustered by school_id) down to a smaller school_id subset makes the "
+            "planner pick a scattered Parallel Bitmap Heap Scan (~2.72 cost/row) instead of "
+            "the cheaper Parallel Seq Scan (~1.4 cost/row) the full population gets — chunking "
+            "made this slower, not faster, once materialize_inference_staging separately fixed "
+            "the original per-chunk CTE-redundancy problem chunking existed to solve. Pass a "
+            "smaller value (e.g. 75) only if you need bounded per-chunk progress/memory instead "
+            "of the fastest total wall-clock time."
         ),
     )
     parser.add_argument("--include-player-ids", type=int, nargs="+", default=[])
