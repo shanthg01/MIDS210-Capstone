@@ -178,6 +178,11 @@ def stub_fit_score(
         "program_fit": program,
     }
     overall = round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 1)
+    # program_fit shown to this user is their own qualitative grade when they've
+    # entered one — per-user, never written back to the shared row. Falls back
+    # to the random stub value only when ungraded (see the per-user vs.
+    # shared-row design decision this mirrors in real_fit_score below).
+    program_fit_display = program_fit_user_input if program_fit_user_input is not None else program
     return FitScoreResponse(
         player_id=str(player_id),
         school_id=school_id,
@@ -192,13 +197,17 @@ def stub_fit_score(
         gap_match=gap,
         scheme_fit=scheme,
         role_fit=role,
-        program_fit=program,
+        program_fit=program_fit_display,
         raw_components=RawFitComponents(**components),
         component_confidences=ComponentConfidences(
-            gap_match=0.0, scheme_fit=0.0, role_fit=0.0, program_fit=0.0
+            gap_match=0.0, scheme_fit=0.0, role_fit=0.0,
+            program_fit=1.0 if program_fit_user_input is not None else 0.0,
         ),
         overall_confidence=0.0,
-        data_quality_flags={"fallback_only_pair": True, "missing_program_fit": True},
+        data_quality_flags={
+            "fallback_only_pair": True,
+            "missing_program_fit": program_fit_user_input is None,
+        },
         breakdown=FitBreakdown(
             scheme=SchemeBreakdown(
                 three_point_match=round(rng.uniform(60.0, 98.0), 1),
@@ -239,7 +248,11 @@ def real_fit_score(
     program_fit_user_input_notes: str | None = None,
 ) -> FitScoreResponse:
     # role_fit is model-written where playing-time rows have been synced.
-    # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
+    # program_fit shown to THIS user is their own qualitative grade
+    # (program_fit_user_inputs) when they've entered one — per-user, per the
+    # 2026-07-21 design decision (a shared player_team_fit_scores row can't
+    # hold one coach's subjective culture read for every other program).
+    # The shared row/canonical overall_fit below is untouched by it.
     rng = random.Random(row.player_id * 1000 + row.school_id)
     bd = row.breakdown or {}
     scheme_bd = bd.get("scheme", {})
@@ -256,12 +269,15 @@ def real_fit_score(
         "role_fit": calibrated_role if calibrated_role is not None else row.role_fit,
         "program_fit": calibrated_program if calibrated_program is not None else row.program_fit,
     }
-    confidences = getattr(row, "component_confidences", None) or {
+    confidences = dict(getattr(row, "component_confidences", None) or {
         "gap_match": float(gap_bd.get("gap_reliability", 0.0)),
         "scheme_fit": 0.0 if scheme_fit_stale else 1.0,
         "role_fit": 1.0 if role_bd else 0.0,
-        "program_fit": 0.0,  # Program Fit descoped — no real model backs it
-    }
+        "program_fit": 0.0,
+    })
+    # Always user-specific, never taken from the stored row — a calibration
+    # job's snapshot can't know which user has graded this pair.
+    confidences["program_fit"] = 1.0 if program_fit_user_input is not None else 0.0
     overall_confidence = getattr(row, "overall_confidence", None)
     if overall_confidence is None:
         overall_confidence = sum(
@@ -275,9 +291,12 @@ def real_fit_score(
         else round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 2)
     )
     quality_flags = dict(getattr(row, "data_quality_flags", None) or {})
-    quality_flags["missing_program_fit"] = True
+    quality_flags["missing_program_fit"] = program_fit_user_input is None
     if scheme_fit_stale:
         quality_flags["stale_scheme_fit"] = True
+    program_fit_display = (
+        program_fit_user_input if program_fit_user_input is not None else components["program_fit"]
+    )
 
     return FitScoreResponse(
         player_id=str(row.player_id),
@@ -293,7 +312,7 @@ def real_fit_score(
         gap_match=components["gap_match"],
         scheme_fit=components["scheme_fit"],
         role_fit=components["role_fit"],
-        program_fit=components["program_fit"],
+        program_fit=program_fit_display,
         raw_components=RawFitComponents(
             gap_match=gap_bd.get("raw_gap_match", row.gap_match),
             scheme_fit=row.scheme_fit,

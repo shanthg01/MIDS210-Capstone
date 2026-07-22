@@ -60,16 +60,24 @@ const GAP_FEATURE_LABELS: Record<string, string> = {
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
+// Guard against null/undefined/NaN — a real backend bug (NaN silently stored
+// in a NOT NULL float column, then serialized as the bare JSON token `NaN`,
+// which browsers can't parse) has reached these call sites in production;
+// showing "—" beats a page-crashing TypeError regardless of the data's shape.
+function isBadNumber(n: unknown): boolean {
+  return n === null || n === undefined || typeof n !== 'number' || Number.isNaN(n);
+}
+
 function fmt1(n: number): string {
-  return n.toFixed(1);
+  return isBadNumber(n) ? '—' : n.toFixed(1);
 }
 
 function fmtScore(n: number): string {
-  return n.toFixed(0);
+  return isBadNumber(n) ? '—' : n.toFixed(0);
 }
 
 function fmtAdjEM(n: number): string {
-  return `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
+  return isBadNumber(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
 }
 
 function ScoreHeader({
@@ -78,6 +86,7 @@ function ScoreHeader({
   weight,
   component,
   modelVersion,
+  isGraded,
   headlineNote,
 }: {
   label: string;
@@ -85,6 +94,7 @@ function ScoreHeader({
   weight: string;
   component: string;
   modelVersion?: string;
+  isGraded?: boolean;
   headlineNote?: string;
 }) {
   const color = scoreColor(score);
@@ -97,7 +107,7 @@ function ScoreHeader({
               {label}
             </Typography>
           </DefinitionTooltip>
-          <DataStatusChip component={component} modelVersion={modelVersion} />
+          <DataStatusChip component={component} modelVersion={modelVersion} isGraded={isGraded} />
         </Box>
         <Typography variant="caption" color="text.secondary">
           {weight} weight
@@ -199,6 +209,7 @@ function OverallPanel({
   personalized,
   confidence,
   modelVersion,
+  isProgramFitGraded,
 }: {
   overall: number;
   gap: number;
@@ -208,6 +219,7 @@ function OverallPanel({
   personalized: number | null;
   confidence: number;
   modelVersion: string;
+  isProgramFitGraded: boolean;
 }) {
   const color = scoreColor(overall);
   return (
@@ -239,7 +251,11 @@ function OverallPanel({
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
             const c = scoreColor(value);
-            const isLive = isComponentLive(component, modelVersion);
+            const isLive = isComponentLive(
+              component,
+              modelVersion,
+              component === 'program_fit' ? isProgramFitGraded : undefined,
+            );
             return (
               <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -389,7 +405,9 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
             80% CI
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            {fmtAdjEM(data.confidence_interval[0])} to {fmtAdjEM(data.confidence_interval[1])}
+            {data.confidence_interval
+              ? `${fmtAdjEM(data.confidence_interval[0])} to ${fmtAdjEM(data.confidence_interval[1])}`
+              : '—'}
           </Typography>
         </Box>
         <Box>
@@ -466,7 +484,7 @@ function ProgramFitInputEditor({
     setSaved(false);
     try {
       await upsertProgramFitUserInput({
-        player_id: Number(playerId),
+        player_id: playerId,
         school_id: schoolId,
         season,
         qualitative_score: score,
@@ -725,7 +743,7 @@ export default function FitScorePage() {
 
   if (isLoading) {
     return (
-      <Box sx={{ maxWidth: 720 }}>
+      <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
         <Skeleton width={300} height={28} sx={{ mb: 2 }} />
         <Skeleton width={200} height={44} sx={{ mb: 1 }} />
         <Skeleton variant="rectangular" height={140} sx={{ mb: 2, borderRadius: 1 }} />
@@ -840,6 +858,7 @@ export default function FitScorePage() {
         personalized={fit.personalized_fit}
         confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
+        isProgramFitGraded={fit.program_fit_user_input !== null}
       />
 
       {/* System Match breakdown — headline is calibrated; the category scores
@@ -1012,13 +1031,23 @@ export default function FitScorePage() {
         )}
       </SectionPaper>
 
-      {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts.
-          The manual grade below is real (program_fit_user_inputs) — it only affects
-          this user's personalized_fit, never the shared program_fit score above. */}
+      {/* Program Fit — real once you've graded this pair (program_fit_user_inputs),
+          per-user: your grade shows here and feeds your Personalized Fit, but is
+          never shared with other users or folded into the canonical Overall Fit. */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
+        <ScoreHeader
+          label="Program Fit"
+          score={fit.program_fit}
+          weight="20%"
+          component="program_fit"
+          isGraded={fit.program_fit_user_input !== null}
+        />
         <Divider sx={{ mb: 2 }} />
-        <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
+        <Alert severity="info">
+          {fit.program_fit_user_input !== null
+            ? 'This is your own qualitative grade for this pair — personal to you, not shared with other users or folded into the canonical Overall Fit above.'
+            : FIT_COMPONENTS.program_fit.short}
+        </Alert>
         {schoolId !== null && (
           <ProgramFitInputEditor
             key={`${playerId}-${schoolId}`}

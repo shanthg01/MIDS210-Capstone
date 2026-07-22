@@ -30,6 +30,7 @@ from portalpoint.modeling.team_rating_projection import (
     build_freshman_prior_rows,
     build_roster_features,
     build_slot_baselines,
+    build_team_rating_rows,
     compute_counterfactual,
     build_explanation_payload,
     build_confidence_interval,
@@ -522,6 +523,40 @@ def test_upsert_empty_records_returns_zero():
     # Should not raise; returns 0 without hitting DB
     from portalpoint.modeling.team_rating_projection import upsert_team_rating_projections
     assert upsert_team_rating_projections.__code__.co_argcount == 3  # engine, records, model_version
+
+
+def test_build_team_rating_rows_sanitizes_nan():
+    # Real bug (found via a production crash — FitScorePage's Team Rating
+    # Projection panel threw "Cannot read properties of undefined (reading
+    # 'toFixed')" for a real player): a pandas LEFT JOIN miss leaves a column
+    # present but NaN, not absent — rec.get(key, default) only falls back on a
+    # *missing* key, so round(nan, 1) silently produced nan, stored into a
+    # NOT NULL float column (Postgres allows NaN in any float column), then
+    # serialized as the bare JSON token `NaN` on the way out — which browsers
+    # can't parse, breaking the frontend.
+    record = {
+        "player_id": 1, "school_id": 2, "season": 2027,
+        "current_adj_em": float("nan"),
+        "projected_adj_em": 5.0,
+        "delta_adj_em": float("nan"),
+        "expected_minutes_input": float("nan"),
+        "national_percentile": float("nan"),
+    }
+    rows = build_team_rating_rows([record])
+    assert len(rows) == 1
+    row = rows[0]
+    # Column order matches _UPSERT_SQL / build_team_rating_rows's tuple build.
+    current_adj_em, projected_adj_em, delta_adj_em = row[3], row[4], row[5]
+    national_percentile = row[12]
+    expected_minutes_input = row[14]
+    assert current_adj_em == 0.0  # fell back, not NaN
+    assert projected_adj_em == 5.0  # real value preserved
+    assert delta_adj_em == 0.0
+    assert national_percentile == 50
+    assert expected_minutes_input == 0.0
+    for val in row[3:15]:
+        if isinstance(val, float):
+            assert not np.isnan(val)
 
 
 # ---------------------------------------------------------------------------

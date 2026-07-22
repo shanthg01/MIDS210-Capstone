@@ -311,7 +311,7 @@ export interface FitScoreResponse {
 }
 
 export interface ProgramFitUserInputRequest {
-  player_id: number;
+  player_id: string; // 63-bit hash — string end-to-end, Number() would silently truncate (matches TeamRatingOverrideRequest's pattern)
   school_id: number;
   season: number;
   qualitative_score: number;

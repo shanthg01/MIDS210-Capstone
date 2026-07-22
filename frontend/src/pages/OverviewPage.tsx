@@ -27,7 +27,7 @@ export default function OverviewPage() {
   const navigate = useNavigate();
 
   return (
-    <Box sx={{ maxWidth: 860 }}>
+    <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1400 } }}>
       <Typography variant="h4" sx={{ fontWeight: 800 }} gutterBottom>
         Welcome to PortalPoint
       </Typography>

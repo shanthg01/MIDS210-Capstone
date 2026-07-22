@@ -31,7 +31,7 @@ export const FIT_COMPONENTS: Record<
   },
   program_fit: {
     label: 'Program Fit',
-    short: 'Not live yet — intended to capture off-court alignment (NIL budget, geography, academics, culture). Currently a neutral placeholder, not a real signal.',
+    short: "Your own qualitative grade of off-court alignment (culture, work ethic, coachability). Enter a grade below — until you do, this shows a neutral placeholder.",
   },
   team_impact_fit: {
     label: 'Team Rating',
