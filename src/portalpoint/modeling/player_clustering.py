@@ -15,10 +15,12 @@ import pandas as pd
 from psycopg2.extras import Json
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_samples
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
+from portalpoint.modeling.explainability import cluster_confidence
 
 RANDOM_STATE = 42
 DEFAULT_K = 9
@@ -97,7 +99,7 @@ ARCHETYPE_LABELS = {
 
 UPSERT_SQL = """
 INSERT INTO player_archetypes
-    (player_id, season, archetype_id, archetype_label, confidence, archetype_memberships, model_version)
+    (player_id, season, archetype_id, archetype_label, confidence, archetype_memberships, explanation, model_version)
 VALUES %s
 ON CONFLICT ON CONSTRAINT uq_player_archetype_season
 DO UPDATE SET
@@ -105,6 +107,7 @@ DO UPDATE SET
     archetype_label        = EXCLUDED.archetype_label,
     confidence             = EXCLUDED.confidence,
     archetype_memberships  = EXCLUDED.archetype_memberships,
+    explanation            = EXCLUDED.explanation,
     model_version          = EXCLUDED.model_version
 """
 
@@ -323,15 +326,13 @@ def fit_player_clusters(
 
     dists_ext = cdist(X_ext, kmeans.cluster_centers_, metric="euclidean")
     labels_ext = dists_ext.argmin(axis=1)
-    d_min_ext, d_mean_ext = dists_ext.min(axis=1), dists_ext.mean(axis=1)
-    conf_ext = np.clip(1 - d_min_ext / d_mean_ext, 0, 1)
+    conf_ext = np.array([cluster_confidence(row)["confidence"] for row in dists_ext])
 
     X_base_proj = X_base_all[~he_mask.values]
     centroids_base = kmeans.cluster_centers_[:, :BASE_DIM]
     dists_base = cdist(X_base_proj, centroids_base, metric="euclidean")
     labels_proj = dists_base.argmin(axis=1)
-    d_min_base, d_mean_base = dists_base.min(axis=1), dists_base.mean(axis=1)
-    conf_proj = np.clip(1 - d_min_base / d_mean_base, 0, 1) * 0.75
+    conf_proj = np.array([cluster_confidence(row)["confidence"] for row in dists_base]) * 0.75
 
     df["cluster_id"] = -1
     df["confidence"] = 0.0
@@ -342,6 +343,22 @@ def fit_player_clusters(
     df.loc[~he_mask, "cluster_id"] = labels_proj
     df.loc[~he_mask, "confidence"] = conf_proj
     df["cluster_id"] = df["cluster_id"].astype(int)
+
+    # Per-player silhouette is calculated in the common base feature space so
+    # HE-covered and fallback players are comparable. Distance details retain
+    # the richer feature space used for each row's actual assignment.
+    silhouettes = silhouette_samples(X_base_all, df["cluster_id"].to_numpy())
+    explanations: list[dict[str, Any] | None] = [None] * len(df)
+    for row_pos, distances in zip(np.flatnonzero(he_mask.to_numpy()), dists_ext):
+        explanation = cluster_confidence(distances, silhouette=float(silhouettes[row_pos]))
+        explanation.update({"version": 1, "method": "centroid_separation", "feature_coverage": "he_two_way"})
+        explanations[row_pos] = explanation
+    for row_pos, distances in zip(np.flatnonzero(~he_mask.to_numpy()), dists_base):
+        explanation = cluster_confidence(distances, silhouette=float(silhouettes[row_pos]))
+        explanation["confidence"] = round(float(explanation["confidence"]) * 0.75, 6)
+        explanation.update({"version": 1, "method": "centroid_separation", "feature_coverage": "base_fallback"})
+        explanations[row_pos] = explanation
+    df["cluster_explanation"] = explanations
 
     return {
         "kmeans": kmeans,
@@ -380,6 +397,7 @@ def build_archetype_records(df: pd.DataFrame, model_version: str) -> list[tuple]
             str(row.archetype_label),
             float(round(row.confidence, 4)),
             Json(row.archetype_memberships),
+            Json(row.cluster_explanation),
             model_version,
         )
         for row in df.itertuples(index=False)

@@ -26,6 +26,7 @@ __all__ = [
     "MODEL_VERSION",
     "calculate_overall_fit",
     "fixed_team_impact_preferences",
+    "explain_candidate_ranking",
     "generate_top_50_candidates",
     "refine_to_top_10",
     "team_impact_fit",
@@ -355,3 +356,109 @@ def refine_to_top_10(
 
     logger.info("Stage 2 complete: %d candidates → %d selected", len(df), len(top10))
     return top10
+
+
+def explain_candidate_ranking(
+    candidate_pool: pd.DataFrame,
+    player_id: int,
+    *,
+    stage1_weights: dict | None = None,
+    user_preferences: dict | None = None,
+) -> dict:
+    """Explain one candidate's passage through the Top-50/Top-10 funnel."""
+    if candidate_pool.empty or player_id not in set(candidate_pool["player_id"].astype(int)):
+        return {
+            "version": 1,
+            "method": "two_stage_rank_funnel",
+            "eligible": False,
+            "selection_stage": "not_in_eligible_pool",
+            "selected": False,
+            "reason": "Player is not in the scored, available portal-candidate pool.",
+        }
+
+    top50 = generate_top_50_candidates(candidate_pool, weights=stage1_weights)
+    pool_scored = candidate_pool.copy()
+    pool_scored["overall_fit"] = calculate_overall_fit(pool_scored, stage1_weights)
+    pool_scored["stage1_rank_score"] = pool_scored["overall_fit"] / 100
+    pool_scored = pool_scored.sort_values("stage1_rank_score", ascending=False).reset_index(drop=True)
+    pool_scored["stage1_rank"] = range(1, len(pool_scored) + 1)
+    player_stage1 = pool_scored.loc[pool_scored["player_id"].astype(int) == player_id].iloc[0]
+    stage1_cutoff = float(pool_scored.iloc[min(49, len(pool_scored) - 1)]["stage1_rank_score"])
+
+    component_weights = stage1_weights or DEFAULT_FIT_WEIGHTS
+    weakest_component = min(
+        component_weights,
+        key=lambda component: float(player_stage1[component]) * float(component_weights[component]),
+    )
+    base = {
+        "version": 1,
+        "method": "two_stage_rank_funnel",
+        "eligible": True,
+        "player_id": int(player_id),
+        "stage1_rank": int(player_stage1["stage1_rank"]),
+        "stage1_score": round(float(player_stage1["stage1_rank_score"]), 6),
+        "stage1_cutoff": round(stage1_cutoff, 6),
+        "stage1_margin": round(float(player_stage1["stage1_rank_score"]) - stage1_cutoff, 6),
+        "weakest_component": weakest_component,
+        "weakest_component_score": round(float(player_stage1[weakest_component]), 3),
+        "components": {
+            component: round(float(player_stage1[component]), 3)
+            for component in component_weights
+        },
+        "stage1_weights": {
+            component: round(float(weight), 6)
+            for component, weight in component_weights.items()
+        },
+    }
+    if int(player_stage1["stage1_rank"]) > 50:
+        return {
+            **base,
+            "selection_stage": "top_50_excluded",
+            "selected": False,
+            "reason": (
+                f"Ranked {int(player_stage1['stage1_rank'])} in Stage 1, "
+                f"{abs(base['stage1_margin']):.4f} below the Top-50 cutoff; "
+                f"weakest weighted component was {weakest_component}."
+            ),
+        }
+
+    normalized = _normalize_available_weights(top50, {
+        key.removesuffix("_weight"): value
+        for key, value in (user_preferences or {
+            f"{component}_weight": weight for component, weight in DEFAULT_FIT_WEIGHTS.items()
+        }).items()
+    })
+    ranked = top50.copy()
+    ranked["personalized_fit"] = calculate_overall_fit(ranked, normalized)
+    ranked["final_rec_score"] = ranked["personalized_fit"] / 100
+    ranked = ranked.sort_values("final_rec_score", ascending=False).reset_index(drop=True)
+    ranked["final_rank"] = range(1, len(ranked) + 1)
+    player_final = ranked.loc[ranked["player_id"].astype(int) == player_id].iloc[0]
+    cutoff = float(ranked.iloc[min(9, len(ranked) - 1)]["final_rec_score"])
+    final_rank = int(player_final["final_rank"])
+    next_margin = None
+    if final_rank < len(ranked):
+        next_margin = float(player_final["final_rec_score"] - ranked.iloc[final_rank]["final_rec_score"])
+    selected = final_rank <= 10
+    return {
+        **base,
+        "selection_stage": "selected" if selected else "top_10_excluded",
+        "selected": selected,
+        "final_rank": final_rank,
+        "personalized_fit": round(float(player_final["personalized_fit"]), 3),
+        "personalized_weights": {
+            component: round(float(weight), 6) for component, weight in normalized.items()
+        },
+        "final_score": round(float(player_final["final_rec_score"]), 6),
+        "top_10_cutoff": round(cutoff, 6),
+        "top_10_margin": round(float(player_final["final_rec_score"]) - cutoff, 6),
+        "margin_to_next_rank": round(next_margin, 6) if next_margin is not None else None,
+        "reason": (
+            f"Selected at rank {final_rank}; margin to the next rank is {next_margin:.4f}."
+            if selected and next_margin is not None
+            else f"Selected at rank {final_rank}."
+            if selected
+            else f"Ranked {final_rank} after personalization, "
+            f"{abs(float(player_final['final_rec_score']) - cutoff):.4f} below the Top-10 cutoff."
+        ),
+    }

@@ -624,6 +624,20 @@ def test_analytical_ci_widens_with_freshman_priors():
     assert width2 == pytest.approx(expected_width2, rel=1e-4)
 
 
+def test_analytical_ci_widens_with_candidate_specific_uncertainty():
+    models = TeamRatingModels(off_resid_std=2.0, def_resid_std=3.0)
+    lo0, hi0 = analytical_ci(1.0, models)
+    lo1, hi1 = analytical_ci(
+        1.0,
+        models,
+        candidate_value_std=2.0,
+        minutes_std=3.0,
+        candidate_value=4.0,
+        expected_minutes=24.0,
+    )
+    assert hi1 - lo1 > hi0 - lo0
+
+
 # ---------------------------------------------------------------------------
 # scale_displaced_minutes (minutes-override PR review fix)
 # ---------------------------------------------------------------------------

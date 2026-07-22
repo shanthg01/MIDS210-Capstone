@@ -5,13 +5,20 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from portalpoint.api.deps import CurrentUser, DbSession, RedisClient
-from portalpoint.api.schemas.recommendation import FitComponents, RecommendationItem, RecommendationsResponse
+from portalpoint.api.schemas.recommendation import (
+    FitComponents,
+    RecommendationExplanationResponse,
+    RecommendationItem,
+    RecommendationsResponse,
+)
+from portalpoint.api.services.context_staleness import get_context_staleness
 from portalpoint.api.services import fit_score_service
 from portalpoint.modeling.recommendations import (
     CANDIDATE_SQL,
     DEFAULT_FIT_WEIGHTS,
     MODEL_VERSION,
     fixed_team_impact_preferences,
+    explain_candidate_ranking,
     generate_top_50_candidates,
     refine_to_top_10,
     team_impact_fit,
@@ -68,6 +75,49 @@ def _build_reasoning(row: pd.Series) -> str:
     return f"{verdict} — stands out most in {_COMPONENT_LABELS[top_key]} ({scores[top_key]:.0f}/100)."
 
 
+@router.get("/explanation", response_model=RecommendationExplanationResponse)
+async def get_recommendation_explanation(
+    current_user: CurrentUser,
+    db: DbSession,
+    user_id: int = Query(...),
+    player_id: int = Query(...),
+    season: int | None = Query(default=None),
+) -> RecommendationExplanationResponse:
+    """Explain one player's inclusion or exclusion from the recommendation funnel."""
+    _check_auth(user_id, current_user)
+    if season is None:
+        season = await fit_score_service.get_current_season(db, None)
+    user_row = (await db.execute(text(_USER_SQL), {"user_id": user_id})).mappings().first()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    pool_rows = (
+        await db.execute(
+            text(CANDIDATE_SQL),
+            {"school_id": user_row["school_id"], "season": season},
+        )
+    ).mappings().all()
+    pool = pd.DataFrame(pool_rows)
+    if not pool.empty:
+        pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
+    preferences = fixed_team_impact_preferences(
+        user_row["weight_scheme"], user_row["weight_gap"], user_row["weight_role"]
+    )
+    explanation = explain_candidate_ranking(
+        pool,
+        player_id,
+        stage1_weights=DEFAULT_FIT_WEIGHTS,
+        user_preferences=preferences,
+    )
+    return RecommendationExplanationResponse(
+        program_id=user_id,
+        season=season,
+        player_id=str(player_id),
+        explanation=explanation,
+        context_staleness=await get_context_staleness(db, user_row["school_id"], season),
+    )
+
+
 @router.get("", response_model=RecommendationsResponse)
 async def get_recommendations(
     current_user: CurrentUser,
@@ -99,7 +149,14 @@ async def get_recommendations(
     )
     if not pool_rows:
         return RecommendationsResponse(
-            program_id=user_id, recommendations=[], total=0, generated_at=now, model_version=MODEL_VERSION
+            program_id=user_id,
+            recommendations=[],
+            total=0,
+            generated_at=now,
+            model_version=MODEL_VERSION,
+            context_staleness=await get_context_staleness(
+                db, user_row["school_id"], season
+            ),
         )
 
     pool = pd.DataFrame(pool_rows)
@@ -143,4 +200,5 @@ async def get_recommendations(
         total=len(items),
         generated_at=now,
         model_version=MODEL_VERSION,
+        context_staleness=await get_context_staleness(db, user_row["school_id"], season),
     )

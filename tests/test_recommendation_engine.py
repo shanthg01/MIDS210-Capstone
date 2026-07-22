@@ -14,6 +14,7 @@ import numpy as np
 from scripts.run_recommendations import TEAM_RATING_FRESHNESS_SQL, USERS_SQL
 from portalpoint.modeling.recommendations import (
     calculate_overall_fit,
+    explain_candidate_ranking,
     fixed_team_impact_preferences,
     generate_top_50_candidates,
     refine_to_top_10,
@@ -210,6 +211,38 @@ class TestRunnerContracts:
     def test_team_rating_freshness_is_school_scoped(self):
         assert "school_id = :school_id" in TEAM_RATING_FRESHNESS_SQL
         assert "season = :season" in TEAM_RATING_FRESHNESS_SQL
+
+
+class TestRecommendationExplanation:
+    def test_reports_player_outside_eligible_pool(self, base_df):
+        scored = base_df.copy()
+        scored["player_id"] = range(1, len(scored) + 1)
+        result = explain_candidate_ranking(scored, player_id=999)
+
+        assert result["eligible"] is False
+        assert result["selection_stage"] == "not_in_eligible_pool"
+
+    def test_reports_top_50_cutoff_margin(self, large_df):
+        scored = large_df.copy()
+        scored["player_id"] = range(1, len(scored) + 1)
+        selected_ids = set(generate_top_50_candidates(scored)["player_id"].astype(int))
+        excluded_id = next(int(pid) for pid in scored["player_id"] if int(pid) not in selected_ids)
+        result = explain_candidate_ranking(scored, player_id=excluded_id)
+
+        assert result["selection_stage"] == "top_50_excluded"
+        assert result["stage1_rank"] > 50
+        assert result["stage1_margin"] < 0
+        assert result["weakest_component"] in DEFAULT_FIT_WEIGHTS
+
+    def test_selected_player_has_rank_margin(self, large_df):
+        scored = large_df.copy()
+        scored["player_id"] = range(1, len(scored) + 1)
+        selected_id = int(generate_top_50_candidates(scored).iloc[0]["player_id"])
+        result = explain_candidate_ranking(scored, player_id=selected_id)
+
+        assert result["selected"] is True
+        assert result["final_rank"] <= 10
+        assert result["margin_to_next_rank"] is not None
 
 
 # ── generate_top_50_candidates ───────────────────────────────────────────────

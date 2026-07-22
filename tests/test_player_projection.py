@@ -736,6 +736,9 @@ def test_forecast_next_season_states_advances_target_season_and_transition():
     # 0.5*10 + (1 + 0.1*3 + 2*1 + -0.5*-1)
     assert out.loc[0, "skill_shooting_3p"] == pytest.approx(8.8)
     assert out.loc[0, "skill_var_shooting_3p"] == pytest.approx(1.25)
+    assert out.loc[0, "kalman_observation_var_shooting_3p"] == pytest.approx(4.0)
+    assert out.loc[0, "kalman_process_var_shooting_3p"] == pytest.approx(0.25)
+    assert out.loc[0, "kalman_rho_shooting_3p"] == pytest.approx(0.5)
 
 
 def _synthetic_sequence(rng, n, true_rho, true_beta1):
@@ -1187,6 +1190,23 @@ def test_build_cross_season_records_marks_next_season_forecast_explanation():
     assert explanation["value_components"]["off_value_per_100"] == pytest.approx(3.5)
     assert explanation["value_components"]["raw_def_value_per_100"] == pytest.approx(-0.7)
     assert explanation["value_drivers"]["top_positive"][0]["feature"] == "source_value_per_100"
+
+
+def test_build_cross_season_records_surfaces_kalman_skill_confidence():
+    df = _cross_season_projected_frame([1], [2027])
+    for skill in pp.SKILLS:
+        df[f"skill_var_{skill}"] = 0.1
+        df[f"kalman_observation_var_{skill}"] = 0.8
+        df[f"kalman_process_var_{skill}"] = 0.2
+        df[f"kalman_rho_{skill}"] = 0.7
+
+    record = pp.build_cross_season_records(df)[0]
+    uncertainty = json.loads(record[13])
+    explanation = json.loads(record[14])
+
+    assert uncertainty["skill_confidence"]["shooting_3p"] == pytest.approx(0.8 / 0.9, abs=1e-6)
+    assert explanation["kalman_uncertainty"]["skills"]["shooting_3p"]["process_share"] == 0.2
+    assert explanation["kalman_uncertainty"]["skills"]["shooting_3p"]["persistence"] == 0.7
 
 
 def test_build_cross_season_records_populates_rates_when_given_else_empty():

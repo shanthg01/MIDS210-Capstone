@@ -25,6 +25,7 @@ from portalpoint.api.schemas.fit_score import (
     RoleFitBreakdown,
     SchemeBreakdown,
 )
+from portalpoint.api.services.context_staleness import context_staleness_payload
 from portalpoint.db.models import (
     PlayerSeasonStats,
     PlayerTeamFitScore,
@@ -186,6 +187,7 @@ def stub_fit_score(
             gap=stub_gap_breakdown(rng),
             program_fit=stub_program_fit_breakdown(rng),
         ),
+        explanation=None,
         weights_used=w,
         personalized_weights=personalized_weights,
         computed_at=datetime.now(timezone.utc),
@@ -197,6 +199,7 @@ def stub_fit_score(
         is_roster_baseline_member=is_roster_baseline_member,
         scheme_fit_stale=scheme_fit_stale,
         scheme_fit_stale_reason=scheme_fit_stale_reason,
+        context_staleness=context_staleness_payload(scheme_fit_stale, scheme_fit_stale_reason),
     )
 
 
@@ -305,6 +308,22 @@ def real_fit_score(
             ),
             program_fit=stub_program_fit_breakdown(rng),
         ),
+        explanation={
+            "version": 1,
+            "method": "exact_model_native_decomposition",
+            "scheme_fit": {
+                "cosine_contributions": scheme_bd.get("cosine_contributions"),
+                "score_adjustment": scheme_bd.get("cosine_score_adjustment"),
+                "he_cosine_contributions": scheme_bd.get("he_cosine_contributions"),
+                "he_score_adjustment": scheme_bd.get("he_cosine_score_adjustment"),
+            },
+            "gap_match": {
+                "cosine_contributions": gap_bd.get("cosine_contributions"),
+                "raw_score_adjustment": gap_bd.get("raw_score_adjustment"),
+                "reliability_baseline_contribution": gap_bd.get("reliability_baseline_contribution"),
+                "calibrated_score_adjustment": gap_bd.get("calibrated_score_adjustment"),
+            },
+        },
         weights_used=FitWeights(),
         personalized_weights=personalized_weights,
         computed_at=row.computed_at,
@@ -316,6 +335,7 @@ def real_fit_score(
         is_roster_baseline_member=is_roster_baseline_member,
         scheme_fit_stale=scheme_fit_stale,
         scheme_fit_stale_reason=scheme_fit_stale_reason,
+        context_staleness=context_staleness_payload(scheme_fit_stale, scheme_fit_stale_reason),
     )
 
 

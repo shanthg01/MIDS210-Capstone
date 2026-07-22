@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from portalpoint.api.schemas.common import ContextStaleness
 
 
 class PlayerProjectionResponse(BaseModel):
@@ -33,5 +35,6 @@ class PlayerProjectionResponse(BaseModel):
     skill_percentiles: dict[str, float] | None = None
     uncertainty: dict | None = None
     explanation: dict | None = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
     model_version: str
     computed_at: datetime

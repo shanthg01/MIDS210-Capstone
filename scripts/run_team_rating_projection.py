@@ -322,7 +322,25 @@ def run_team_rating_projection(
                 delta_adj_em = delta_adj_o - delta_adj_d
 
                 n_fr = school_baselines[school_id].get("n_freshman_priors", 0)
-                ci_lower, ci_upper = analytical_ci(delta_adj_em, models, n_freshman_priors=n_fr)
+                value_half_width = (
+                    max(float(cand_proj.get("value_ci_upper")) - float(cand_proj.get("value_ci_lower")), 0.0) / 2.0
+                    if pd.notna(cand_proj.get("value_ci_upper")) and pd.notna(cand_proj.get("value_ci_lower"))
+                    else 0.0
+                )
+                minutes_half_width = max(
+                    float(pt_rows_list[i].get("minutes_ci_upper", 0.0))
+                    - float(pt_rows_list[i].get("minutes_ci_lower", 0.0)),
+                    0.0,
+                ) / 2.0
+                ci_lower, ci_upper = analytical_ci(
+                    delta_adj_em,
+                    models,
+                    n_freshman_priors=n_fr,
+                    candidate_value_std=value_half_width / 1.2816,
+                    minutes_std=minutes_half_width / 1.2816,
+                    candidate_value=float(cand_proj.get("value_per_100", 0.0)),
+                    expected_minutes=float(pt_rows_list[i].get("expected_minutes", 0.0)),
+                )
 
                 delta = {
                     "baseline_adj_o":  round(bl_adj_o, 3),
@@ -342,6 +360,13 @@ def run_team_rating_projection(
                     school_baselines[school_id]["features"], ca_features_list[i],
                     models, pt_row, delta,
                 )
+                explanation["uncertainty"] = {
+                    "method": "candidate_specific_analytical_80pct_ci",
+                    "player_value_std": round(value_half_width / 1.2816, 4),
+                    "minutes_std": round(minutes_half_width / 1.2816, 4),
+                    "freshman_prior_count": int(n_fr),
+                    "ci_width": round(ci_upper - ci_lower, 4),
+                }
 
                 records.append({
                     "player_id":              int(player_id),

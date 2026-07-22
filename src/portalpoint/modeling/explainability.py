@@ -73,6 +73,87 @@ def shrinkage_weight(
     return result
 
 
+def cluster_confidence(
+    distances: Sequence[float] | NDArray[np.float64],
+    *,
+    silhouette: float | None = None,
+) -> dict[str, Any]:
+    """Explain one K-Means assignment from its centroid distances.
+
+    Confidence is the separation between the nearest and second-nearest
+    centroid.  It is intentionally not presented as a calibrated probability.
+    A silhouette value can be supplied when the caller has cohort labels.
+    """
+    values = np.asarray(distances, dtype=np.float64)
+    if values.ndim != 1 or values.size < 2:
+        raise ValueError("Cluster confidence requires at least two centroid distances")
+    if np.any(~np.isfinite(values)) or np.any(values < 0):
+        raise ValueError("Centroid distances must be finite and non-negative")
+
+    order = np.argsort(values)
+    nearest_index, second_index = int(order[0]), int(order[1])
+    nearest, second = float(values[nearest_index]), float(values[second_index])
+    ratio = nearest / second if second > 0 else (0.0 if nearest == 0 else 1.0)
+    confidence = float(np.clip(1.0 - ratio, 0.0, 1.0))
+    result: dict[str, Any] = {
+        "assigned_cluster_id": nearest_index,
+        "second_nearest_cluster_id": second_index,
+        "distance_to_centroid": round(nearest, 6),
+        "distance_to_second_centroid": round(second, 6),
+        "distance_ratio": round(ratio, 6),
+        "confidence": round(confidence, 6),
+        "is_ambiguous": ratio >= 0.8,
+    }
+    if silhouette is not None and np.isfinite(silhouette):
+        result["silhouette"] = round(float(silhouette), 6)
+    return result
+
+
+def kalman_uncertainty_explain(
+    posterior_variance: float,
+    process_variance: float,
+    observation_variance: float,
+    *,
+    persistence: float | None = None,
+) -> dict[str, Any]:
+    """Return a compact uncertainty/signal-noise explanation for one skill.
+
+    ``confidence`` compares posterior uncertainty with observation noise. It
+    stays in [0, 1] and is a relative precision measure, not an empirical
+    coverage probability. ``process_share`` describes how much of Q + R is
+    modelled movement rather than observation noise.
+    """
+    values = np.asarray(
+        [posterior_variance, process_variance, observation_variance],
+        dtype=np.float64,
+    )
+    if np.any(~np.isfinite(values)) or np.any(values < 0):
+        raise ValueError("Kalman variances must be finite and non-negative")
+
+    posterior, process, observation = map(float, values)
+    precision_total = posterior + observation
+    confidence = observation / precision_total if precision_total > 0 else 0.0
+    noise_total = process + observation
+    process_share = process / noise_total if noise_total > 0 else 0.0
+    result: dict[str, Any] = {
+        "posterior_variance": round(posterior, 6),
+        "posterior_std": round(float(np.sqrt(posterior)), 6),
+        "process_variance": round(process, 6),
+        "observation_variance": round(observation, 6),
+        "process_share": round(process_share, 6),
+        "observation_noise_share": round(1.0 - process_share, 6),
+        "confidence": round(confidence, 6),
+        "confidence_label": (
+            "high" if confidence >= 0.75 else "medium" if confidence >= 0.5 else "low"
+        ),
+    }
+    if persistence is not None:
+        if not np.isfinite(persistence):
+            raise ValueError("Kalman persistence must be finite")
+        result["persistence"] = round(float(persistence), 6)
+    return result
+
+
 def tree_shap_explain(
     model: Any,
     X: NDArray[np.float64],

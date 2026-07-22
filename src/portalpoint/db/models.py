@@ -302,6 +302,7 @@ class PlayerArchetype(Base):
     archetype_label: Mapped[str] = mapped_column(String(50), nullable=False)  # "3&D Wing" etc.
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     archetype_memberships: Mapped[Optional[list]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     model_version: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -324,6 +325,7 @@ class TeamSystemProfile(Base):
     offense_memberships: Mapped[Optional[list]] = mapped_column(JSONB)
     defense_memberships: Mapped[Optional[list]] = mapped_column(JSONB)
     system_memberships: Mapped[Optional[list]] = mapped_column(JSONB)
+    explanation: Mapped[Optional[dict]] = mapped_column(JSONB)
     # 4-dim base style vector [3PT%, rim%, mid%, pace]
     # Replace ARRAY(Float) with Vector(4) from pgvector.sqlalchemy when extension is enabled
     style_vector: Mapped[Optional[list]] = mapped_column(ARRAY(Float))
