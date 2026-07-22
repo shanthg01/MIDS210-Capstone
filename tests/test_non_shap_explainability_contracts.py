@@ -44,6 +44,10 @@ def test_player_cluster_records_persist_explanation() -> None:
     assert "explanation" in player_clustering.UPSERT_SQL
 
 
+def test_player_cluster_confidence_semantics_have_a_new_model_revision() -> None:
+    assert player_clustering.MODEL_VERSION_REVISION == "tuned-v2"
+
+
 def test_team_cluster_records_persist_explanation_and_clear_staleness() -> None:
     row = {
         "school_id": 10,

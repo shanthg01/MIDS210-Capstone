@@ -7,23 +7,22 @@ normalized — see recommendations.team_impact_fit()) are present as fit columns
 """
 from __future__ import annotations
 
-import pytest
-import pandas as pd
 import numpy as np
+import pandas as pd
+import pytest
 
-from scripts.run_recommendations import TEAM_RATING_FRESHNESS_SQL, USERS_SQL
 from portalpoint.modeling.recommendations import (
+    DEFAULT_FIT_WEIGHTS,
+    DELTA_ADJ_EM_CLIP,
+    TEAM_IMPACT_FIT_NEUTRAL,
     calculate_overall_fit,
     explain_candidate_ranking,
     fixed_team_impact_preferences,
     generate_top_50_candidates,
     refine_to_top_10,
     team_impact_fit,
-    DEFAULT_FIT_WEIGHTS,
-    DELTA_ADJ_EM_CLIP,
-    TEAM_IMPACT_FIT_NEUTRAL,
 )
-
+from scripts.run_recommendations import TEAM_RATING_FRESHNESS_SQL, USERS_SQL
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
 
@@ -243,6 +242,49 @@ class TestRecommendationExplanation:
         assert result["selected"] is True
         assert result["final_rank"] <= 10
         assert result["margin_to_next_rank"] is not None
+
+    def test_explanations_match_canonical_stage_2_ranking(self, large_df):
+        scored = large_df.copy()
+        scored["player_id"] = range(1, len(scored) + 1)
+        preferences = {
+            "scheme_fit_weight": 0.55,
+            "gap_match_weight": 0.15,
+            "role_fit_weight": 0.10,
+            "team_impact_fit_weight": 0.20,
+        }
+        top50 = generate_top_50_candidates(scored)
+        top10 = refine_to_top_10(
+            top50,
+            user_preferences=preferences,
+            risk_tolerance="low",
+        )
+        selected_by_id = {
+            int(row.player_id): row for row in top10.itertuples(index=False)
+        }
+
+        for player_id in top50["player_id"].astype(int):
+            explanation = explain_candidate_ranking(
+                scored,
+                player_id=player_id,
+                user_preferences=preferences,
+                risk_tolerance="low",
+            )
+            assert explanation["selected"] is (player_id in selected_by_id)
+            assert explanation["risk_tolerance"] == "low"
+            if player_id in selected_by_id:
+                ranked = selected_by_id[player_id]
+                assert explanation["final_rank"] == ranked.final_rank
+                assert explanation["final_score"] == pytest.approx(ranked.final_rec_score)
+                assert explanation["confidence_penalty"] == pytest.approx(
+                    ranked.confidence_penalty
+                )
+
+    def test_invalid_risk_tolerance_is_rejected_for_eligible_player(self, base_df):
+        scored = base_df.copy()
+        scored["player_id"] = range(1, len(scored) + 1)
+
+        with pytest.raises(ValueError, match="risk_tolerance"):
+            explain_candidate_ranking(scored, player_id=1, risk_tolerance="extreme")
 
 
 # ── generate_top_50_candidates ───────────────────────────────────────────────

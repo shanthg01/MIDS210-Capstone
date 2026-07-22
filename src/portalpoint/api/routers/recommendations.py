@@ -11,14 +11,14 @@ from portalpoint.api.schemas.recommendation import (
     RecommendationItem,
     RecommendationsResponse,
 )
-from portalpoint.api.services.context_staleness import get_context_staleness
 from portalpoint.api.services import fit_score_service
+from portalpoint.api.services.context_staleness import get_context_staleness
 from portalpoint.modeling.recommendations import (
     CANDIDATE_SQL,
     DEFAULT_FIT_WEIGHTS,
     MODEL_VERSION,
-    fixed_team_impact_preferences,
     explain_candidate_ranking,
+    fixed_team_impact_preferences,
     generate_top_50_candidates,
     refine_to_top_10,
     team_impact_fit,
@@ -108,6 +108,7 @@ async def get_recommendation_explanation(
         player_id,
         stage1_weights=DEFAULT_FIT_WEIGHTS,
         user_preferences=preferences,
+        risk_tolerance="medium",
     )
     return RecommendationExplanationResponse(
         program_id=user_id,

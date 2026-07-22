@@ -93,7 +93,10 @@ def cluster_confidence(
     order = np.argsort(values)
     nearest_index, second_index = int(order[0]), int(order[1])
     nearest, second = float(values[nearest_index]), float(values[second_index])
-    ratio = nearest / second if second > 0 else (0.0 if nearest == 0 else 1.0)
+    # Two zero distances are a perfect tie, not perfect confidence.  Since the
+    # distances are sorted and non-negative, a zero second-nearest distance
+    # implies the nearest distance is also zero.
+    ratio = nearest / second if second > 0 else 1.0
     confidence = float(np.clip(1.0 - ratio, 0.0, 1.0))
     result: dict[str, Any] = {
         "assigned_cluster_id": nearest_index,

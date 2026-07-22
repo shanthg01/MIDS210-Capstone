@@ -57,7 +57,9 @@ from sqlalchemy import text
 
 from portalpoint.core.security import hash_password
 from portalpoint.modeling.io import get_sync_engine
-from portalpoint.modeling.player_projection import MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION
+from portalpoint.modeling.player_projection import (
+    MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
+)
 
 TEST_EMAIL = "player@example.com"
 TEST_PASS = "testpass123"
@@ -158,6 +160,14 @@ VALUES
      18.0, 'rotation',
      '{"candidate_off_contribution": 0.5, "candidate_def_contribution": 0.3}'::jsonb,
      '{}'::jsonb,
+     'team-roster-proj-v1', now() + interval '7 days'),
+    (2, 9900301, 2027, 5.0, 6.1, 1.1,
+     105.0, 100.0, 105.7, 99.6,
+     0.3, 1.9,
+     55, 4,
+     18.0, 'rotation',
+     '{"candidate_off_contribution": 0.4, "candidate_def_contribution": 0.2}'::jsonb,
+     '{"replacement_slot": 4.0, "same_position_depth": 8.0, "flexible_bench": 6.0}'::jsonb,
      'team-roster-proj-v1', now() + interval '7 days'),
     (101, 9900301, 2026, 4.0, 4.4, 0.4,
      104.0, 100.0, 104.4, 100.0,

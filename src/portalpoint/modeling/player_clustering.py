@@ -15,7 +15,6 @@ import pandas as pd
 from psycopg2.extras import Json
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_samples
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
 
@@ -24,6 +23,11 @@ from portalpoint.modeling.explainability import cluster_confidence
 
 RANDOM_STATE = 42
 DEFAULT_K = 9
+
+# v2 changes persisted confidence from nearest/mean centroid distance to
+# nearest/second-nearest separation. Keep that semantic change visible even
+# when a season is rerun in place.
+MODEL_VERSION_REVISION = "tuned-v2"
 
 # Style + two-way feature groups. Group weights are applied after standardizing
 # each group, so broad offensive style remains the main signal while defense,
@@ -344,19 +348,27 @@ def fit_player_clusters(
     df.loc[~he_mask, "confidence"] = conf_proj
     df["cluster_id"] = df["cluster_id"].astype(int)
 
-    # Per-player silhouette is calculated in the common base feature space so
-    # HE-covered and fallback players are comparable. Distance details retain
-    # the richer feature space used for each row's actual assignment.
-    silhouettes = silhouette_samples(X_base_all, df["cluster_id"].to_numpy())
+    # Centroid separation is O(n*k). Avoid exact per-player silhouettes here:
+    # sklearn's implementation requires O(n^2) pairwise-distance work at the
+    # full production population. The runner still records a bounded-sample
+    # cohort silhouette as a model-level diagnostic.
     explanations: list[dict[str, Any] | None] = [None] * len(df)
     for row_pos, distances in zip(np.flatnonzero(he_mask.to_numpy()), dists_ext):
-        explanation = cluster_confidence(distances, silhouette=float(silhouettes[row_pos]))
-        explanation.update({"version": 1, "method": "centroid_separation", "feature_coverage": "he_two_way"})
+        explanation = cluster_confidence(distances)
+        explanation.update({
+            "version": 1,
+            "method": "centroid_separation",
+            "feature_coverage": "he_two_way",
+        })
         explanations[row_pos] = explanation
     for row_pos, distances in zip(np.flatnonzero(~he_mask.to_numpy()), dists_base):
-        explanation = cluster_confidence(distances, silhouette=float(silhouettes[row_pos]))
+        explanation = cluster_confidence(distances)
         explanation["confidence"] = round(float(explanation["confidence"]) * 0.75, 6)
-        explanation.update({"version": 1, "method": "centroid_separation", "feature_coverage": "base_fallback"})
+        explanation.update({
+            "version": 1,
+            "method": "centroid_separation",
+            "feature_coverage": "base_fallback",
+        })
         explanations[row_pos] = explanation
     df["cluster_explanation"] = explanations
 

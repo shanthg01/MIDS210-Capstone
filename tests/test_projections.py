@@ -87,3 +87,19 @@ def test_different_pairings_differ(client, H):
     d1 = client.get(_P1_URL, headers=H).json()["delta_adjEM"]
     d2 = client.get(_P2_URL, headers=H).json()["delta_adjEM"]
     assert d1 != d2
+
+
+def test_compare_team_rating_scenarios_returns_ordered_live_results(client, H):
+    response = client.post(
+        "/api/projections/team-rating/compare",
+        json={"player_ids": [101, 2], "school_id": 9900301, "season": 2027},
+        headers=H,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [scenario["player_id"] for scenario in data["scenarios"]] == ["101", "2"]
+    assert data["preferred_player_id"] == "101"
+    assert data["delta_margin"] == pytest.approx(1.1)
+    assert data["confidence_intervals_overlap"] is True
+    assert data["reasoning"]

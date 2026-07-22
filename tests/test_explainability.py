@@ -24,6 +24,14 @@ def test_cluster_confidence_reports_second_nearest_and_ambiguity() -> None:
     assert result["silhouette"] == 0.03
 
 
+def test_cluster_confidence_treats_zero_distance_tie_as_ambiguous() -> None:
+    result = cluster_confidence([0.0, 0.0, 0.8])
+
+    assert result["distance_ratio"] == 1.0
+    assert result["confidence"] == 0.0
+    assert result["is_ambiguous"] is True
+
+
 def test_kalman_uncertainty_explanation_surfaces_signal_noise_and_persistence() -> None:
     result = kalman_uncertainty_explain(0.1, 0.25, 0.75, persistence=0.8)
 

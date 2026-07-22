@@ -1,3 +1,5 @@
+import pytest
+
 # Pinned to the season scripts/seed_test_data.py's player_team_fit_scores rows
 # use (2026) rather than relying on get_current_season()'s global MAX across the
 # whole table — a shared dev DB with real ingested data at a later season would
@@ -98,3 +100,23 @@ def test_reasoning_nonempty(client, H, user_id):
 
 def test_other_users_recommendations_forbidden(client, H, user_id):
     assert client.get(f"/api/recommendations?user_id={user_id + 1}", headers=H).status_code == 403
+
+
+def test_selected_recommendation_explanation_matches_live_ranking(client, H, user_id):
+    recommendations = client.get(
+        f"/api/recommendations?user_id={user_id}&season={SEASON}", headers=H
+    ).json()["recommendations"]
+    selected = recommendations[0]
+
+    response = client.get(
+        "/api/recommendations/explanation",
+        params={"user_id": user_id, "player_id": selected["player_id"], "season": SEASON},
+        headers=H,
+    )
+
+    assert response.status_code == 200
+    explanation = response.json()["explanation"]
+    assert explanation["selected"] is True
+    assert explanation["final_rank"] == selected["rank"]
+    assert explanation["personalized_fit"] == pytest.approx(selected["personalized_fit"])
+    assert explanation["risk_tolerance"] == "medium"
