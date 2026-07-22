@@ -1,4 +1,3 @@
-import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
@@ -15,8 +14,8 @@ from portalpoint.api.schemas.comparison import (
     TradeOff,
 )
 from portalpoint.api.schemas.player import ClassYear, PlayerBase, Position
-from portalpoint.api.schemas.prediction import PredictedRole, PredictionResponse, SimilarTransfer
-from portalpoint.api.services import fit_score_service
+from portalpoint.api.schemas.prediction import PredictionResponse
+from portalpoint.api.services import fit_score_service, transfer_success_service
 from portalpoint.db.models import Player, PlayerSeasonStats, School
 from portalpoint.db.redis_client import get_redis
 
@@ -72,37 +71,6 @@ async def _player_info(db: DbSession, player_ids: list[int]) -> dict[int, Player
     return found
 
 
-def _stub_prediction(program_id: int, player_id: int) -> PredictionResponse:
-    # STUB — replace with Model 5 (transfer success predictor) output
-    rng = random.Random(program_id * 1000 + player_id + 999)
-    return PredictionResponse(
-        player_id=str(player_id),
-        school_id=program_id,
-        predicted_per_change=round(rng.uniform(0.5, 5.5), 1),
-        predicted_minutes=round(rng.uniform(18.0, 28.0), 1),
-        predicted_role=rng.choices(
-            [PredictedRole.STARTER, PredictedRole.ROTATION, PredictedRole.BENCH],
-            weights=[0.45, 0.40, 0.15],
-        )[0],
-        confidence=round(rng.uniform(0.55, 0.82), 2),
-        similar_transfers=[
-            SimilarTransfer(
-                player_name="Jordan Hayes",
-                season="2023-24",
-                from_school="UNC Greensboro",
-                to_school="Davidson",
-                per_before=14.2,
-                per_after=17.8,
-                per_change=3.6,
-                minutes_before=22.1,
-                minutes_after=26.4,
-                outcome_score=4.1,
-            )
-        ],
-        model_version="pred_v1.0-stub",
-    )
-
-
 @router.post("", response_model=CompareResponse)
 async def compare_players(
     body: CompareRequest,
@@ -111,16 +79,32 @@ async def compare_players(
     redis: Redis = Depends(get_redis),
 ):
     season = await fit_score_service.get_current_season(db, redis)
+    prediction_season = await transfer_success_service.get_current_season(db)
     player_info = await _player_info(db, body.player_ids)
 
-    entries = [
-        ComparisonPlayerEntry(
-            player=player_info[pid],
-            fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, season),
-            prediction=_stub_prediction(body.program_id, pid),
+    entries: list[ComparisonPlayerEntry] = []
+    for pid in body.player_ids:
+        prediction = await transfer_success_service.get_prediction(
+            db, pid, body.program_id, prediction_season
         )
-        for pid in body.player_ids
-    ]
+        if prediction is None:
+            prediction = PredictionResponse(
+                player_id=str(pid),
+                school_id=body.program_id,
+                season=prediction_season,
+                success_probability=0.5,
+                success_tier=None,
+                explanation=None,
+                similar_transfers=[],
+                model_version="unavailable",
+            )
+        entries.append(
+            ComparisonPlayerEntry(
+                player=player_info[pid],
+                fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, season),
+                prediction=prediction,
+            )
+        )
 
     matrix = ComparisonMatrix(
         overall_fit={e.player.full_name: e.fit_score.overall_fit for e in entries},

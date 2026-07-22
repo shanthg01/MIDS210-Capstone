@@ -328,36 +328,29 @@ export interface TeamRatingProjectionResponse {
 
 // ── Predictions ───────────────────────────────────────────────────────────────
 
-export type PredictedRole = 'starter' | 'rotation' | 'bench' | 'reserve';
-
 export interface SimilarTransfer {
   player_name: string;
-  season: string;
-  from_school: string;
-  to_school: string;
-  per_before: number;
-  per_after: number;
-  per_change: number;
-  minutes_before: number;
-  minutes_after: number;
-  outcome_score: number;
-}
-
-export interface SHAPExplanation {
-  feature: string;
-  impact: number;
-  description: string;
+  season: number;
+  success_label: boolean;
+  actual_value_per_100: number;
+  projected_value_per_100: number;
+  value_vs_projection: number;
+  minutes_drift?: number | null;
+  usage_drift?: number | null;
+  post_minutes_per_game?: number | null;
+  projected_minutes?: number | null;
+  post_usage_rate?: number | null;
+  projected_usage?: number | null;
 }
 
 export interface PredictionResponse {
   player_id: string; // string, not number — see PlayerProfile.player_id comment
   school_id: number;
-  predicted_per_change: number;
-  predicted_minutes: number;
-  predicted_role: PredictedRole;
-  confidence: number;
+  season: number;
+  success_probability: number;
+  success_tier: string | null;
+  explanation: string | null;
   similar_transfers: SimilarTransfer[];
-  shap_explanations: SHAPExplanation[];
   model_version: string;
 }
 
