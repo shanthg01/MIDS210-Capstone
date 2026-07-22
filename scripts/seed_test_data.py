@@ -60,6 +60,7 @@ from portalpoint.modeling.io import get_sync_engine
 from portalpoint.modeling.player_projection import (
     MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
 )
+from portalpoint.modeling.transfer_success import SERVING_MODEL_VERSION as TRANSFER_SUCCESS_MODEL_VERSION
 
 TEST_EMAIL = "player@example.com"
 TEST_PASS = "testpass123"
@@ -204,6 +205,47 @@ ON CONFLICT ON CONSTRAINT uq_team_rating_projection DO UPDATE SET
     expires_at = EXCLUDED.expires_at,
     computed_at = now();
 
+INSERT INTO transfer_success_scores
+    (player_id, to_school_id, season,
+     player_cluster, team_offense_cluster_id, team_defense_cluster_id, team_cluster_label,
+     success_probability, success_tier,
+     cell_n, shrinkage_w, cluster_success_rate, cell_success_rate,
+     explanation, similar_transfers,
+     model_version, expires_at)
+VALUES
+    (101, 9900301, 2027,
+     0, 0, 0, 'Test System Label',
+     0.68, 'Moderate',
+     4.5, 0.23, 0.61, 0.72,
+     'Moderate transfer success likelihood based on limited exact-pairing precedent.',
+     '[{"player_name": "Jordan Hayes", "season": 2023, "success_label": true,
+        "actual_value_per_100": 5.0, "projected_value_per_100": 3.0, "value_vs_projection": 2.0,
+        "minutes_drift": 3.2, "usage_drift": 1.5,
+        "post_minutes_per_game": 26.4, "projected_minutes": 22.1,
+        "post_usage_rate": 24.0, "projected_usage": 20.5}]'::jsonb,
+     :transfer_success_model_version, now() + interval '7 days'),
+    (101, 9900302, 2027,
+     0, 0, 0, 'Test System Label',
+     0.54, 'Low',
+     2.0, 0.12, 0.58, 0.49,
+     'Lower transfer success likelihood with sparse precedent at this pairing.',
+     '[]'::jsonb,
+     :transfer_success_model_version, now() + interval '7 days'),
+    (42, 9900301, 2027,
+     0, 0, 0, 'Test System Label',
+     0.45, 'Low',
+     1.0, 0.06, 0.55, 0.40,
+     'Expired seed row for transfer-success 404 tests.',
+     '[]'::jsonb,
+     :transfer_success_model_version, now() - interval '1 day')
+ON CONFLICT ON CONSTRAINT uq_transfer_success_score DO UPDATE SET
+    success_probability = EXCLUDED.success_probability,
+    success_tier = EXCLUDED.success_tier,
+    explanation = EXCLUDED.explanation,
+    similar_transfers = EXCLUDED.similar_transfers,
+    expires_at = EXCLUDED.expires_at,
+    computed_at = now();
+
 INSERT INTO player_team_fit_scores
     (player_id, school_id, season, overall_fit, gap_match, scheme_fit, role_fit, program_fit,
      weight_gap, weight_scheme, weight_role, weight_program, is_portal_candidate, model_version, computed_at, expires_at)
@@ -245,6 +287,7 @@ def seed_test_data() -> None:
             text(SEED_SQL),
             {
                 "player_projection_model_version": PLAYER_PROJECTION_MODEL_VERSION,
+                "transfer_success_model_version": TRANSFER_SUCCESS_MODEL_VERSION,
                 "test_email": TEST_EMAIL,
                 "test_password_hash": hash_password(TEST_PASS),
                 "test_name": TEST_NAME,
