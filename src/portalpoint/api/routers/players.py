@@ -22,6 +22,7 @@ from portalpoint.api.schemas.playing_time import (
     PlayingTimeProjectionResponse,
 )
 from portalpoint.api.schemas.user import StatKey
+from portalpoint.api.services.context_staleness import get_context_staleness
 from portalpoint.db.models import (
     Player,
     PlayerSeasonStats,
@@ -242,6 +243,9 @@ async def get_player(player_id: int, db: DbSession):
             archetype_id=arch_row.archetype_id,
             label=arch_row.archetype_label,
             confidence=arch_row.confidence,
+            memberships=arch_row.archetype_memberships,
+            explanation=arch_row.explanation,
+            model_version=arch_row.model_version,
         )
 
     # Portal status
@@ -351,6 +355,14 @@ async def get_player_projection(
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
+    context_staleness = (
+        await get_context_staleness(db, row.school_id, row.season)
+        if row.school_id is not None
+        else None
+    )
+    response_kwargs = {}
+    if context_staleness is not None:
+        response_kwargs["context_staleness"] = context_staleness
     return PlayerProjectionResponse(
         player_id=str(row.player_id),
         season=row.season,
@@ -369,6 +381,7 @@ async def get_player_projection(
         explanation=row.explanation,
         model_version=row.model_version,
         computed_at=row.computed_at,
+        **response_kwargs,
     )
 
 
@@ -402,6 +415,7 @@ async def get_player_playing_time(
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
+    context_staleness = await get_context_staleness(db, row.school_id, row.season)
     return PlayingTimeProjectionResponse(
         player_id=str(row.player_id),
         school_id=row.school_id,
@@ -421,6 +435,7 @@ async def get_player_playing_time(
         data_quality_flags=row.data_quality_flags,
         scenario_overrides=row.scenario_overrides,
         explanation=row.explanation,
+        context_staleness=context_staleness,
         role_fit=row.role_fit,
         model_version=row.model_version,
         computed_at=row.computed_at,
@@ -484,6 +499,16 @@ async def override_player_playing_time(
         override_expected_minutes=body.minutes_override,
         override_role_fit=override_role_fit,
         model_version=row.model_version,
+        explanation={
+            "version": 1,
+            "method": "role_fit_counterfactual_delta",
+            "stored_expected_minutes": row.expected_minutes,
+            "override_expected_minutes": body.minutes_override,
+            "stored_role_fit": row.role_fit,
+            "override_role_fit": override_role_fit,
+            "role_fit_delta": round(override_role_fit - row.role_fit, 4),
+        },
+        context_staleness=await get_context_staleness(db, row.school_id, row.season),
     )
 
 

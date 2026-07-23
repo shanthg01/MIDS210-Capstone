@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from portalpoint.api.schemas.common import ContextStaleness
+
 
 class FitComponents(BaseModel):
     gap_match: float = Field(..., ge=0, le=100)
@@ -37,3 +39,12 @@ class RecommendationsResponse(BaseModel):
     total: int
     generated_at: datetime
     model_version: str
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
+
+
+class RecommendationExplanationResponse(BaseModel):
+    program_id: int
+    season: int
+    player_id: str
+    explanation: dict
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)

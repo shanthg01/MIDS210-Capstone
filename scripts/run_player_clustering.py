@@ -45,7 +45,7 @@ def main(seasons: list[int] | None, k: int) -> None:
         df = df[df["season"].isin(seasons)].reset_index(drop=True)
     seasons_in_data = sorted(df["season"].unique().tolist())
     current_season = max(seasons_in_data)
-    model_version = f"k{k}-tuned-v1-{current_season}"
+    model_version = f"k{k}-{pc.MODEL_VERSION_REVISION}-{current_season}"
     log.info("Loaded %s player-seasons, seasons=%s", f"{len(df):,}", seasons_in_data)
 
     required_cols = sorted(set(pc.EXTENDED_FEATURES + pc.SCALED_FEATURES + ["he_player_available"]))

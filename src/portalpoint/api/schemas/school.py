@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from portalpoint.api.schemas.common import ContextStaleness
 
 
 class Region(str, Enum):
@@ -80,6 +82,12 @@ class TeamSystemProfileResponse(BaseModel):
     system_label: str
     offense_label: str | None = None
     defense_label: str | None = None
+    offense_memberships: list[dict] | None = None
+    defense_memberships: list[dict] | None = None
+    system_memberships: list[dict] | None = None
+    explanation: dict | None = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
+    model_version: str | None = None
 
 
 class RosterGapResponse(BaseModel):
