@@ -48,41 +48,118 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
       - name: Run DB migrations (one-off ECS task, must succeed before deploy)
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          MIGRATION_DB_SECRET_ARN: arn:aws:secretsmanager:us-east-1:424056758764:secret:portalpoint/database-master-url
         run: |
-          # Reuse the running service's own network config (subnets/SG) instead of
-          # hardcoding IDs here — stays correct automatically if that ever changes.
-          NETWORK_CONFIG=$(aws ecs describe-services \
-            --cluster portalpoint-prod --services portalpoint-backend \
-            --query 'services[0].networkConfiguration' --output json)
+          set -euo pipefail
 
-          # Overrides the container command to run the migration instead of uvicorn,
-          # and swaps DATABASE_URL to portalpoint_master — some tables aren't owned
-          # by portalpoint_app (the app's runtime user), so DDL fails under it (real
-          # incident, 2026-07-20: see docs/status/ARCHITECTURE_STATUS.md).
-          TASK_ARN=$(aws ecs run-task \
+          # Derive networking and runtime settings from the service instead of
+          # duplicating production infrastructure in this workflow.
+          SERVICE_DESCRIPTION=$(aws ecs describe-services \
             --cluster portalpoint-prod \
-            --task-definition portalpoint-backend \
+            --services portalpoint-backend \
+            --query 'services[0].{network:networkConfiguration,taskDefinition:taskDefinition}' \
+            --output json)
+          NETWORK_CONFIG=$(jq -c '.network' <<< "$SERVICE_DESCRIPTION")
+          SERVICE_TASK_DEFINITION=$(jq -r '.taskDefinition // empty' <<< "$SERVICE_DESCRIPTION")
+
+          if [ -z "$SERVICE_TASK_DEFINITION" ] || [ "$NETWORK_CONFIG" = "null" ]; then
+            echo "Unable to resolve the running service task definition or network config."
+            exit 1
+          fi
+
+          SERVICE_TASK_DEF_FILE="$RUNNER_TEMP/service-task-definition.json"
+          MIGRATION_TASK_DEF_FILE="$RUNNER_TEMP/migration-task-definition.json"
+          aws ecs describe-task-definition \
+            --task-definition "$SERVICE_TASK_DEFINITION" \
+            --query taskDefinition \
+            --output json > "$SERVICE_TASK_DEF_FILE"
+
+          if ! jq -e '.containerDefinitions | any(.name == "backend")' \
+            "$SERVICE_TASK_DEF_FILE" > /dev/null; then
+            echo "The service task definition has no container named backend."
+            exit 1
+          fi
+
+          # RunTask overrides cannot contain `secrets`. Register a separate
+          # migration task definition so ECS injects the master URL without
+          # exposing its value to the GitHub runner. The production service
+          # task definition remains on portalpoint_app's lower-privilege URL.
+          jq \
+            --arg family "portalpoint-backend-migration" \
+            --arg image "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+            --arg database_secret "$MIGRATION_DB_SECRET_ARN" \
+            '{
+              family: $family,
+              taskRoleArn,
+              executionRoleArn,
+              networkMode,
+              containerDefinitions,
+              volumes,
+              placementConstraints,
+              requiresCompatibilities,
+              cpu,
+              memory,
+              pidMode,
+              ipcMode,
+              proxyConfiguration,
+              inferenceAccelerators,
+              ephemeralStorage,
+              runtimePlatform
+            }
+            | with_entries(select(.value != null))
+            | .containerDefinitions = [
+                .containerDefinitions[]
+                | if .name == "backend" then
+                    .image = $image
+                    | .secrets = (
+                        ((.secrets // []) | map(select(.name != "DATABASE_URL")))
+                        + [{name: "DATABASE_URL", valueFrom: $database_secret}]
+                      )
+                  else . end
+              ]' \
+            "$SERVICE_TASK_DEF_FILE" > "$MIGRATION_TASK_DEF_FILE"
+
+          MIGRATION_TASK_DEFINITION=$(aws ecs register-task-definition \
+            --cli-input-json "file://$MIGRATION_TASK_DEF_FILE" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          RUN_TASK_RESPONSE=$(aws ecs run-task \
+            --cluster portalpoint-prod \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
             --launch-type FARGATE \
             --network-configuration "$NETWORK_CONFIG" \
             --overrides '{
               "containerOverrides": [{
                 "name": "backend",
-                "command": ["alembic", "upgrade", "head"],
-                "secrets": [
-                  {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:424056758764:secret:portalpoint/database-master-url"}
-                ]
+                "command": ["alembic", "upgrade", "head"]
               }]
             }' \
-            --query 'tasks[0].taskArn' --output text)
+            --output json)
+
+          TASK_ARN=$(jq -r '.tasks[0].taskArn // empty' <<< "$RUN_TASK_RESPONSE")
+          if [ -z "$TASK_ARN" ]; then
+            echo "ECS did not start the migration task."
+            jq '.failures' <<< "$RUN_TASK_RESPONSE"
+            exit 1
+          fi
 
           echo "Migration task: $TASK_ARN"
           aws ecs wait tasks-stopped --cluster portalpoint-prod --tasks "$TASK_ARN"
 
-          EXIT_CODE=$(aws ecs describe-tasks --cluster portalpoint-prod --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].exitCode' --output text)
+          TASK_RESULT=$(aws ecs describe-tasks \
+            --cluster portalpoint-prod \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].{exitCode:containers[0].exitCode,containerReason:containers[0].reason,stoppedReason:stoppedReason}' \
+            --output json)
+          EXIT_CODE=$(jq -r '.exitCode // "missing"' <<< "$TASK_RESULT")
 
           if [ "$EXIT_CODE" != "0" ]; then
             echo "Migration failed with exit code $EXIT_CODE — aborting deploy, service is untouched."
+            jq . <<< "$TASK_RESULT"
             aws logs tail /ecs/portalpoint-backend --since 10m || true
             exit 1
           fi
