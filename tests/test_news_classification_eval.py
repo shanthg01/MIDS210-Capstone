@@ -241,12 +241,13 @@ class TestRegexClassifierMetrics:
 
         correct = 0
         by_difficulty = {"easy": [0, 0], "medium": [0, 0], "hard": [0, 0]}
-        by_event_type = {"player_enters_portal": [0, 0], "coach_leaves": [0, 0]}
+        by_event_type = {"player_enters_portal": [0, 0], "coach_leaves": [0, 0], "unknown": [0, 0]}
 
         for case in cases:
             result = _classify_event_payload(
                 text=case["content"],
                 title=case["title"],
+                source_url=case.get("url", ""),
             )
             expected_type = case["expected"]["event_type"]
             is_correct = result["event_type"] == expected_type
@@ -258,6 +259,7 @@ class TestRegexClassifierMetrics:
             by_difficulty[diff][0] += 1 if is_correct else 0
             by_difficulty[diff][1] += 1
 
+            by_event_type.setdefault(expected_type, [0, 0])
             by_event_type[expected_type][0] += 1 if is_correct else 0
             by_event_type[expected_type][1] += 1
 
@@ -277,6 +279,46 @@ class TestRegexClassifierMetrics:
 
         # This test is informational — always passes
         assert True
+
+
+class TestNegativeControls:
+    """Negative golden-set cases must not be classified as target events."""
+
+    @pytest.fixture(scope="class")
+    def negative_cases(self) -> list[dict]:
+        return [c for c in load_golden_set() if c["expected"]["event_type"] == "unknown"]
+
+    def test_negative_cases_not_target_events(self, negative_cases):
+        failures = []
+        for case in negative_cases:
+            result = _classify_event_payload(
+                text=case["content"],
+                title=case["title"],
+                source_url=case.get("url", ""),
+            )
+            if result["event_type"] in TARGET_EVENT_TYPES:
+                failures.append(
+                    f"{case['id']}: got '{result['event_type']}', expected 'unknown'"
+                )
+            if result.get("is_target_event"):
+                failures.append(f"{case['id']}: is_target_event should be False")
+
+        if failures:
+            pytest.fail("Negative control failures:\n" + "\n".join(failures))
+
+    def test_football_portal_filtered_before_classification(self, negative_cases):
+        football_cases = [
+            c for c in negative_cases if "football" in c["id"] or "mensah" in c["id"]
+        ]
+        assert football_cases, "expected football negative fixtures"
+        for case in football_cases:
+            result = _classify_event_payload(
+                text=case["content"],
+                title=case["title"],
+                source_url=case.get("url", ""),
+            )
+            assert result["event_type"] == "unknown"
+            assert result.get("filtered_reason")
 
 
 # ---------------------------------------------------------------------------

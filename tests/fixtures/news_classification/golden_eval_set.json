@@ -2,7 +2,7 @@
   "description": "Golden evaluation set for news monitoring classifier - 2025-2026 CBB season",
   "created": "2026-07-12",
   "version": "v1",
-  "case_count": 20,
+  "case_count": 24,
   "source_domains": ["247sports.com", "on3.com", "espn.com"],
   "cases": [
     {
@@ -364,6 +364,70 @@
       "verification": "Public retirement announcement.",
       "difficulty": "easy",
       "notes": "Voluntary departure clearly labeled as 'retirement', serving as a necessary control variable against exclusively negative sentiment training."
+    },
+    {
+      "id": "duke_mensah_football_portal_2026_07",
+      "event_type": "unknown",
+      "title": "Duke quarterback Darian Mensah enters NCAA transfer portal",
+      "content": "Duke quarterback Darian Mensah has entered the NCAA transfer portal, sources told ESPN. Mensah started 11 games for the Blue Devils in 2025 and is one of the top available quarterbacks in college football's portal cycle.",
+      "url": "https://www.espn.com/college-football/story/_/id/45678901/duke-qb-darian-mensah-enters-transfer-portal",
+      "source_domain": "espn.com",
+      "event_date": "2026-07-20",
+      "expected": {
+        "event_type": "unknown",
+        "min_confidence": 0.0
+      },
+      "verification": "Football portal entry — must not be treated as men's college basketball.",
+      "difficulty": "easy",
+      "notes": "Negative control: portal language present but sport is football (Darian Mensah case)."
+    },
+    {
+      "id": "alabama_football_portal_generic_2026_07",
+      "event_type": "unknown",
+      "title": "Alabama linebacker enters transfer portal ahead of fall camp",
+      "content": "An Alabama linebacker has entered the NCAA transfer portal, On3 reported Sunday. The Crimson Tide football program could lose depth on defense as fall camp approaches.",
+      "url": "https://www.on3.com/college/alabama-football/news/alabama-linebacker-enters-transfer-portal/",
+      "source_domain": "on3.com",
+      "event_date": "2026-07-18",
+      "expected": {
+        "event_type": "unknown",
+        "min_confidence": 0.0
+      },
+      "verification": "Generic football portal story with no basketball context.",
+      "difficulty": "easy",
+      "notes": "Negative control: football URL path and position terminology."
+    },
+    {
+      "id": "kentucky_recruit_commit_no_portal_2026_06",
+      "event_type": "unknown",
+      "title": "Five-star guard commits to Kentucky for 2027 class",
+      "content": "A five-star point guard announced his commitment to Kentucky on Saturday, choosing the Wildcats over Duke and Kansas. He is ranked No. 8 nationally in the 2027 recruiting class and plans to sign in November.",
+      "url": "https://247sports.com/college/kentucky/article/five-star-guard-commits-kentucky-2027-281900001/",
+      "source_domain": "247sports.com",
+      "event_date": "2026-06-10",
+      "expected": {
+        "event_type": "unknown",
+        "min_confidence": 0.0
+      },
+      "verification": "High school recruiting commitment — not a transfer portal entry.",
+      "difficulty": "medium",
+      "notes": "Negative control: basketball context but no portal entry."
+    },
+    {
+      "id": "uconn_womens_portal_2026_04",
+      "event_type": "unknown",
+      "title": "UConn women's basketball forward enters transfer portal",
+      "content": "A UConn women's basketball forward has entered the NCAA transfer portal after two seasons with the Huskies, sources told ESPN. She averaged 8.2 points and 5.1 rebounds for the national-title contender last season.",
+      "url": "https://www.espn.com/womens-college-basketball/story/_/id/39950001/uconn-forward-enters-transfer-portal",
+      "source_domain": "espn.com",
+      "event_date": "2026-04-12",
+      "expected": {
+        "event_type": "unknown",
+        "min_confidence": 0.0
+      },
+      "verification": "Women's basketball portal — outside men's CBB product scope.",
+      "difficulty": "easy",
+      "notes": "Negative control: portal language with women's basketball URL and text."
     }
   ]
 }

@@ -105,8 +105,8 @@ def run(
         log.info("DRY RUN — DB writes disabled")
         tools = [search_tool, classify_single, classify_batch]
     else:
-        transfer_tool, coach_tool = build_action_tools(_season)
-        tools = [search_tool, classify_single, classify_batch, transfer_tool, coach_tool]
+        lookup_tool, transfer_tool, coach_tool = build_action_tools(_season)
+        tools = [search_tool, classify_single, classify_batch, lookup_tool, transfer_tool, coach_tool]
 
     graph = build_graph(tools, llm=llm)
 

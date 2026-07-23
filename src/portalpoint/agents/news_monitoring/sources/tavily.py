@@ -15,6 +15,7 @@ from portalpoint.agents.news_monitoring.config import (
     TAVILY_SEARCH_DEPTH,
     TAVILY_WINDOW_DAYS,
 )
+from portalpoint.agents.news_monitoring.sport_filter import filter_basketball_articles
 
 
 def _search_news_impl(
@@ -60,7 +61,15 @@ def _search_news_impl(
         if r.get("score", 0.0) >= TAVILY_MIN_SCORE
     ]
 
-    return json.dumps({"results": results, "query": query, "count": len(results)})
+    kept, rejected = filter_basketball_articles(results)
+
+    return json.dumps({
+        "results": kept,
+        "query": query,
+        "count": len(kept),
+        "filtered_count": len(rejected),
+        "filtered_articles": rejected,
+    })
 
 
 def build_search_news_tool(window_days: int = TAVILY_WINDOW_DAYS):

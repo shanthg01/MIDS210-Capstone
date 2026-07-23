@@ -11,6 +11,7 @@ from portalpoint.agents.news_monitoring.resolve import (
     _coach_departure_impl,
     _transfer_player_impl,
     build_action_tools,
+    lookup_basketball_player_impl,
 )
 from portalpoint.modeling.io import apply_env_file, get_sync_engine
 
@@ -139,8 +140,20 @@ class TestTransferPlayerIntegration:
             ).scalar_one()
             assert count == 1
 
+    def test_transfer_player_rejects_non_roster_player(self, engine):
+        raw = _transfer_player_impl("Darian Mensah", "Test University", SEASON)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["status"] in {"unmatched", "no_roster", "not_basketball_roster"}
+
+    def test_lookup_basketball_player_matches_seed_player(self, engine):
+        result = lookup_basketball_player_impl("Marcus Test Player", "Test University", SEASON)
+        assert result["matched"] is True
+        assert result["player_id"] == PLAYER_ID
+        assert result["from_school_id"] == SCHOOL_ID
+
     def test_build_action_tools_uses_season(self, engine):
-        transfer_tool, _ = build_action_tools(SEASON)
+        _, transfer_tool, _ = build_action_tools(SEASON)
         raw = _invoke(transfer_tool, player_name="Marcus Test Player", school_from="Test University")
         result = json.loads(raw)
         assert result["success"] is True

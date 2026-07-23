@@ -20,6 +20,43 @@ from portalpoint.agents.news_monitoring.config import (
     GEMINI_MODEL,
     TARGET_EVENT_TYPES,
 )
+from portalpoint.agents.news_monitoring.sport_filter import is_non_basketball_article
+
+
+CLASSIFY_PROMPT_TEMPLATE = """\
+You are a college basketball news classifier for PortalPoint, a men's NCAA D1 \
+basketball transfer portal scouting platform.
+
+Classify this article into EXACTLY ONE category:
+
+PLAYER_ENTERS_PORTAL — A men's college basketball player is entering or has \
+entered the NCAA transfer portal.
+  Signals: "transfer portal", "portal", "entering the portal", "declared for \
+the portal", player "leaving" or "departing" to seek a new program via the portal.
+
+COACH_LEAVES — A men's college basketball head coach is departing, fired, \
+resigning, or stepping down.
+  Signals: "fired", "resigned", "parting ways", "stepping down", coach \
+"leaves", "dismissed", "let go", "move on", "mutual agreement".
+
+UNKNOWN — Not a men's college basketball portal entry or coach departure. \
+Includes:
+  - Football, baseball, or any non-basketball sport (even if portal language \
+is present — return unknown)
+  - Women's college basketball
+  - Game recaps, recruiting commits (no portal), rankings, suspensions, \
+coaching hires, rumours/speculation
+
+CRITICAL: If the article is about a non-basketball sport, return event_type \
+"unknown" even when transfer portal language is present.
+
+Article Title: {title}
+URL: {url}
+Content: {content}
+
+Classify this article. Set sport to basketball, football, womens_basketball, \
+or other.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +120,65 @@ class ArticleClassification(BaseModel):
         default=None,
         description="School / program the person is departing",
     )
+    sport: Optional[str] = PydField(
+        default=None,
+        description="Sport context: basketball, football, womens_basketball, or other",
+    )
     reasoning: str = PydField(description="1-2 sentence explanation of the classification decision")
 
 
 # ---------------------------------------------------------------------------
 # Deterministic regex classifier (fast path)
 # ---------------------------------------------------------------------------
+
+def _sport_filtered_result(article: dict, filtered_reason: str) -> dict:
+    """Return a classification payload for articles rejected by the sport gate."""
+    return {
+        "event_type": "unknown",
+        "confidence": 0.0,
+        "is_target_event": False,
+        "above_threshold": False,
+        "matched_pattern": "",
+        "filtered_reason": filtered_reason,
+        "source_url": article.get("url", ""),
+        "title": article.get("title", ""),
+        "url": article.get("url", ""),
+    }
+
+
+def _apply_sport_gate(article: dict) -> dict | None:
+    """Return a rejection payload when the article is outside men's CBB scope."""
+    is_rejected, reason = is_non_basketball_article(article)
+    if is_rejected:
+        return _sport_filtered_result(article, reason or "non_basketball")
+    return None
+
+
+def _finalize_classification(result: dict, article: dict | None = None) -> dict:
+    """Apply sport and non-basketball post-checks to a classifier result."""
+    article = article or {
+        "title": result.get("title", ""),
+        "content": "",
+        "url": result.get("source_url", result.get("url", "")),
+    }
+    sport = (result.get("sport") or "").lower()
+    if sport and sport not in ("basketball",):
+        result = {
+            **result,
+            "event_type": "unknown",
+            "confidence": 0.0,
+            "is_target_event": False,
+            "above_threshold": False,
+            "filtered_reason": f"llm_sport:{sport}",
+        }
+    elif result.get("event_type") in TARGET_EVENT_TYPES:
+        gate = _apply_sport_gate(article)
+        if gate is not None:
+            result = {**result, **gate, "filtered_reason": gate["filtered_reason"]}
+    if article.get("url") and "url" not in result:
+        result["url"] = article["url"]
+    return result
+
 
 def _classify_event_payload(text: str, source_url: str = "", title: str = "") -> dict:
     """Classify a single article using deterministic regex patterns.
@@ -97,6 +187,11 @@ def _classify_event_payload(text: str, source_url: str = "", title: str = "") ->
     the editorial signal that a headline being explicit about portal entry is
     stronger evidence than a passing mention in the body.
     """
+    article = {"title": title, "content": text, "url": source_url}
+    gate = _apply_sport_gate(article)
+    if gate is not None:
+        return gate
+
     title_lower = title.lower()
     body_lower = text.lower()
 
@@ -125,6 +220,7 @@ def _classify_event_payload(text: str, source_url: str = "", title: str = "") ->
         "matched_pattern": matched_pattern,
         "source_url": source_url,
         "title": title,
+        "url": source_url,
     }
 
 
@@ -178,6 +274,8 @@ def classify_events_batch(articles_json: str) -> str:
             source_url=article.get("url", ""),
             title=article.get("title", ""),
         )
+        if "url" not in result:
+            result["url"] = article.get("url", "")
         return result
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -196,25 +294,32 @@ def classify_events_batch(articles_json: str) -> str:
 
 def _classify_llm_single(article: dict, llm_structured) -> dict:
     """Classify one article with the LLM structured-output model."""
-    prompt = (
-        f"Title: {article.get('title', '')}\n\n"
-        f"Content: {article.get('content', '')[:800]}\n\n"
-        "Classify this college basketball news article."
+    gate = _apply_sport_gate(article)
+    if gate is not None:
+        return gate
+
+    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
+        title=article.get("title", ""),
+        url=article.get("url", ""),
+        content=article.get("content", "")[:800],
     )
     try:
         result: ArticleClassification = llm_structured.invoke(prompt)
-        return {
+        payload = {
             "event_type": result.event_type,
             "confidence": result.confidence,
             "player_name": result.player_name,
             "coach_name": result.coach_name,
             "school_from": result.school_from,
+            "sport": result.sport,
             "reasoning": result.reasoning,
             "is_target_event": result.event_type in TARGET_EVENT_TYPES,
             "above_threshold": result.confidence >= CONFIDENCE_THRESHOLD,
             "source_url": article.get("url", ""),
             "title": article.get("title", ""),
+            "url": article.get("url", ""),
         }
+        return _finalize_classification(payload, article)
     except Exception as exc:
         return {
             "event_type": "unknown",
