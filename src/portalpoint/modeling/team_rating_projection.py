@@ -1374,7 +1374,10 @@ def upsert_team_rating_projections(
     with engine.connect() as conn:
         raw = conn.connection.connection  # type: ignore[attr-defined]
         with raw.cursor() as cur:
-            execute_values(cur, _UPSERT_SQL, rows)
+            # page_size default (100) meant ~4,573 round trips for a ~457,345-row
+            # write instead of ~458 -- same drift as destination_projection.py's
+            # sibling upsert, fixed 2026-07-23.
+            execute_values(cur, _UPSERT_SQL, rows, page_size=1000)
         raw.commit()
 
     log.info("Upserted %d rows into team_rating_projections", len(rows))

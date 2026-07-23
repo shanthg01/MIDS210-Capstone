@@ -1910,7 +1910,11 @@ def upsert_destination_projections(engine: Engine, records: list[tuple]) -> int:
     raw_conn = engine.raw_connection()
     try:
         with raw_conn.cursor() as cur:
-            execute_values(cur, _UPSERT_DESTINATION_SQL, records)
+            # page_size default (100) meant ~4,548 round trips for a ~454,790-row
+            # write instead of ~455 -- a real drift from the page_size=1000 this
+            # module's own docs (see transfer_success.py's upsert comment) claimed
+            # to already match. Fixed 2026-07-23.
+            execute_values(cur, _UPSERT_DESTINATION_SQL, records, page_size=1000)
         raw_conn.commit()
     finally:
         raw_conn.close()
