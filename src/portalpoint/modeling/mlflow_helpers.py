@@ -33,15 +33,23 @@ def get_artifact_root() -> str | None:
     return None
 
 def get_tracking_uri() -> str:
-    """Read MLFLOW_TRACKING_URI from .env; fall back to SQLite at repo root.
+    """Read MLFLOW_TRACKING_URI from the real environment (or .env); fall back
+    to SQLite at repo root.
+
+    Real env vars must win over .env, matching get_sync_engine()'s precedence
+    (needed for CI and for containers, which set MLFLOW_TRACKING_URI directly
+    and have no .env file at all — confirmed 2026-07-23: an ECS task pointed
+    MLFLOW_TRACKING_URI at an EFS-mounted sqlite path via a task-def env var,
+    but this function only ever checked load_env()'s .env-file dict, silently
+    ignored the real env var, and fell back to a repo-root sqlite path the
+    non-root container user can't write to — "unable to open database file").
 
     A relative `sqlite:///mlruns.db` resolves against the *process* CWD, which
     differs between notebooks (cwd=notebooks/models) and scripts (cwd=repo
     root) — they'd silently track to two different files. Anchor relative
     sqlite paths to the repo root so both land in the same store.
     """
-    env = load_env()
-    uri = env.get("MLFLOW_TRACKING_URI", "")
+    uri = os.environ.get("MLFLOW_TRACKING_URI") or load_env().get("MLFLOW_TRACKING_URI", "")
     if not uri or uri.startswith("#") or uri.startswith("file:"):
         db_path = find_repo_root() / "mlruns.db"
         return f"sqlite:///{db_path}"

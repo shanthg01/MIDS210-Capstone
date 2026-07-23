@@ -561,12 +561,87 @@ deploy, unlike the backend's `deploy.yml`.
 
 ---
 
+## Phase 4b — On-demand modeling scripts inside the VPC (`scripts/run_in_ecs.sh`)
+
+**Status (2026-07-23): done, real production data written this way.** Not the scheduled/EventBridge
+automation sketched in Phase 5 below (that's still unimplemented) — this is a manual, on-demand
+mechanism: run any `scripts/run_*.py` script as a one-off ECS Fargate task inside the VPC instead of
+over a developer's local SSM tunnel. Built after real timed fetches on `run_playing_time.py`
+confirmed the SSM tunnel has a hard throughput ceiling (~0.6-0.8 MB/s in both directions) that no
+SQL/code-level fix can get around — full writeup in the session's plan doc
+(`parsed-mapping-cloud.md`) and `src/portalpoint/modeling/playing_time.py`'s
+`RAW_CONNECTION_STATEMENT_TIMEOUT_MS` comment.
+
+**What it reuses vs. adds:** mirrors `deploy.yml`'s migration-task derivation exactly (live service's
+network config + task def, regular `portalpoint_app` DB secret — not master, no DDL here). Two new
+pieces: `scripts/run_in_ecs.sh` (the wrapper) and an EFS filesystem for a persistent MLflow tracking
+store (container filesystem is ephemeral; local-per-dev `mlruns.db` would reset every task run
+otherwise).
+
+```bash
+# One-time: EFS filesystem + access point + mount targets + SG rule (see the session's chat
+# history for the exact commands; real IDs from this run, for reference):
+#   FS_ID=fs-0701ce18ffb150214
+#   AP_ID=fsap-0a142e76c49576fc3   (root dir /mlflow, owned by uid/gid 1000 — matches the
+#                                   Dockerfile's `appuser`)
+#   EFS_SG_ID=sg-0d8c52ccc2a7d8c37 (allows NFS 2049 from the ECS task SG sg-0585f9f30db5bfc57)
+# IAM: portalpoint-ecs-task role got a scoped inline policy
+# (elasticfilesystem:ClientMount/ClientWrite on that filesystem, conditioned on that access point).
+
+export PORTALPOINT_MLFLOW_FS_ID=fs-0701ce18ffb150214
+export PORTALPOINT_MLFLOW_AP_ID=fsap-0a142e76c49576fc3
+
+./scripts/run_in_ecs.sh scripts/run_playing_time.py --target-season 2027 --source-season 2026 \
+  --school-chunk-size 75 --validation-artifact-dir /tmp/validation \
+  --include-school-ids <remaining school ids>
+```
+
+**Real bugs found getting this working, in order hit:**
+1. **`Dockerfile` never `COPY`'d `scripts/`** — the image already had every modeling dependency
+   installed (`pyproject.toml`'s `[project.dependencies]`, not a dev-only extra), just not the script
+   files themselves. One-line fix.
+2. **Git Bash path-mangling** — any leading-slash argument (`/mlflow` in an EFS `--root-directory`,
+   `/ecs/portalpoint-backend` in a log-group name) gets silently rewritten into a Windows path before
+   reaching the AWS CLI. Fix: `export MSYS_NO_PATHCONV=1` for the whole `run_in_ecs.sh` script, and
+   prefix ad-hoc one-off `aws` commands the same way.
+3. **Default `--validation-artifact-dir` (`data/model_validation/...`) isn't writable** — `/app` in the
+   container is owned by root, the process runs as `appuser`. Fixed by passing
+   `--validation-artifact-dir /tmp/validation` (the flag already existed on the script for exactly this
+   kind of override).
+4. **OOM at 1GB, then 8GB, then 16GB memory** (task def inherited the live API service's 512 cpu/1024MB
+   sizing, wrong for a batch job) — real root cause was **not** insufficient memory, it was
+   `sync_role_fit_scores`/`upsert_playing_time_projections` building their entire COPY payload as one
+   Python string (`io.StringIO().writerows(records)`) for a ~491,625-row chunk with real, JSON-heavy
+   `explanation`/`breakdown` fields — several large objects (source DataFrame, feature arrays, the
+   records list, and the full CSV string) coexisting in memory at once. Fixed for real by streaming the
+   CSV in fixed-size row batches (`_RecordsCSVStream` in `playing_time.py`) instead of cranking the
+   task's memory further — 4 vCPU / 30GB was tried and still weren't the actual fix.
+5. **`aws ecs wait tasks-stopped` timed out ("Max attempts exceeded") on a real multi-chunk run** —
+   not a task failure, just the waiter's own ~10min default budget being shorter than the real job.
+   Checked live status directly (`describe-tasks`/`list-tasks --desired-status STOPPED`) instead of
+   trusting the waiter's exit code.
+6. **`mlflow_helpers.get_tracking_uri()` only read `MLFLOW_TRACKING_URI` from a `.env` **file**
+   (`load_env()`), never from `os.environ`** — inconsistent with `get_sync_engine()` in the same
+   module, which already checks `os.environ` first. Since `.env` doesn't exist in the container, this
+   silently ignored the EFS-mounted tracking URI set as a task-def env var and fell back to a
+   repo-root `sqlite:///mlruns.db` path the non-root container user can't write to
+   ("unable to open database file"). Fixed to match `get_sync_engine()`'s precedence.
+
+**Real result:** `run_playing_time.py`'s remaining 216 schools (chunks that had been failing/timing out
+over the tunnel) completed in ~3 chunks of ~25-30min each once both real fixes (streaming CSV,
+`get_tracking_uri`) landed — vs. 2.3-2.6+ hours per chunk over the tunnel. `build_inference_pairs`
+(the wide 12-CTE read) dropped from ~35-45min to ~75-95s for the same ~491,625-row chunk.
+
+---
+
 ## Phase 5 — Scheduled jobs (ECS Scheduled Tasks via EventBridge, not GH Actions cron)
 
 **Status (2026-07-20): explicitly skipped by decision — nothing below has been run.** No automated
 freshness need exists yet (manual ingest reruns are fine for now); revisit if a real user needs
 fresher-than-manual data or the news-monitoring agent needs continuous operation during the portal
-window. See `docs/road_to_production.md` Phase 5.
+window. See `docs/road_to_production.md` Phase 5. (Phase 4b above is the manual/on-demand version of
+this same "run scripts as ECS tasks" idea — this section is specifically about automating it on a
+schedule, still not done.)
 
 GitHub-hosted runners can't reach the private RDS instance — run scheduled ingest/model
 jobs as ECS tasks on the same image instead.

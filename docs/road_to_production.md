@@ -187,6 +187,17 @@ fresher-than-manual data, or (b) the news-monitoring agent needs to run continuo
 window (CLAUDE.md: March-August — currently in that window, so this is the one candidate worth a
 second look before the others).
 
+**Update (2026-07-23): the manual/on-demand half of this got built for real** (`scripts/run_in_ecs.sh`,
+`docs/production_deployment_commands.md` Phase 4b) — running `run_playing_time.py`'s remaining schools
+as a one-off ECS Fargate task, not scheduled, but proving the exact execution path (image, roles,
+network, MLflow persistence via EFS) that scheduled jobs would also need. Real motivation: a local SSM
+tunnel has a hard ~0.6-0.8 MB/s throughput ceiling that made a heavy batch script take 2.3-2.6+ hours
+per 75-school chunk; the same chunk in-VPC took ~25-30 minutes. Item 2 below (DB access path for
+scheduled jobs) is now half-answered for the ECS-task variant — GitHub Actions runners specifically
+still can't reach RDS directly, that part remains open. Item 4 (shared MLflow store) also has a working
+answer now (EFS-mounted SQLite), just not yet the "hosted server" version this item originally
+envisioned — fine for today's single-writer-at-a-time usage.
+
 1. CLAUDE.md's stated preference: GitHub Actions cron over Airflow until orchestration complexity
    justifies it (`daily_data_ingestion_dag`, `hourly_portal_monitoring_dag`, `weekly_model_training_dag`
    are all currently just docstring-level DAG names, not implemented).

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -50,17 +51,17 @@ SYNTHETIC_SCHOOL_ID_FLOOR = 9_900_000
 # after an RDS reboot; cache starts empty regardless of instance size, so a first
 # chunk post-reboot is a genuine worst case, not a hang. 40 min (2_400_000) was raised
 # to 60 min (2026-07-22) after it fired for real on a --school-chunk-size 75 run's
-# very first chunk — the read alone exceeded the old budget, not just the full
-# score+write+sync cycle it was originally sized against. Raised again same day to
-# 110 min after EXPLAIN confirmed the real cause: filtering player_team_fit_scores
-# (11M rows, not clustered by school_id) down to a 75-school subset makes the planner
-# pick a scattered Parallel Bitmap Heap Scan (cost ~2.72/row) instead of the much
-# cheaper Parallel Seq Scan (cost ~1.4/row) the full 366-school population gets —
-# chunking was making this *slower*, not faster, once materialize_inference_staging
-# had already removed the original per-chunk CTE-redundancy problem chunking existed
-# to solve. Default --school-chunk-size restored to 365 (single query) to get the seq
-# scan; 110 min gives headroom past the ~88 min full-population baseline CLAUDE.md
-# already had on record for this query shape.
+# very first chunk. That same day, an EXPLAIN-cost-based theory (chunking forces a
+# scattered Bitmap Heap Scan instead of a Seq Scan) briefly pushed both the default
+# chunk size to 365 and this timeout to 110 min — but real *timed* fetches (not just
+# planner cost units) disproved it: a bare filter+count over the full population runs
+# in 0.48s server-side, and the actual bottleneck is data transfer over the SSM tunnel,
+# measured at ~0.76 MB/s regardless of chunk size (~2.7-2.9h total either way for the
+# full population's ~7GB of wide rows). --school-chunk-size default reverted to 75 —
+# chunking doesn't reduce total transfer time, but bounds how much progress a single
+# tunnel drop destroys (the tunnel died mid-run twice in one session: a credential
+# expiry, then a separate idle-timeout-adjacent drop). 110 min is kept as a generous
+# per-chunk ceiling; a real 75-school chunk measured well under that (~26.7s/school).
 RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 6_600_000
 
 # PERF: prepare_playing_time_frame/derive_usage_role/compute_role_fit_score/
@@ -2686,7 +2687,176 @@ def _build_playing_time_records_scalar_reference(
     return projection_records, fit_sync_records
 
 
+_UPSERT_PLAYING_TIME_TEMP_COLUMNS = """
+    player_id BIGINT,
+    school_id INTEGER,
+    season INTEGER,
+    roster_snapshot_id BIGINT,
+    expected_minutes DOUBLE PRECISION,
+    expected_minutes_share DOUBLE PRECISION,
+    minutes_ci_lower DOUBLE PRECISION,
+    minutes_ci_upper DOUBLE PRECISION,
+    expected_usage DOUBLE PRECISION,
+    usage_role TEXT,
+    usage_role_confidence DOUBLE PRECISION,
+    starter_probability DOUBLE PRECISION,
+    rotation_probability DOUBLE PRECISION,
+    displaced_minutes TEXT,
+    opportunity_drivers TEXT,
+    data_quality_flags TEXT,
+    scenario_overrides TEXT,
+    role_fit DOUBLE PRECISION,
+    explanation TEXT,
+    model_version TEXT,
+    computed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+"""
+
+_UPSERT_PLAYING_TIME_BULK_UPDATE_SQL = """
+UPDATE playing_time_projections AS ptp
+SET
+    roster_snapshot_id = data.roster_snapshot_id,
+    expected_minutes = data.expected_minutes,
+    expected_minutes_share = data.expected_minutes_share,
+    minutes_ci_lower = data.minutes_ci_lower,
+    minutes_ci_upper = data.minutes_ci_upper,
+    expected_usage = data.expected_usage,
+    usage_role = data.usage_role,
+    usage_role_confidence = data.usage_role_confidence,
+    starter_probability = data.starter_probability,
+    rotation_probability = data.rotation_probability,
+    displaced_minutes = data.displaced_minutes::jsonb,
+    opportunity_drivers = data.opportunity_drivers::jsonb,
+    data_quality_flags = data.data_quality_flags::jsonb,
+    scenario_overrides = data.scenario_overrides::jsonb,
+    role_fit = data.role_fit,
+    explanation = data.explanation::jsonb,
+    computed_at = data.computed_at,
+    expires_at = data.expires_at
+FROM pt_projection_upsert_temp AS data
+WHERE ptp.player_id = data.player_id
+  AND ptp.school_id = data.school_id
+  AND ptp.season = data.season
+  AND ptp.model_version = data.model_version
+"""
+
+# Rare fallback, same rationale as _SYNC_ROLE_FIT_BULK_INSERT_MISSING_SQL — a
+# (player_id, school_id, season, model_version) row not already present.
+_UPSERT_PLAYING_TIME_BULK_INSERT_MISSING_SQL = """
+INSERT INTO playing_time_projections
+    (player_id, school_id, season, roster_snapshot_id,
+     expected_minutes, expected_minutes_share, minutes_ci_lower, minutes_ci_upper,
+     expected_usage, usage_role, usage_role_confidence,
+     starter_probability, rotation_probability, displaced_minutes,
+     opportunity_drivers, data_quality_flags, scenario_overrides, role_fit,
+     explanation, model_version, computed_at, expires_at)
+SELECT
+    data.player_id, data.school_id, data.season, data.roster_snapshot_id,
+    data.expected_minutes, data.expected_minutes_share, data.minutes_ci_lower, data.minutes_ci_upper,
+    data.expected_usage, data.usage_role, data.usage_role_confidence,
+    data.starter_probability, data.rotation_probability, data.displaced_minutes::jsonb,
+    data.opportunity_drivers::jsonb, data.data_quality_flags::jsonb, data.scenario_overrides::jsonb,
+    data.role_fit, data.explanation::jsonb, data.model_version, data.computed_at, data.expires_at
+FROM pt_projection_upsert_temp AS data
+WHERE NOT EXISTS (
+    SELECT 1 FROM playing_time_projections ptp
+    WHERE ptp.player_id = data.player_id AND ptp.school_id = data.school_id
+      AND ptp.season = data.season AND ptp.model_version = data.model_version
+)
+ON CONFLICT ON CONSTRAINT uq_playing_time_projection DO NOTHING
+"""
+
+
+class _RecordsCSVStream:
+    """File-like adapter so psycopg2's copy_expert can stream `records` as CSV
+    text in small batches, instead of building the whole payload as one Python
+    string up front.
+
+    Real fix, not a bandaid (2026-07-23): running sync_role_fit_scores/
+    upsert_playing_time_projections's original io.StringIO().writerows(records)
+    against a real ~491,625-row chunk (with real, JSON-heavy explanation/
+    breakdown fields — not the small synthetic fixtures used in this file's own
+    equivalence tests) OOM-killed a Fargate task repeatedly, at 1GB, 8GB, then
+    16GB. The problem wasn't network speed (an in-VPC ECS task, not the SSM
+    tunnel, hit this) and wasn't fixed by more memory — the whole CSV text was
+    being held in memory as one Python string at the same time as the source
+    DataFrame, feature arrays, and the records list itself, all coexisting.
+    Streaming in fixed-size batches caps the CSV-text footprint to one batch
+    regardless of total row count.
+    """
+
+    _BATCH_ROWS = 5000
+
+    def __init__(self, records: Sequence[tuple]):
+        self._row_iter = iter(records)
+        self._pending = ""
+
+    def _next_batch_text(self) -> str:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        wrote_any = False
+        for row in itertools.islice(self._row_iter, self._BATCH_ROWS):
+            writer.writerow(row)
+            wrote_any = True
+        return buf.getvalue() if wrote_any else ""
+
+    def read(self, size: int = -1) -> str:
+        if size is None or size < 0:
+            parts = [self._pending]
+            self._pending = ""
+            while True:
+                chunk = self._next_batch_text()
+                if not chunk:
+                    break
+                parts.append(chunk)
+            return "".join(parts)
+        while len(self._pending) < size:
+            chunk = self._next_batch_text()
+            if not chunk:
+                break
+            self._pending += chunk
+        result, self._pending = self._pending[:size], self._pending[size:]
+        return result
+
+
 def upsert_playing_time_projections(engine, records: Sequence[tuple], page_size: int = 1000) -> int:
+    """COPY + bulk UPDATE...FROM rewrite, same pattern and rationale as
+    sync_role_fit_scores (2026-07-22): playing_time_projections is a 4M-row table
+    getting a ~491K-row upsert per chunk via ~492 execute_values round-trips — over an
+    SSM-tunneled connection, each round trip pays the tunnel's latency/bandwidth tax,
+    same anti-pattern already fixed once for sync_role_fit_scores and left unaddressed
+    here until a chunk's score+write+sync phase (~1h40-1h46min, more than the read
+    step itself) pointed back at this function. page_size kept for call-site
+    compatibility, unused now. CSV payload is streamed via _RecordsCSVStream
+    (2026-07-23) — see that class's docstring for the real OOM this fixed.
+    """
+    if not records:
+        return 0
+
+    raw_conn = _raw_connection_with_timeout(engine)
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TEMP TABLE pt_projection_upsert_temp ({_UPSERT_PLAYING_TIME_TEMP_COLUMNS}) ON COMMIT DROP"
+            )
+            cur.copy_expert(
+                "COPY pt_projection_upsert_temp FROM STDIN WITH (FORMAT csv)",
+                _RecordsCSVStream(records),
+            )
+            cur.execute(_UPSERT_PLAYING_TIME_BULK_UPDATE_SQL)
+            cur.execute(_UPSERT_PLAYING_TIME_BULK_INSERT_MISSING_SQL)
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return len(records)
+
+
+def _upsert_playing_time_projections_execute_values_reference(
+    engine, records: Sequence[tuple], page_size: int = 1000
+) -> int:
+    """Original execute_values-based implementation, kept only as a reference for the
+    equivalence test proving the COPY + bulk UPDATE...FROM rewrite above produces the
+    same resulting DB state. Do not call from production code."""
     if not records:
         return 0
     raw_conn = _raw_connection_with_timeout(engine)
@@ -2802,20 +2972,21 @@ def sync_role_fit_scores(engine, records: Sequence[tuple], page_size: int = 1000
     that large table; COPY into an index-free temp table is index-probe-free, and the
     single bulk UPDATE lets Postgres plan one merge join instead of ~492 individually
     planned upserts. page_size kept as an accepted parameter for call-site compatibility
-    but is unused now — COPY has no batching concept.
+    but is unused now — COPY has no batching concept. CSV payload is streamed via
+    _RecordsCSVStream (2026-07-23) — see that class's docstring for the real OOM
+    (not a tunnel/network problem — an in-VPC ECS task hit it) that motivated this.
     """
     if not records:
         return 0
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerows(records)
-    buf.seek(0)
 
     raw_conn = _raw_connection_with_timeout(engine)
     try:
         with raw_conn.cursor() as cur:
             cur.execute(f"CREATE TEMP TABLE pt_role_fit_sync_temp ({_SYNC_ROLE_FIT_TEMP_COLUMNS}) ON COMMIT DROP")
-            cur.copy_expert("COPY pt_role_fit_sync_temp FROM STDIN WITH (FORMAT csv)", buf)
+            cur.copy_expert(
+                "COPY pt_role_fit_sync_temp FROM STDIN WITH (FORMAT csv)",
+                _RecordsCSVStream(records),
+            )
             cur.execute(_SYNC_ROLE_FIT_BULK_UPDATE_SQL)
             cur.execute(_SYNC_ROLE_FIT_BULK_INSERT_MISSING_SQL)
         raw_conn.commit()

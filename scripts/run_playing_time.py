@@ -100,17 +100,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--school-chunk-size",
         type=int,
-        default=365,
+        default=75,
         help=(
-            "Schools per INFERENCE_SQL query. Default 365 (single query, all schools) — "
-            "confirmed via EXPLAIN (2026-07-22) that filtering player_team_fit_scores (11M "
-            "rows, not clustered by school_id) down to a smaller school_id subset makes the "
-            "planner pick a scattered Parallel Bitmap Heap Scan (~2.72 cost/row) instead of "
-            "the cheaper Parallel Seq Scan (~1.4 cost/row) the full population gets — chunking "
-            "made this slower, not faster, once materialize_inference_staging separately fixed "
-            "the original per-chunk CTE-redundancy problem chunking existed to solve. Pass a "
-            "smaller value (e.g. 75) only if you need bounded per-chunk progress/memory instead "
-            "of the fastest total wall-clock time."
+            "Schools per INFERENCE_SQL query. Default 75, restored (2026-07-22) after real "
+            "timed fetches (not just EXPLAIN cost units) showed the query itself is fast "
+            "(bare filter+count over the full population: 0.48s server-side) — the real "
+            "bottleneck is data transfer over the SSM tunnel, measured at ~0.76 MB/s "
+            "regardless of chunk size (~2.7-2.9h total either way for the full population's "
+            "~7GB of wide rows). Chunking does not reduce total transfer time, but caps how "
+            "much progress a single tunnel drop destroys — the tunnel has died mid-run twice "
+            "in one session (credential expiry; a separate idle-timeout-adjacent drop), so "
+            "bounded-chunk resilience matters more here than shaving the total wall clock. "
+            "A prior version of this default (365, single query) was based on abstract EXPLAIN "
+            "cost estimates alone and did not hold up under real timing — see "
+            "modeling/playing_time.py's RAW_CONNECTION_STATEMENT_TIMEOUT_MS comment."
         ),
     )
     parser.add_argument("--include-player-ids", type=int, nargs="+", default=[])
@@ -926,6 +929,8 @@ def main() -> None:
 
         for start in range(0, len(school_ids), args.school_chunk_size):
             batch = school_ids[start : start + args.school_chunk_size]
+            chunk_label = (start + 1, min(start + len(batch), len(school_ids)), len(school_ids))
+            read_start = time.monotonic()
             frame = pt.build_inference_pairs(
                 engine,
                 target_season,
@@ -935,10 +940,19 @@ def main() -> None:
                 fit_context_season=fit_context_season,
                 team_context_season=team_context_season,
             )
+            log.info(
+                "season=%s schools %d-%d/%d build_inference_pairs (read) returned %s rows in %.1fs",
+                target_season, *chunk_label, f"{len(frame):,}", time.monotonic() - read_start,
+            )
             frame = apply_player_filter(frame, args.include_player_ids)
             if frame.empty:
                 continue
+            score_start = time.monotonic()
             scored = score_frame(models, frame)
+            log.info(
+                "season=%s schools %d-%d/%d score_frame (model inference) in %.1fs",
+                target_season, *chunk_label, time.monotonic() - score_start,
+            )
             if not args.skip_explanations:
                 explain_start = time.monotonic()
                 positions = explanation_positions(scored, args.explanation_scope)
@@ -973,7 +987,12 @@ def main() -> None:
                     sample_part = scored.iloc[positions[:remaining]].copy()
                     explanation_sample_parts.append(sample_part)
                     explanation_sample_size += len(sample_part)
+            build_records_start = time.monotonic()
             projection_records, sync_records = pt.build_playing_time_records(scored)
+            log.info(
+                "season=%s schools %d-%d/%d build_playing_time_records in %.1fs",
+                target_season, *chunk_label, time.monotonic() - build_records_start,
+            )
             total_scored += len(scored)
             role_fit_values.extend(scored["role_fit"].astype(float).tolist())
             interval_widths.extend(
@@ -992,8 +1011,18 @@ def main() -> None:
                     f"{len(scored):,}",
                 )
                 continue
+            upsert_start = time.monotonic()
             written = pt.upsert_playing_time_projections(engine, projection_records)
+            log.info(
+                "season=%s schools %d-%d/%d upsert_playing_time_projections wrote %s rows in %.1fs",
+                target_season, *chunk_label, f"{written:,}", time.monotonic() - upsert_start,
+            )
+            sync_start = time.monotonic()
             synced = pt.sync_role_fit_scores(engine, sync_records)
+            log.info(
+                "season=%s schools %d-%d/%d sync_role_fit_scores synced %s rows in %.1fs",
+                target_season, *chunk_label, f"{synced:,}", time.monotonic() - sync_start,
+            )
             total_written += written
             log.info(
                 "season=%s schools %d-%d/%d scored=%s playing_time_written=%s fit_scores_synced=%s",

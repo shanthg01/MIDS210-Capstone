@@ -36,6 +36,10 @@ COPY --from=builder /app/.venv /app/.venv
 COPY src ./src
 COPY alembic.ini ./
 COPY alembic ./alembic
+# scripts/run_*.py — lets a one-off ECS task run modeling scripts inside the VPC
+# instead of over a bandwidth-capped local SSM tunnel (see scripts/run_in_ecs.sh).
+# All their deps (pandas/sklearn/mlflow/etc.) are already in the venv above.
+COPY scripts ./scripts
 # player_projection.py's DEFAULT_CACHE_DIR resolves find_repo_root() at import
 # time (players.py imports it transitively) — pyproject.toml only needs to
 # exist here as find_repo_root()'s anchor, not be otherwise meaningful in-container.
