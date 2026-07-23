@@ -26,8 +26,16 @@ def ensure_aws_env() -> None:
 
 
 def get_artifact_root() -> str | None:
-    """S3 artifact root when S3_BUCKET is set; else local default."""
-    bucket = load_env().get("S3_BUCKET", "").strip()
+    """S3 artifact root when S3_BUCKET is set; else local default.
+
+    Same real env var vs .env-file bug as get_tracking_uri() (2026-07-23): only
+    checked load_env()'s .env-file dict, never os.environ, so a container with
+    S3_BUCKET set as a real task-def env var (confirmed already present on the
+    live portalpoint-backend task def) silently fell through to MLflow's local
+    artifact store default -- a path under the non-root container's unwritable
+    /app -- "PermissionError: [Errno 13] Permission denied: '/app/mlruns'".
+    """
+    bucket = (os.environ.get("S3_BUCKET") or load_env().get("S3_BUCKET", "")).strip()
     if bucket and not bucket.startswith("#"):
         return f"s3://{bucket}/mlflow"
     return None
