@@ -100,7 +100,7 @@ def search_news(
 
     Args:
         query: Search query string.
-        window_days: How many days back to search (default 7).
+        window_days: How many days back to search (default 1).
         include_domains: Domains to restrict results to.  Defaults to
             247sports.com, on3.com, and espn.com.
 

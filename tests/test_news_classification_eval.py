@@ -591,7 +591,7 @@ class TestTavilyHistoricalRecall:
 class TestTavilyProductionToolParity:
     """Smoke test: production ``search_news`` with agent master queries.
 
-    Uses rolling 7-day window (no end_date) — same as live agent runs.
+    Uses rolling 1-day window (no end_date) — same as live agent runs.
     Historical golden events are NOT expected to appear; this confirms the
     tool wiring works and reports current-window recall for context.
     """
@@ -614,7 +614,7 @@ class TestTavilyProductionToolParity:
         coach_has_results = any(o.production_results for o in coach_outcomes)
 
         print(f"\n{'='*60}")
-        print("TAVILY PRODUCTION TOOL SMOKE (rolling 7-day window)")
+        print("TAVILY PRODUCTION TOOL SMOKE (rolling 1-day window)")
         print(f"  Portal query returned results: {portal_has_results}")
         print(f"  Coach query returned results:  {coach_has_results}")
         print("  Note: historical golden cases are not expected to match.")
@@ -626,7 +626,7 @@ class TestTavilyProductionToolParity:
         )
 
     def test_historical_golden_recall_in_current_window(self, production_outcomes):
-        """Informational: how many golden events appear in the live 7-day window."""
+        """Informational: how many golden events appear in the live 1-day window."""
         cases = load_golden_set()
         recall, misses, zero_results = compute_recall(cases, production_outcomes)
 
