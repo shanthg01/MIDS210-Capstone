@@ -18,6 +18,15 @@
 # the EFS filesystem/access-point IDs created for the MLflow tracking store —
 # see docs/production_deployment_commands.md.
 #
+# IMPORTANT: this always runs the image tagged `:ecs-modeling` in ECR, not
+# `:latest` — `:latest` gets silently overwritten by any merge to `main`
+# (deploy.yml rebuilds and pushes it, real incident 2026-07-23). Before running
+# this script, always build+push BOTH tags so the modeling image reflects your
+# current local changes:
+#   docker build -t portalpoint-backend:local .
+#   docker tag portalpoint-backend:local <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/portalpoint-backend:ecs-modeling
+#   docker push <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/portalpoint-backend:ecs-modeling
+#
 # Usage:
 #   export PORTALPOINT_MLFLOW_FS_ID=fs-xxxxxxxx
 #   export PORTALPOINT_MLFLOW_AP_ID=fsap-xxxxxxxx
@@ -69,6 +78,14 @@ ap_id = os.environ['AP_ID']
 container_defs = live['containerDefinitions']
 for c in container_defs:
     if c.get('name') == 'backend':
+        # Pin to a dedicated tag, not whatever :latest the live service currently
+        # references -- confirmed real incident (2026-07-23): a teammate's PR merge
+        # to main triggered deploy.yml mid-session, which rebuilt from main's
+        # Dockerfile (missing this session's local scripts/ addition) and silently
+        # overwrote :latest. A future merge could do the same at any moment;
+        # :ecs-modeling is pushed only by scripts/run_in_ecs.sh callers themselves.
+        image = c['image']
+        c['image'] = image.rsplit(':', 1)[0] + ':ecs-modeling'
         c['mountPoints'] = c.get('mountPoints', []) + [{
             'sourceVolume': 'mlflow',
             'containerPath': '/mnt/mlflow',
