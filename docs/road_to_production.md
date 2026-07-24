@@ -97,6 +97,26 @@ internet, not just per-teammate — closed as part of item 6, not merely narrowe
 Open items already flagged in that doc (VPC layout, Secrets Manager vs SSM, `/ready` failure
 semantics, CloudWatch alarm routing) are Phase 1/6 dependencies — resolve there, not independently.
 
+**Follow-up (2026-07-24): item 5's instance size walked back.** Cost Explorer flagged RDS as the
+dominant line item ($115.34 MTD, $238.79 forecasted). `portalpoint-db` had been upsized to
+`db.r6g.large` + Multi-AZ alongside the Multi-AZ work above, for a real reason at the time —
+CloudWatch `FreeableMemory` before 2026-07-20 showed the prior instance genuinely memory-starved
+(~100-200MB free). But two unrelated fixes landed after that upsize and removed load from the DB
+engine itself without the instance size being revisited: the in-VPC ECS execution path for heavy
+modeling scripts (bypassed the SSM tunnel's ~0.76 MB/s bandwidth ceiling, which had been the real
+batch-job bottleneck, not DB compute) and several bulk-upsert fixes (`execute_values`/
+`execute_batch`, `COPY`+bulk `UPDATE...FROM`) that cut DB-side round-trips for the large
+M3/Gap Matching/M4/M5/M6 writes. A fresh 14-day CloudWatch check (CPU avg 2.5-6%, brief spikes to
+30-62% never sustained; ~11GB/16GB memory free even during active-query windows; max 5-14 DB
+connections in nearly every hourly window) confirmed the instance was comfortably idle relative to
+its size. Downsized to `db.m6g.large` (general-purpose, non-burstable — avoids burst-credit
+exhaustion risk from batch jobs that a `t4g` class would carry) and reverted Multi-AZ to
+Single-AZ (accepted: no real production SLA yet, so losing automatic AZ-failover is a reasonable
+tradeoff for the cost cut). Applied and verified live — `Class: db.m6g.large`, `MultiAZ: False`,
+`Status: available`. Full before/after evidence and reasoning: see memory
+`rds_rightsizing_2026_07_24.md` (or ask Claude Code to recall it). Not yet done: a few more days of
+`m6g.large` CloudWatch data before considering `t4g` for further savings.
+
 ---
 
 ## Phase 3 — Backend hosting
