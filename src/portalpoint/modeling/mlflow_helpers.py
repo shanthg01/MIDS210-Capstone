@@ -75,15 +75,28 @@ def setup_mlflow(experiment_name: str) -> MlflowClient:
 
     exp = client.get_experiment_by_name(experiment_name)
     if exp is None:
+        # artifact_location is immutable once an experiment is created (no such
+        # thing as MlflowClient.update_experiment) — can't patch a pre-existing
+        # local-artifact experiment onto S3 here. Just use it as-is.
         if artifact_root:
             client.create_experiment(experiment_name, artifact_location=artifact_root)
         else:
             client.create_experiment(experiment_name)
-    else:
-        # artifact_location is immutable once an experiment is created (no such
-        # thing as MlflowClient.update_experiment) — can't patch a pre-existing
-        # local-artifact experiment onto S3 here. Just use it as-is.
-        mlflow.set_experiment(experiment_name)
+
+    # client.create_experiment() only registers the experiment on the backend
+    # store -- it does NOT mark it active for the fluent API. Without this
+    # call, a freshly-created experiment is never attached to, and the next
+    # mlflow.start_run() silently falls back to MLflow's Default experiment
+    # (id "0"), which has a local file:///.../mlruns artifact root -- not S3.
+    # This was the real cause of "PermissionError: [Errno 13] Permission
+    # denied: '/app/mlruns'" on ECS (2026-07-23/24): every individual piece
+    # (get_artifact_root(), the experiment's own artifact_location) resolved
+    # correctly in isolation because those diagnostics ran against an
+    # already-existing experiment (else branch, set_experiment was reached);
+    # the real scripts hit this on a brand-new experiment name against the
+    # fresh EFS-mounted sqlite store, where exp was None and set_experiment()
+    # was never called at all.
+    mlflow.set_experiment(experiment_name)
 
     return client
 

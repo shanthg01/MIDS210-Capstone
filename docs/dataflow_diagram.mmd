@@ -5,38 +5,49 @@ flowchart TD
         HOOPR[hoopR / ESPN PBP + box scores\nsportsdataverse releases]
         S247[247sports.com\ntransfer portal]
         BARTRC[barttorvik.com\nrostercast.php]
+        TAVILY[Tavily search API\nnews/portal monitoring — live source\nVerbalCommits/beat writers: not yet ingested]
     end
 
     subgraph INGEST["Ingest Scripts"]
         IB[ingest_barttorvik.py]
-        IH[ingest_hoop_explorer.py]
+        IH[ingest_hoop_explorer.py --all-seasons]
         IHR["ingest_hoopr.py\n(--game-logs for game-level grain)"]
         IT247[ingest_transfers_247sports.py]
         IRS[ingest_roster_snapshots.py]
+        BRSF[build_roster_state_features.py\nderived, plain script — no MLflow]
+        RNM["run_news_monitoring.py\nnews-monitoring agent — search+classify+write\n--dry-run / --no-llm supported"]
     end
 
-    subgraph PG["PostgreSQL"]
+    subgraph PG["PostgreSQL 15 (+ pg_vector)"]
         subgraph RAW["Raw / Staging Tables"]
             SCH[(schools)]
-            PLY[(players)]
+            PLY[(players\nposition real since 2026-06-21 fix\n+ 2026-06-23 ingest re-run)]
             PSS[(player_season_stats)]
             TSS[(team_season_stats)]
-            HETS[(hoop_explorer_team_stats\n1811 team-seasons · 5 seasons\ntrans/scramble pct+ppp)]
-            HEPS[(hoop_explorer_player_stats\n13993 player-seasons · 5 seasons\npos_confidence · 15 play-type pct)]
-            HRTS[(hoopr_team_season_stats\n365 teams · 11 PBP features)]
-            HRPS[(hoopr_player_season_stats\nplayer-level pbp_* · 87-92% crosswalk)]
+            HETS[(hoop_explorer_team_stats\n1811 team-seasons · 5 seasons)]
+            HEPS[(hoop_explorer_player_stats\n13993 player-seasons\npos_confidence · RAPM · play-type)]
+            HRTS[(hoopr_team_season_stats)]
+            HRPS[(hoopr_player_season_stats)]
             HRG[(hoopr_games)]
             HRTGL[(hoopr_team_game_logs)]
-            HRPGL[(hoopr_player_game_logs)]
-            TPE[(transfer_portal_events\nraw 247sports staging)]
+            HRPGL[(hoopr_player_game_logs\n2020–2026 backfilled\n1.17M player-game rows)]
+            TPE[(transfer_portal_events\nraw 247sports + agent staging)]
             TRF[(transfers\npromoted, matched only)]
             RS[(roster_snapshots)]
-            RSP[(roster_snapshot_players\nreturning_status computed)]
+            RSP[(roster_snapshot_players)]
+            RSF[(roster_state_features\nreturning/departing/incoming\nby position · skill group)]
+            PE[(program_events\ncoach departures · transfers\nwritten by news-monitoring agent)]
+            PERQ[(program_events_review_queue\nsub-threshold / pending human review)]
         end
-        subgraph ML_OUT["ML Output Tables"]
-            PA[(player_archetypes)]
-            TSP[(team_system_profiles)]
-            PTFS[(player_team_fit_scores)]
+        subgraph ML_OUT["ML Output Tables — all 9 models live"]
+            PA[(player_archetypes\n18770 rows)]
+            TSP[(team_system_profiles\n2158 rows\n+ stale_flag/stale_reason — Gate 7)]
+            PTFS[(player_team_fit_scores\n~9.7M rows all-pairs\nscheme_fit · gap_match · role_fit\n+ is_portal_candidate)]
+            PP[(player_projections\nneutral: 27047 rows Phase 0\ndestination: 454790 rows)]
+            PT[(playing_time_projections)]
+            TRP[(team_rating_projections\n457345 rows)]
+            TSS_SCORE[(transfer_success_scores\n456615 rows)]
+            REC[(recommendations\nfirst prod run: 80 rows)]
         end
     end
 
@@ -46,26 +57,27 @@ flowchart TD
         TSV[team_style_vectors.parquet\nBART + HE offense/defense + passing cols]
     end
 
-    subgraph MODELS["Models"]
-        M1["Model 1: Player Clustering ✅\nK-Means k=9, tuned grouped features"]
-        M2["Model 2: Team Clustering ✅\nTwo-layer offense/defense K-Means"]
-        M3["Model 3: Scheme Fit Scorer ✅\nCosine similarity, scheme-cos-v3 (all-pairs)"]
-        GM["Gap Matching ✅\nCosine similarity, gap-cos-v4 (all-pairs, shared roster baseline)"]
-        M4["Model 4: Playing Time Predictor\n⏳ not yet built"]
-        M5["Model 5: Transfer Success\n⏳ not yet built"]
-        M6["Model 6: Team Rating Projection\n⏳ not yet built"]
-        M7["Model 7: Recommendation Engine\n⏳ not yet built"]
+    subgraph MODELS["Models — all 9 live in production"]
+        M1["M1: Player Clustering ✅\nK-Means k=9 · kmeans-k9-v1-2026"]
+        M2["M2: Team Clustering ✅\nTwo-layer off/def K-Means · team-k9-v2-2026"]
+        M3["M3: Scheme Fit Scorer ✅\nCosine sim · scheme-cos-v3 (all-pairs)"]
+        GM["Gap Matching ✅\nCosine sim · gap-cos-v3 (all-pairs, departure-aware)"]
+        M4["M4: Playing Time Predictor ✅\nHistGradientBoosting · playing-time-rotation-v2"]
+        M8["M8: Player Projection ✅\nShrinkage+Ridge (Ph0) · Kalman (Ph1/Ph2a)\nplayer-projection-shrinkage-v1 / phase2a-v1"]
+        M9["M9: Destination-Adjusted Projection ✅\n4-delta adapter · player-destination-proj-v1"]
+        M5["M5: Transfer Success Predictor ✅\nEmpirical-Bayes shrinkage · transfer-success-eb-v1\n(not XGBoost — Issue #23 product decision)"]
+        M6["M6: Team Rating Projection ✅\nRoster-counterfactual Ridge · team-roster-proj-v1"]
+        M7["M7: Recommendation Engine ✅\n2-stage rank · rec-v1.2\nprogram_fit descoped, not blocking"]
     end
 
     subgraph S3["S3: s3://portalpoint-data"]
         S3B[raw/barttorvik/YYYY-MM-DD/]
         S3H[raw/hoop_explorer/YYYY-MM-DD/]
-        S3HR[raw/hoopr/YYYY-MM-DD/\nplay_by_play_{season}.parquet]
-        S3HRGL[raw/hoopr/game_logs/YYYY-MM-DD/\nschedule + team/player box parquet]
+        S3HR[raw/hoopr/YYYY-MM-DD/]
+        S3HRGL[raw/hoopr/game_logs/YYYY-MM-DD/]
         S3F[raw/features/]
-        S3M1[models/player_clustering/]
-        S3M2[models/team_clustering/]
-        S3MLF[mlflow/  ← artifacts]
+        S3MODELS[models/  ← pkl artifacts, all 9 models]
+        S3MLF[mlflow/  ← artifacts, all 9 registered models]
     end
 
     MLDB[(mlruns.db\nSQLite — run metadata)]
@@ -75,21 +87,27 @@ flowchart TD
     HOOPR -->|~120MB parquet/season| IHR
     S247 --> IT247
     BARTRC -->|JS-gate bypass, ~365 schools| IRS
+    TAVILY --> RNM
 
     IB -->|upsert| SCH & PLY & PSS & TSS
     IB -->|cache files| S3B
-    IH -->|upsert 5 seasons --all-seasons| HETS & HEPS
+    IH -->|upsert 5 seasons| HETS & HEPS
     IH -->|CSVs| S3H
-    IHR -->|aggregate 365 rows| HRTS
-    IHR -->|crosswalk + aggregate| HRPS
+    IHR -->|aggregate 365 rows| HRTS & HRPS
     IHR -->|raw PBP parquet| S3HR
-    IHR -->|"--game-logs: schedule+box score parquet"| HRG & HRTGL & HRPGL
+    IHR -->|"--game-logs"| HRG & HRTGL & HRPGL
     IHR -->|raw game-log parquet| S3HRGL
     IT247 -->|raw staging, COALESCE-preserved dates| TPE
-    IT247 -->|promote matched rows| TRF
+    IT247 -->|promote matched rows, 3-pass entity resolution| TRF
     PSS -->|pre-transfer stats backfill| TRF
     IRS -->|one snapshot per school per date| RS
-    IRS -->|returning_status vs player_season_stats| RSP
+    IRS -->|returning_status| RSP
+    RS & RSP --> BRSF
+    BRSF --> RSF
+    RNM -->|transfer_player tool: 4-step pipeline| TPE & TRF
+    RNM -->|coach_departure tool| PE
+    RNM -->|sub-threshold events| PERQ
+    RNM -->|"stale_flag=true on coaching change"| TSP
 
     PSS & TSS & HETS & HEPS & HRTS & HRPS --> FEN
     FEN --> PFP & TSV
@@ -97,34 +115,39 @@ flowchart TD
 
     PFP --> M1
     TSV --> M2
-    PSS & HETS & HRTS & PA & TSP --> M3
-    PSS & PA --> GM
+    PSS & HEPS & PA & TSP --> M3
+    PSS & PA & RSF & TRF --> GM
 
     M1 -->|upsert| PA
-    M1 -->|pkl files| S3M1
-    M1 -->|metrics/params| MLDB
-    M1 -->|model artifact| S3MLF
-
+    M1 --> S3MODELS & MLDB & S3MLF
     M2 -->|upsert| TSP
-    M2 -->|pkl files| S3M2
-    M2 -->|metrics/params| MLDB
-    M2 -->|model artifact| S3MLF
-
+    M2 --> S3MODELS & MLDB & S3MLF
     M3 -->|upsert scheme_fit| PTFS
-    M3 -->|metrics/params| MLDB
-    M3 -->|pyfunc artifact| S3MLF
+    M3 --> MLDB & S3MLF
+    GM -->|upsert gap_match + is_portal_candidate sync| PTFS
+    GM --> MLDB & S3MLF
 
-    GM -->|upsert gap_match| PTFS
-    TRF -->|Issue #26, wired — current season only| GM
-    RSP -.->|broader roster_state_features not wired into Gap Matching| GM
+    PA & TSP & PTFS & PSS & HEPS --> M8
+    M8 -->|neutral mode| PP
+    M8 --> MLDB & S3MLF
 
-    PA & TSP --> M4 & M7
-    PSS & PTFS --> M5
-    TRF -.->|Issue #23, not yet wired| M5
-    RSP -.->|Issue #25, not yet wired| M4
-    M4 -->|MPG posterior| M6
+    PTFS & PP & HRPGL & RSF & TSS & TRF --> M4
+    M4 --> PT
+    M4 -->|role_fit sync| PTFS
+    M4 --> MLDB & S3MLF
 
-    style M4 fill:#f5f5f5,stroke:#ccc,color:#999
-    style M5 fill:#f5f5f5,stroke:#ccc,color:#999
-    style M6 fill:#f5f5f5,stroke:#ccc,color:#999
-    style M7 fill:#f5f5f5,stroke:#ccc,color:#999
+    PT & PP & PTFS & RSF & PSS --> M9
+    M9 -->|destination mode| PP
+    M9 --> MLDB & S3MLF
+
+    PP & RSF & PA & TSS --> M6
+    M6 --> TRP
+    M6 --> MLDB & S3MLF
+
+    PP & TRF & PSS & HEPS --> M5
+    M5 --> TSS_SCORE
+    M5 --> MLDB & S3MLF
+
+    PTFS & TRP --> M7
+    M7 --> REC
+    M7 --> MLDB & S3MLF
