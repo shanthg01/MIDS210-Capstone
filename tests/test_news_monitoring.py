@@ -544,7 +544,7 @@ class TestSportFilter:
         assert len(rejected) == 1
         assert rejected[0]["filtered_reason"]
 
-    def test_rejects_non_basketball_portal_without_cbb_signal(self):
+    def test_rejects_baseball_portal_without_cbb_signal(self):
         article = {
             "title": "Star shortstop enters transfer portal",
             "content": "The junior infielder is exploring options after a strong spring season.",
@@ -552,7 +552,8 @@ class TestSportFilter:
         }
         rejected, reason = is_non_basketball_article(article)
         assert rejected is True
-        assert reason == "no_mens_basketball_signal"
+        assert reason is not None
+        assert reason.startswith("other_sport_text:")
 
 
 # ---------------------------------------------------------------------------
@@ -680,4 +681,4 @@ class TestClassifySportGate:
         )
         assert result["event_type"] == "unknown"
         assert result["is_target_event"] is False
-        assert result.get("filtered_reason") == "no_mens_basketball_signal"
+        assert (result.get("filtered_reason") or "").startswith("other_sport_text:")
