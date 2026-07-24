@@ -14,10 +14,10 @@ import PipelinePage from './pages/PipelinePage';
 import FitScorePage from './pages/FitScorePage';
 import ComparePage from './pages/ComparePage';
 import SettingsPage from './pages/SettingsPage';
-import PlaceholderPage from './pages/PlaceholderPage';
 import OverviewPage from './pages/OverviewPage';
 import GlossaryPage from './pages/GlossaryPage';
 import RosterImpactPage from './pages/RosterImpactPage';
+import AgentActivityPage from './pages/AgentActivityPage';
 
 const theme = createTheme({
   palette: {
@@ -116,26 +116,29 @@ const theme = createTheme({
     },
     MuiButton: {
       styleOverrides: {
-        root: {
+        // Per-color/variant classKey overrides (containedPrimary, outlinedPrimary, ...) were
+        // removed from this MUI version's override types — ownerState-based root function is
+        // the current supported pattern for the same conditional styling.
+        root: ({ ownerState }) => ({
           textTransform: 'none',
           fontWeight: 600,
           borderRadius: 4,
           letterSpacing: 0,
-        },
-        containedPrimary: {
-          backgroundColor: '#FF6B35',
-          '&:hover': { backgroundColor: '#e55a24' },
-        },
-        outlinedPrimary: {
-          borderColor: '#FF6B35',
-          color: '#FF6B35',
-          '&:hover': { borderColor: '#e55a24', backgroundColor: 'rgba(255,107,53,0.08)' },
-        },
-        outlinedSecondary: {
-          borderColor: '#4A90E2',
-          color: '#4A90E2',
-          '&:hover': { backgroundColor: 'rgba(74,144,226,0.08)' },
-        },
+          ...(ownerState.variant === 'contained' && ownerState.color === 'primary' && {
+            backgroundColor: '#FF6B35',
+            '&:hover': { backgroundColor: '#e55a24' },
+          }),
+          ...(ownerState.variant === 'outlined' && ownerState.color === 'primary' && {
+            borderColor: '#FF6B35',
+            color: '#FF6B35',
+            '&:hover': { borderColor: '#e55a24', backgroundColor: 'rgba(255,107,53,0.08)' },
+          }),
+          ...(ownerState.variant === 'outlined' && ownerState.color === 'secondary' && {
+            borderColor: '#4A90E2',
+            color: '#4A90E2',
+            '&:hover': { backgroundColor: 'rgba(74,144,226,0.08)' },
+          }),
+        }),
       },
     },
     MuiChip: {
@@ -159,13 +162,15 @@ const theme = createTheme({
     },
     MuiLinearProgress: {
       styleOverrides: {
-        root: {
+        // barColorSuccess/Warning/Error classKeys were removed from this MUI version's
+        // override types — target the bar element by class inside an ownerState-based root.
+        root: ({ ownerState }) => ({
           backgroundColor: 'rgba(255, 255, 255, 0.12)',
           borderRadius: 2,
-        },
-        barColorSuccess: { backgroundColor: '#4CAF50' },
-        barColorWarning: { backgroundColor: '#FF9800' },
-        barColorError:   { backgroundColor: '#F44336' },
+          ...(ownerState.color === 'success' && { '& .MuiLinearProgress-bar': { backgroundColor: '#4CAF50' } }),
+          ...(ownerState.color === 'warning' && { '& .MuiLinearProgress-bar': { backgroundColor: '#FF9800' } }),
+          ...(ownerState.color === 'error' && { '& .MuiLinearProgress-bar': { backgroundColor: '#F44336' } }),
+        }),
       },
     },
     MuiTableHead: {
@@ -203,11 +208,15 @@ const theme = createTheme({
     },
     MuiAlert: {
       styleOverrides: {
-        root: { borderRadius: 4 },
-        standardInfo:    { backgroundColor: 'rgba(74,144,226,0.12)',  color: '#4A90E2' },
-        standardSuccess: { backgroundColor: 'rgba(76,175,80,0.12)',   color: '#4CAF50' },
-        standardWarning: { backgroundColor: 'rgba(255,152,0,0.12)',   color: '#FF9800' },
-        standardError:   { backgroundColor: 'rgba(244,67,54,0.12)',   color: '#F44336' },
+        // standardInfo/Success/Warning/Error classKeys were removed from this MUI version's
+        // override types — ownerState-based root function is the current supported pattern.
+        root: ({ ownerState }) => ({
+          borderRadius: 4,
+          ...(ownerState.variant === 'standard' && ownerState.severity === 'info' && { backgroundColor: 'rgba(74,144,226,0.12)', color: '#4A90E2' }),
+          ...(ownerState.variant === 'standard' && ownerState.severity === 'success' && { backgroundColor: 'rgba(76,175,80,0.12)', color: '#4CAF50' }),
+          ...(ownerState.variant === 'standard' && ownerState.severity === 'warning' && { backgroundColor: 'rgba(255,152,0,0.12)', color: '#FF9800' }),
+          ...(ownerState.variant === 'standard' && ownerState.severity === 'error' && { backgroundColor: 'rgba(244,67,54,0.12)', color: '#F44336' }),
+        }),
       },
     },
     MuiTextField: {
@@ -305,6 +314,7 @@ export default function App() {
                   <Route path="/compare" element={<ComparePage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/roster-impact" element={<RosterImpactPage />} />
+                  <Route path="/agent-activity" element={<AgentActivityPage />} />
                 </Route>
               </Route>
 

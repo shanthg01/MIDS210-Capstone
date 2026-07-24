@@ -8,6 +8,7 @@ import pytest
 from portalpoint.modeling.transfer_success import (
     CELL_MIN_N,
     DECAY_LAMBDA,
+    INFERENCE_CHUNK_SIZE,
     K_CELL_CANDIDATES,
     MODEL_VERSION,
     SHRINKAGE_K,
@@ -17,6 +18,7 @@ from portalpoint.modeling.transfer_success import (
     compute_success_probability,
     compute_tier_calibration,
     fit_projection_beta,
+    iter_scored_active_candidate_chunks,
     label_transfer_success,
     standardize_projection_by_season,
     summarize_calibration_metrics,
@@ -626,3 +628,72 @@ class TestScoreActiveCandidates:
         assert len(scored.iloc[0]["explanation"]) > 0
         assert "similar_transfers" in scored.columns
         assert isinstance(scored.iloc[0]["similar_transfers"], list)
+
+    def test_projection_z_invariant_to_chunk_size(self):
+        """Season-level z-scores must not depend on inference chunk boundaries."""
+        hist_rows = []
+        for season in (2020, 2021, 2022):
+            for i in range(8):
+                row = _transfer_row(
+                    season=season,
+                    player_cluster=1,
+                    offense=10,
+                    defense=20,
+                    actual=5.0 if i % 2 == 0 else 2.0,
+                    projected=3.0 + (i % 4) * 0.5,
+                )
+                row.update({
+                    "player_id": 1000 + i,
+                    "to_school_id": 101,
+                    "player_name": f"Hist {i}",
+                    "team_cluster_label": "Pace / Rim",
+                    "post_minutes_per_game": np.nan,
+                    "projected_minutes": np.nan,
+                    "post_usage_rate": np.nan,
+                    "projected_usage": np.nan,
+                })
+                hist_rows.append(row)
+        df_hist = run_transfer_success_pipeline(_labeled_frame(hist_rows))
+
+        projections = [1.0, 2.5, 4.0, 5.5, 7.0]
+        df_active = pd.DataFrame({
+            "player_id": [9001, 9002, 9003, 9004, 9005],
+            "to_school_id": [101, 102, 103, 104, 105],
+            "player_name": [f"Active {i}" for i in range(5)],
+            "player_cluster": [1] * 5,
+            "team_offense_cluster_id": [10] * 5,
+            "team_defense_cluster_id": [20] * 5,
+            "team_cluster_label": ["Pace / Rim"] * 5,
+            "projected_value_per_100": projections,
+        })
+
+        chunks_small = list(iter_scored_active_candidate_chunks(
+            df_historical=df_hist,
+            target_season=2023,
+            chunk_size=1,
+            df_active=df_active,
+        ))
+        chunks_large = list(iter_scored_active_candidate_chunks(
+            df_historical=df_hist,
+            target_season=2023,
+            chunk_size=100,
+            df_active=df_active,
+        ))
+        scored_small = pd.concat(chunks_small, ignore_index=True).sort_values(
+            ["player_id", "to_school_id"],
+        ).reset_index(drop=True)
+        scored_large = pd.concat(chunks_large, ignore_index=True).sort_values(
+            ["player_id", "to_school_id"],
+        ).reset_index(drop=True)
+
+        compare_cols = [
+            "projection_z",
+            "success_probability",
+            "success_tier",
+            "projection_adjustment",
+        ]
+        pd.testing.assert_frame_equal(
+            scored_small[compare_cols],
+            scored_large[compare_cols],
+            check_dtype=False,
+        )

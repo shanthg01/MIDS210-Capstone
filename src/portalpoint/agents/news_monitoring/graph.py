@@ -88,6 +88,7 @@ def collect_results_node(state: AgentState) -> dict:
     detected_events: list[dict] = []
     portal_updates: list[dict] = []
     errors: list[str] = []
+    review_needed: list[dict] = []
 
     for msg in _recent_tool_messages(state["messages"]):
         payload = _parse_tool_payload(msg.content)
@@ -109,6 +110,16 @@ def collect_results_node(state: AgentState) -> dict:
         elif tool_name in {"transfer_player", "transfer_player_for_season"}:
             if isinstance(payload, dict) and payload.get("success"):
                 portal_updates.append(payload)
+            elif isinstance(payload, dict) and payload.get("status") in ("unmatched", "ambiguous"):
+                # Real event, no confident player match - expected outcome, not a
+                # system failure. Needs a human to confirm, not a rerun.
+                review_needed.append({
+                    "tool": "transfer_player",
+                    "status": payload.get("status"),
+                    "queried_name": payload.get("queried_name"),
+                    "school_from": payload.get("school_from"),
+                    "message": payload.get("message"),
+                })
             elif isinstance(payload, dict):
                 detail = payload.get("message") or payload.get("error") or "unknown failure"
                 errors.append(f"transfer_player: {detail}")
@@ -130,6 +141,8 @@ def collect_results_node(state: AgentState) -> dict:
         out["portal_updates"] = list(state.get("portal_updates", [])) + portal_updates
     if errors:
         out["errors"] = errors
+    if review_needed:
+        out["review_needed"] = review_needed
     return out
 
 

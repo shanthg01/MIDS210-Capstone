@@ -58,6 +58,18 @@ function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
 
+function ordinal(n: number): string {
+  const rounded = Math.round(n);
+  const mod100 = rounded % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${rounded}th`;
+  switch (rounded % 10) {
+    case 1: return `${rounded}st`;
+    case 2: return `${rounded}nd`;
+    case 3: return `${rounded}rd`;
+    default: return `${rounded}th`;
+  }
+}
+
 interface ValueDriver {
   feature: string;
   component: string;
@@ -65,8 +77,10 @@ interface ValueDriver {
 }
 
 export default function ProjectionCard({ projection }: { projection: PlayerProjectionResponse }) {
-  const { value_per_100, value_ci_lower, value_ci_upper, projected_box_score, skill_percentiles, explanation } =
-    projection;
+  const {
+    value_per_100, value_ci_lower, value_ci_upper, projected_box_score,
+    skill_states, skill_percentiles, explanation,
+  } = projection;
   const isDestination = projection.projection_mode === 'destination';
 
   const valueDrivers = explanation?.value_drivers as
@@ -77,8 +91,8 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
     <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
         <Box>
-          <Typography variant="h6" fontWeight={700}>
-            Player Projection
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>
+            Player Impact
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {isDestination ? 'Adjusted for fit at this program' : 'Context-neutral talent value'} · {projection.season} season
@@ -104,7 +118,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
             Value per 100 possessions
           </Typography>
         </DefinitionTooltip>
-        <Typography variant="h4" fontWeight={800}>
+        <Typography variant="h4" sx={{ fontWeight: 800 }}>
           {value_per_100 >= 0 ? '+' : ''}{fmt(value_per_100)}
         </Typography>
         {value_ci_lower !== null && value_ci_upper !== null && (
@@ -124,7 +138,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
             {Object.entries(isDestination ? BOX_SCORE_LABELS_PER_GAME : BOX_SCORE_LABELS).map(([key, label]) =>
               projected_box_score[key] !== undefined ? (
                 <Box key={key} sx={{ textAlign: 'center', p: 1 }}>
-                  <Typography variant="body1" fontWeight={700}>
+                  <Typography variant="body1" sx={{ fontWeight: 700 }}>
                     {fmt(projected_box_score[key])}
                   </Typography>
                   <DefinitionTooltip title={BOX_SCORE[key]?.short ?? ''} placement="top">
@@ -153,26 +167,30 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
           </AccordionSummary>
           <AccordionDetails>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-              {Object.entries(skill_percentiles).map(([key, pct]) => (
-                <Box key={key}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
-                    <DefinitionTooltip title={SKILLS[key]?.short ?? ''} placement="top">
-                      <Typography variant="caption" color="text.secondary">
-                        {SKILL_LABELS[key] ?? key}
+              {Object.entries(skill_percentiles).map(([key, pct]) => {
+                const stateVal = skill_states?.[key];
+                return (
+                  <Box key={key}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                      <DefinitionTooltip title={SKILLS[key]?.short ?? ''} placement="top">
+                        <Typography variant="caption" color="text.secondary">
+                          {SKILL_LABELS[key] ?? key}
+                        </Typography>
+                      </DefinitionTooltip>
+                      <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                        {stateVal !== undefined ? `${fmt(stateVal, 3)} · ` : ''}
+                        {ordinal(pct)}
                       </Typography>
-                    </DefinitionTooltip>
-                    <Typography variant="caption" fontWeight={700}>
-                      {Math.round(pct)}
-                    </Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={pct}
+                      color={scoreColor(pct)}
+                      sx={{ height: 6, borderRadius: 1 }}
+                    />
                   </Box>
-                  <LinearProgress
-                    variant="determinate"
-                    value={pct}
-                    color={scoreColor(pct)}
-                    sx={{ height: 6, borderRadius: 1 }}
-                  />
-                </Box>
-              ))}
+                );
+              })}
             </Box>
           </AccordionDetails>
         </Accordion>

@@ -31,7 +31,11 @@ log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_VERSION: str  = "transfer-success-eb-v2"
+MODEL_VERSION: str = "transfer-success-eb-v2"
+LEGACY_MODEL_VERSION: str = "transfer-success-eb-v1"
+# API reads this version from transfer_success_scores. v2 backtest Brier 0.2521
+# (2026-07-23, post z-score fix) does not beat MLflow @champion v1 (0.2492).
+SERVING_MODEL_VERSION: str = LEGACY_MODEL_VERSION
 PROJECTION_MODEL_VERSION: str = "player-destination-proj-v1"
 
 SHRINKAGE_K: int   = 15   # pseudo-observations from cluster prior
@@ -229,6 +233,23 @@ WHERE ptf.is_portal_candidate = true
   AND ptf.season = :target_season
 """
 
+ACTIVE_CANDIDATES_PROJECTION_STATS_SQL = """\
+SELECT
+    AVG(pp.value_per_100)       AS projection_mean,
+    STDDEV_POP(pp.value_per_100) AS projection_std,
+    COUNT(pp.value_per_100)     AS n_projections
+FROM player_team_fit_scores ptf
+JOIN player_projections pp
+    ON  pp.player_id = ptf.player_id
+    AND pp.school_id = ptf.school_id
+    AND pp.season    = :target_season
+    AND pp.projection_mode = 'destination'
+    AND pp.model_version   = 'player-destination-proj-v1'
+WHERE ptf.is_portal_candidate = true
+  AND ptf.season = :target_season
+  AND pp.value_per_100 IS NOT NULL
+"""
+
 
 def load_active_candidates(engine, target_season: int) -> pd.DataFrame:
     """Load active portal candidates × all D1 schools for forward scoring."""
@@ -360,6 +381,53 @@ def standardize_projection_by_season(
         return (group - mean) / std
 
     return df.groupby("season", group_keys=False)[proj_col].transform(_zscore).fillna(0.0)
+
+
+def compute_projection_season_stats(
+    values: pd.Series,
+) -> tuple[float, float]:
+    """Mean and population std of projected_value_per_100 for one inference season."""
+    vals = values.dropna()
+    if len(vals) < 2:
+        return 0.0, 0.0
+    mean = float(vals.mean())
+    std = float(vals.std(ddof=0))
+    if std == 0 or pd.isna(std):
+        return mean, 0.0
+    return mean, std
+
+
+def projection_z_from_season_stats(
+    values: pd.Series,
+    mean: float,
+    std: float,
+) -> pd.Series:
+    """Z-score projections using a fixed season-level mean/std (inference path)."""
+    if std == 0 or pd.isna(std):
+        return pd.Series(0.0, index=values.index)
+    return ((values - mean) / std).fillna(0.0)
+
+
+def load_active_projection_season_stats(
+    engine,
+    target_season: int,
+) -> tuple[float, float]:
+    """Aggregate projected_value_per_100 across all active candidates for one season."""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(ACTIVE_CANDIDATES_PROJECTION_STATS_SQL),
+            {"target_season": target_season},
+        ).mappings().one()
+    n = int(row["n_projections"] or 0)
+    if n < 2:
+        return 0.0, 0.0
+    mean = float(row["projection_mean"] or 0.0)
+    std = float(row["projection_std"] or 0.0)
+    if std == 0 or pd.isna(std):
+        return mean, 0.0
+    return mean, std
 
 
 def fit_projection_beta(
@@ -688,6 +756,8 @@ class InferenceRateContext:
     cell_stats: pd.DataFrame
     beta_projection: float
     train_for_comps: pd.DataFrame
+    projection_mean: float
+    projection_std: float
 
 
 def _build_rate_tables_for_season(
@@ -811,7 +881,11 @@ def _apply_rate_tables_to_score(
         score["shrinkage_w"] * score["cell_success_rate"]
         + (1 - score["shrinkage_w"]) * score["offense_pair_shrunk_rate"]
     )
-    score["projection_z"] = standardize_projection_by_season(score)
+    score["projection_z"] = projection_z_from_season_stats(
+        score["projected_value_per_100"],
+        ctx.projection_mean,
+        ctx.projection_std,
+    )
     score = apply_projection_covariate_adjustment(score, ctx.beta_projection)
     score["prediction_level"] = score.apply(_infer_prediction_level, axis=1)
     score["success_tier"] = pd.cut(
@@ -828,6 +902,9 @@ def build_inference_rate_context(
     target_season: int,
     shrinkage_k: int = SHRINKAGE_K,
     decay_lambda: float = DECAY_LAMBDA,
+    *,
+    projection_mean: float,
+    projection_std: float,
 ) -> InferenceRateContext:
     """Precompute EB rate tables and projection beta for inference at target_season."""
     hist = df_historical[df_historical["season"] < target_season]
@@ -862,8 +939,9 @@ def build_inference_rate_context(
     ]
 
     log.info(
-        "Inference rate context: season=%d, train_n=%d, beta=%.4f, global_rate=%.3f",
-        target_season, len(train), beta, global_rate,
+        "Inference rate context: season=%d, train_n=%d, beta=%.4f, global_rate=%.3f, "
+        "proj_mean=%.3f, proj_std=%.3f",
+        target_season, len(train), beta, global_rate, projection_mean, projection_std,
     )
 
     return InferenceRateContext(
@@ -877,6 +955,8 @@ def build_inference_rate_context(
         cell_stats=cell_stats,
         beta_projection=beta,
         train_for_comps=train_for_comps,
+        projection_mean=projection_mean,
+        projection_std=projection_std,
     )
 
 
@@ -1353,8 +1433,22 @@ def iter_scored_active_candidate_chunks(
 
     Provide ``engine`` to stream candidates from RDS, or ``df_active`` for tests.
     """
+    if engine is not None:
+        proj_mean, proj_std = load_active_projection_season_stats(engine, target_season)
+    elif df_active is not None:
+        proj_mean, proj_std = compute_projection_season_stats(
+            df_active["projected_value_per_100"],
+        )
+    else:
+        raise ValueError("iter_scored_active_candidate_chunks requires engine or df_active")
+
     ctx = build_inference_rate_context(
-        df_historical, target_season, shrinkage_k=shrinkage_k, decay_lambda=decay_lambda,
+        df_historical,
+        target_season,
+        shrinkage_k=shrinkage_k,
+        decay_lambda=decay_lambda,
+        projection_mean=proj_mean,
+        projection_std=proj_std,
     )
 
     if engine is not None:
@@ -1368,8 +1462,6 @@ def iter_scored_active_candidate_chunks(
             df_active.iloc[start:start + chunk_size]
             for start in range(0, total, chunk_size)
         )
-    else:
-        raise ValueError("iter_scored_active_candidate_chunks requires engine or df_active")
 
     processed = 0
     for chunk in chunk_iter:

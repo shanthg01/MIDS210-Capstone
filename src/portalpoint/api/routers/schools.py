@@ -8,6 +8,7 @@ from portalpoint.api.schemas.school import (
     SchoolListResponse,
     TeamSystemProfileResponse,
 )
+from portalpoint.api.services.context_staleness import context_staleness_payload
 from portalpoint.db.models import RosterStateFeatures, School, TeamSystemProfile, User
 from portalpoint.modeling.team_clustering import DEFENSE_LABELS, DEFENSE_UNAVAILABLE_LABEL, OFFENSE_LABELS
 
@@ -61,6 +62,12 @@ async def get_system_profile(current_user: CurrentUser, db: DbSession):
         system_label=row.system_label,
         offense_label=offense_label,
         defense_label=defense_label,
+        offense_memberships=row.offense_memberships,
+        defense_memberships=row.defense_memberships,
+        system_memberships=row.system_memberships,
+        explanation=row.explanation,
+        context_staleness=context_staleness_payload(bool(row.stale_flag), row.stale_reason),
+        model_version=row.model_version,
     )
 
 

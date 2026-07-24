@@ -28,7 +28,7 @@ import { buildProjectionInsight } from '../utils/fitInsights';
 function StatCell({ label, value }: { label: string; value: string | number }) {
   return (
     <Box sx={{ textAlign: 'center', p: 1.5 }}>
-      <Typography variant="h6" fontWeight={700}>
+      <Typography variant="h6" sx={{ fontWeight: 700 }}>
         {value}
       </Typography>
       <Typography variant="caption" color="text.secondary">
@@ -168,7 +168,7 @@ export default function PlayerProfilePage() {
   }
 
   return (
-    <Box maxWidth={720}>
+    <Box sx={{ maxWidth: 720 }}>
       <Breadcrumbs sx={{ mb: 2 }}>
         <Link
           component="button"
@@ -187,7 +187,7 @@ export default function PlayerProfilePage() {
       {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
         <Box>
-          <Typography variant="h4" fontWeight={800}>
+          <Typography variant="h4" sx={{ fontWeight: 800 }}>
             {player.full_name}
           </Typography>
           <Box sx={{ display: 'flex', gap: 1, mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -232,18 +232,18 @@ export default function PlayerProfilePage() {
       <Box sx={{ display: 'flex', gap: 3, mb: 3, flexWrap: 'wrap' }}>
         <Box>
           <Typography variant="caption" color="text.secondary">School</Typography>
-          <Typography variant="body2" fontWeight={600}>{player.current_school}</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>{player.current_school}</Typography>
         </Box>
         {player.hometown && (
           <Box>
             <Typography variant="caption" color="text.secondary">Hometown</Typography>
-            <Typography variant="body2" fontWeight={600}>{player.hometown}</Typography>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>{player.hometown}</Typography>
           </Box>
         )}
         {player.height_inches && (
           <Box>
             <Typography variant="caption" color="text.secondary">Height</Typography>
-            <Typography variant="body2" fontWeight={600}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
               {Math.floor(player.height_inches / 12)}'{player.height_inches % 12}"
             </Typography>
           </Box>
@@ -251,7 +251,7 @@ export default function PlayerProfilePage() {
         {player.archetype && (
           <Box>
             <Typography variant="caption" color="text.secondary">Archetype confidence</Typography>
-            <Typography variant="body2" fontWeight={600}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
               {(player.archetype.confidence * 100).toFixed(0)}%
             </Typography>
           </Box>
@@ -270,7 +270,7 @@ export default function PlayerProfilePage() {
             const insight = buildProjectionInsight(projection);
             return (
               <Alert severity="info" sx={{ mb: 2 }}>
-                <Typography variant="body2" fontWeight={700}>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
                   {insight.headline}
                 </Typography>
                 {insight.bullets.map((b) => (

@@ -50,6 +50,9 @@ class PlayerArchetype(BaseModel):
     archetype_id: int
     label: str  # "3&D Wing", "Stretch 4", "Primary Creator", etc.
     confidence: float = Field(..., ge=0.0, le=1.0)
+    memberships: list[dict] | None = None
+    explanation: dict | None = None
+    model_version: str | None = None
 
 
 class PlayerBase(BaseModel):

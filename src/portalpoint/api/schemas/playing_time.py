@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from portalpoint.api.schemas.common import ContextStaleness
+
 
 class PlayingTimeFeatureContribution(BaseModel):
     feature: str
@@ -43,6 +45,28 @@ class PlayingTimeExplanation(BaseModel):
     postprocessing: PlayingTimePostprocessing
 
 
+class PlayingTimeOverrideRequest(BaseModel):
+    school_id: int
+    season: int | None = Field(
+        default=None, description="Defaults to the latest unexpired projection for the pair."
+    )
+    minutes_override: float = Field(..., ge=0.0, le=40.0)
+    usage_override: float | None = Field(default=None, ge=0.0, le=100.0)
+
+
+class PlayingTimeOverrideResponse(BaseModel):
+    player_id: str
+    school_id: int
+    season: int
+    stored_expected_minutes: float
+    stored_role_fit: float
+    override_expected_minutes: float
+    override_role_fit: float
+    model_version: str
+    explanation: dict | None = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
+
+
 class PlayingTimeProjectionResponse(BaseModel):
     player_id: str
     school_id: int
@@ -62,6 +86,7 @@ class PlayingTimeProjectionResponse(BaseModel):
     data_quality_flags: dict | None = None
     scenario_overrides: dict | None = None
     explanation: PlayingTimeExplanation | None = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
     role_fit: float = Field(..., ge=0.0, le=100.0)
     model_version: str
     computed_at: datetime

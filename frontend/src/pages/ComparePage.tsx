@@ -17,6 +17,7 @@ import {
   Checkbox,
   FormControlLabel,
   Divider,
+  Tooltip,
 } from '@mui/material';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -29,26 +30,38 @@ import { scoreColor, DataStatusChip } from '../components/FitScoreBar';
 import DefinitionTooltip from '../components/DefinitionTooltip';
 import { FIT_COMPONENTS, OVERALL_FIT } from '../constants/definitions';
 import { buildVerdict } from '../utils/compareInsights';
+import DivergingBar from '../components/DivergingBar';
 import type { CompareResponse, ComparisonMatrix } from '../types/api';
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
 
-// overall_fit has no single component key — it blends real (scheme, gap) and
-// stub (role, program), so it gets no Live/Placeholder chip, just the row metrics below it.
+// overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
-  { key: 'scheme_fit', label: 'Scheme Fit' },
-  { key: 'gap_match', label: 'Gap Match' },
+  { key: 'scheme_fit', label: 'System Match' },
+  { key: 'gap_match', label: 'Roster Need' },
   { key: 'role_fit', label: 'Role Fit' },
   { key: 'program_fit', label: 'Program Fit' },
 ];
 
-function maxNameInRow(row: Record<string, number>): string {
-  return Object.entries(row).reduce(
-    (best, [name, val]) => (val > row[best] ? name : best),
-    Object.keys(row)[0] ?? '',
-  );
-}
+// Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
+// convention as FitScorePage's own GAP_FEATURE_LABELS/SettingsPage's STAT_LABELS.
+const GAP_FEATURE_LABELS: Record<string, string> = {
+  usage_rate: 'Usage Rate',
+  true_shooting_pct: 'True Shooting %',
+  assist_rate: 'Assist Rate',
+  tov_pct_inverse: 'Turnover Avoidance',
+  off_reb_pct: 'Off. Rebound %',
+  def_reb_pct: 'Def. Rebound %',
+  block_pct: 'Block %',
+  steal_pct: 'Steal %',
+  free_throw_rate: 'Free Throw Rate',
+  three_point_rate: '3PT Rate',
+  rim_rate: 'Rim Rate',
+  mid_range_rate: 'Mid-Range Rate',
+  fg3_pct: '3PT %',
+  rim_pct: 'Rim %',
+};
 
 // ── Comparison results ────────────────────────────────────────────────────────
 
@@ -66,7 +79,7 @@ function ComparisonResults({
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h6" fontWeight={700}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>
           Comparison Matrix
         </Typography>
         <Button size="small" startIcon={<RefreshIcon />} onClick={onReset}>
@@ -76,7 +89,7 @@ function ComparisonResults({
 
       {/* Verdict — plain-language summary, leads before the detailed matrix */}
       <Alert severity="info" sx={{ mb: 3 }}>
-        <Typography variant="body2" fontWeight={700}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
           {verdict.headline}
         </Typography>
         {verdict.bullets.map((b) => (
@@ -97,8 +110,7 @@ function ComparisonResults({
                   <TableCell key={e.player.player_id} align="center">
                     <Typography
                       variant="body2"
-                      fontWeight={700}
-                      sx={{ cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
+                      sx={{ fontWeight: 700, cursor: 'pointer', '&:hover': { color: 'primary.main' } }}
                       onClick={() => navigate(`/players/${e.player.player_id}`)}
                     >
                       {e.player.full_name}
@@ -118,10 +130,9 @@ function ComparisonResults({
             <TableBody>
               {METRICS.map(({ key, label }) => {
                 const row = result.comparison_matrix[key];
-                const bestName = maxNameInRow(row);
                 return (
                   <TableRow key={key} hover>
-                    <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
+                    <TableCell sx={{ color: 'text.secondary', fontWeight: 500, verticalAlign: 'top', pt: 1.5 }}>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
                         <DefinitionTooltip
                           title={key === 'overall_fit' ? OVERALL_FIT.short : FIT_COMPONENTS[key as keyof typeof FIT_COMPONENTS]?.short ?? ''}
@@ -131,45 +142,69 @@ function ComparisonResults({
                         {key !== 'overall_fit' && <DataStatusChip component={key} />}
                       </Box>
                     </TableCell>
-                    {entries.map((e) => {
-                      const val = row[e.player.full_name] ?? 0;
-                      const isBest = e.player.full_name === bestName;
-                      const color = scoreColor(val);
-                      return (
-                        <TableCell key={e.player.player_id} align="center">
-                          <Typography
-                            variant="h6"
-                            fontWeight={isBest ? 800 : 500}
-                            color={isBest ? `${color}.main` : 'text.primary'}
-                            sx={isBest ? { textDecoration: 'underline dotted' } : {}}
-                          >
-                            {val.toFixed(0)}
-                          </Typography>
-                        </TableCell>
-                      );
-                    })}
+                    <TableCell colSpan={entries.length}>
+                      <DivergingBar
+                        entries={entries.map((e) => ({
+                          id: e.player.player_id,
+                          label: e.player.full_name.split(' ').pop() ?? e.player.full_name,
+                          value: row[e.player.full_name] ?? 0,
+                        }))}
+                      />
+                      {/* Why gap match differs — top_gap_features per player (issue #61) */}
+                      {key === 'gap_match' && (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 1 }}>
+                          {entries.map((e) => {
+                            const feats = e.fit_score.breakdown.gap.top_gap_features;
+                            if (feats.length === 0) return null;
+                            return (
+                              <Box key={e.player.player_id} sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ width: 88, flexShrink: 0, textAlign: 'right' }}>
+                                  {e.player.full_name.split(' ').pop()} fills:
+                                </Typography>
+                                {feats.slice(0, 3).map((f) => (
+                                  <Chip
+                                    key={f.feature}
+                                    size="small"
+                                    variant="outlined"
+                                    color="success"
+                                    label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
+                                  />
+                                ))}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      )}
+                    </TableCell>
                   </TableRow>
                 );
               })}
 
-              {/* Prediction row */}
+              {/* Transfer Success row */}
               <TableRow hover>
-                <TableCell sx={{ color: 'text.secondary', fontWeight: 500 }}>
-                  Predicted MPG
+                <TableCell sx={{ color: 'text.secondary', fontWeight: 500, verticalAlign: 'top', pt: 1.5 }}>
+                  Transfer Success
                 </TableCell>
-                {entries.map((e) => (
-                  <TableCell key={e.player.player_id} align="center">
-                    <Typography variant="body2" fontWeight={600}>
-                      {e.prediction.predicted_minutes.toFixed(1)}
-                    </Typography>
-                    <Chip
-                      label={e.prediction.predicted_role}
-                      size="small"
-                      variant="outlined"
-                      sx={{ mt: 0.25 }}
-                    />
-                  </TableCell>
-                ))}
+                <TableCell colSpan={entries.length}>
+                  <DivergingBar
+                    entries={entries.map((e) => ({
+                      id: e.player.player_id,
+                      label: e.player.full_name.split(' ').pop() ?? e.player.full_name,
+                      value: e.prediction.success_probability * 100,
+                    }))}
+                  />
+                  <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', mt: 0.75 }}>
+                    {entries.map((e) => (
+                      <Tooltip key={e.player.player_id} title={e.prediction.explanation}>
+                        <Chip
+                          label={`${e.player.full_name.split(' ').pop()}: ${e.prediction.success_tier}`}
+                          size="small"
+                          variant="outlined"
+                        />
+                      </Tooltip>
+                    ))}
+                  </Box>
+                </TableCell>
               </TableRow>
             </TableBody>
           </Table>
@@ -177,14 +212,14 @@ function ComparisonResults({
       </Paper>
 
       {/* Trade-offs */}
-      <Typography variant="h6" fontWeight={700} gutterBottom>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
         Trade-offs
       </Typography>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
         {result.trade_offs.map((t) => (
           <Paper key={t.factor} variant="outlined" sx={{ p: 2 }}>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'baseline', mb: 0.5 }}>
-              <Typography variant="subtitle2" fontWeight={700} color="primary">
+              <Typography variant="subtitle2" color="primary" sx={{ fontWeight: 700 }}>
                 {t.factor}
               </Typography>
               <Chip label={t.best_player_name} size="small" color="success" variant="outlined" />
@@ -252,8 +287,8 @@ export default function ComparePage() {
   // Show results if mutation succeeded
   if (result) {
     return (
-      <Box maxWidth={900}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+      <Box sx={{ maxWidth: 900 }}>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players
         </Typography>
         <ComparisonResults result={result} onReset={handleReset} />
@@ -264,9 +299,9 @@ export default function ComparePage() {
   const players = shortlist?.players ?? [];
 
   return (
-    <Box maxWidth={700}>
+    <Box sx={{ maxWidth: 700 }}>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h5" fontWeight={700} gutterBottom>
+        <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -346,7 +381,7 @@ export default function ComparePage() {
                       sx={{ mr: 0 }}
                     />
                     <Box sx={{ flex: 1 }}>
-                      <Typography variant="body2" fontWeight={700}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
                         {p.player_name}
                       </Typography>
                       <Chip label={p.position} size="small" sx={{ mt: 0.25 }} />
@@ -354,8 +389,8 @@ export default function ComparePage() {
                     {p.overall_fit !== null ? (
                       <Typography
                         variant="h6"
-                        fontWeight={800}
                         color={color ? `${color}.main` : undefined}
+                        sx={{ fontWeight: 800 }}
                       >
                         {p.overall_fit.toFixed(0)}
                       </Typography>

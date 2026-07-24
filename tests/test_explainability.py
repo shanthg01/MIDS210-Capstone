@@ -6,10 +6,40 @@ from lightgbm import LGBMRegressor
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
 
 from portalpoint.modeling.explainability import (
+    cluster_confidence,
     cosine_contributions,
+    kalman_uncertainty_explain,
     shrinkage_weight,
     tree_shap_explain,
 )
+
+
+def test_cluster_confidence_reports_second_nearest_and_ambiguity() -> None:
+    result = cluster_confidence([0.2, 0.21, 0.8], silhouette=0.03)
+
+    assert result["assigned_cluster_id"] == 0
+    assert result["second_nearest_cluster_id"] == 1
+    assert result["confidence"] == pytest.approx(1 - 0.2 / 0.21, abs=1e-6)
+    assert result["is_ambiguous"] is True
+    assert result["silhouette"] == 0.03
+
+
+def test_cluster_confidence_treats_zero_distance_tie_as_ambiguous() -> None:
+    result = cluster_confidence([0.0, 0.0, 0.8])
+
+    assert result["distance_ratio"] == 1.0
+    assert result["confidence"] == 0.0
+    assert result["is_ambiguous"] is True
+
+
+def test_kalman_uncertainty_explanation_surfaces_signal_noise_and_persistence() -> None:
+    result = kalman_uncertainty_explain(0.1, 0.25, 0.75, persistence=0.8)
+
+    assert result["confidence"] == pytest.approx(0.75 / 0.85, abs=1e-6)
+    assert result["process_share"] == 0.25
+    assert result["observation_noise_share"] == 0.75
+    assert result["confidence_label"] == "high"
+    assert result["persistence"] == 0.8
 
 
 def test_cosine_contributions_are_signed_and_additive() -> None:

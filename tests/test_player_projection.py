@@ -121,6 +121,40 @@ def test_skill_percentiles_flips_direction_for_inverted_skill():
         assert out[col].between(0, 100).all()
 
 
+def test_skill_percentiles_position_scoped_defaults_to_season_only():
+    # position_col=None (default) must be byte-identical to season-only —
+    # every existing caller/stored row relies on this, changing the default
+    # would silently change already-written player_projections rows.
+    df = _synthetic_training_frame(n=40)
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    explicit_none = pp.skill_percentiles(shrunk, position_col=None)
+    pd.testing.assert_frame_equal(season_only, explicit_none)
+
+
+def test_skill_percentiles_position_scoped_differs_from_season_only():
+    df = _synthetic_training_frame(n=90)
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    by_position = pp.skill_percentiles(shrunk, position_col="position")
+
+    # Positions have independent random fg3_pct draws, so at least some rows'
+    # within-position rank must differ from their within-season rank.
+    assert not season_only["pctile_shooting_3p"].equals(by_position["pctile_shooting_3p"])
+    assert by_position["pctile_shooting_3p"].between(0, 100).all()
+
+
+def test_skill_percentiles_position_scoped_falls_back_when_position_missing():
+    df = _synthetic_training_frame(n=40)
+    df.loc[0, "position"] = None
+    shrunk = pp.shrink_skills(df)
+    season_only = pp.skill_percentiles(shrunk)
+    by_position = pp.skill_percentiles(shrunk, position_col="position")
+
+    # Row with no position falls back to the season-only percentile exactly.
+    assert by_position.loc[0, "pctile_shooting_3p"] == season_only.loc[0, "pctile_shooting_3p"]
+
+
 def test_fit_value_model_recovers_known_positive_relationship():
     df = _synthetic_training_frame(n=80)
     shrunk = pp.shrink_skills(df)
@@ -702,6 +736,9 @@ def test_forecast_next_season_states_advances_target_season_and_transition():
     # 0.5*10 + (1 + 0.1*3 + 2*1 + -0.5*-1)
     assert out.loc[0, "skill_shooting_3p"] == pytest.approx(8.8)
     assert out.loc[0, "skill_var_shooting_3p"] == pytest.approx(1.25)
+    assert out.loc[0, "kalman_observation_var_shooting_3p"] == pytest.approx(4.0)
+    assert out.loc[0, "kalman_process_var_shooting_3p"] == pytest.approx(0.25)
+    assert out.loc[0, "kalman_rho_shooting_3p"] == pytest.approx(0.5)
 
 
 def _synthetic_sequence(rng, n, true_rho, true_beta1):
@@ -1153,6 +1190,23 @@ def test_build_cross_season_records_marks_next_season_forecast_explanation():
     assert explanation["value_components"]["off_value_per_100"] == pytest.approx(3.5)
     assert explanation["value_components"]["raw_def_value_per_100"] == pytest.approx(-0.7)
     assert explanation["value_drivers"]["top_positive"][0]["feature"] == "source_value_per_100"
+
+
+def test_build_cross_season_records_surfaces_kalman_skill_confidence():
+    df = _cross_season_projected_frame([1], [2027])
+    for skill in pp.SKILLS:
+        df[f"skill_var_{skill}"] = 0.1
+        df[f"kalman_observation_var_{skill}"] = 0.8
+        df[f"kalman_process_var_{skill}"] = 0.2
+        df[f"kalman_rho_{skill}"] = 0.7
+
+    record = pp.build_cross_season_records(df)[0]
+    uncertainty = json.loads(record[13])
+    explanation = json.loads(record[14])
+
+    assert uncertainty["skill_confidence"]["shooting_3p"] == pytest.approx(0.8 / 0.9, abs=1e-6)
+    assert explanation["kalman_uncertainty"]["skills"]["shooting_3p"]["process_share"] == 0.2
+    assert explanation["kalman_uncertainty"]["skills"]["shooting_3p"]["persistence"] == 0.7
 
 
 def test_build_cross_season_records_populates_rates_when_given_else_empty():

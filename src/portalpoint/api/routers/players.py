@@ -16,8 +16,13 @@ from portalpoint.api.schemas.player import (
     Position,
 )
 from portalpoint.api.schemas.player_projection import PlayerProjectionResponse
-from portalpoint.api.schemas.playing_time import PlayingTimeProjectionResponse
+from portalpoint.api.schemas.playing_time import (
+    PlayingTimeOverrideRequest,
+    PlayingTimeOverrideResponse,
+    PlayingTimeProjectionResponse,
+)
 from portalpoint.api.schemas.user import StatKey
+from portalpoint.api.services.context_staleness import get_context_staleness
 from portalpoint.db.models import (
     Player,
     PlayerSeasonStats,
@@ -39,6 +44,7 @@ from portalpoint.modeling.minutes import resolved_minutes_per_game
 from portalpoint.modeling.player_projection import (
     MODEL_VERSION_CROSS_SEASON_FORECAST as PLAYER_PROJECTION_MODEL_VERSION,
 )
+from portalpoint.modeling.playing_time import compute_role_fit_override
 
 router = APIRouter(prefix="/api/players", tags=["players"])
 
@@ -237,6 +243,9 @@ async def get_player(player_id: int, db: DbSession):
             archetype_id=arch_row.archetype_id,
             label=arch_row.archetype_label,
             confidence=arch_row.confidence,
+            memberships=arch_row.archetype_memberships,
+            explanation=arch_row.explanation,
+            model_version=arch_row.model_version,
         )
 
     # Portal status
@@ -346,6 +355,14 @@ async def get_player_projection(
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
+    context_staleness = (
+        await get_context_staleness(db, row.school_id, row.season)
+        if row.school_id is not None
+        else None
+    )
+    response_kwargs = {}
+    if context_staleness is not None:
+        response_kwargs["context_staleness"] = context_staleness
     return PlayerProjectionResponse(
         player_id=str(row.player_id),
         season=row.season,
@@ -364,6 +381,7 @@ async def get_player_projection(
         explanation=row.explanation,
         model_version=row.model_version,
         computed_at=row.computed_at,
+        **response_kwargs,
     )
 
 
@@ -397,6 +415,7 @@ async def get_player_playing_time(
             detail += f" in season {season}"
         raise HTTPException(status_code=404, detail=detail)
 
+    context_staleness = await get_context_staleness(db, row.school_id, row.season)
     return PlayingTimeProjectionResponse(
         player_id=str(row.player_id),
         school_id=row.school_id,
@@ -416,9 +435,80 @@ async def get_player_playing_time(
         data_quality_flags=row.data_quality_flags,
         scenario_overrides=row.scenario_overrides,
         explanation=row.explanation,
+        context_staleness=context_staleness,
         role_fit=row.role_fit,
         model_version=row.model_version,
         computed_at=row.computed_at,
+    )
+
+
+@router.post("/{player_id}/playing-time/override", response_model=PlayingTimeOverrideResponse)
+async def override_player_playing_time(
+    player_id: int,
+    body: PlayingTimeOverrideRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """Coach-supplied minutes/usage what-if — the real Role Fit formula run
+    twice (stored vs. override) and applied as a delta to the batch-computed
+    role_fit. Does not touch playing_time_projections; response-only.
+    See modeling.playing_time.compute_role_fit_override for why this is a
+    delta rather than a full recompute (roster_player_count/roster_open_minutes
+    aren't persisted on the batch row)."""
+    stmt = select(PlayingTimeProjectionORM).where(
+        PlayingTimeProjectionORM.player_id == player_id,
+        PlayingTimeProjectionORM.school_id == body.school_id,
+        PlayingTimeProjectionORM.expires_at > datetime.now(timezone.utc),
+    )
+    if body.season is not None:
+        stmt = stmt.where(PlayingTimeProjectionORM.season == body.season)
+    stmt = stmt.order_by(
+        PlayingTimeProjectionORM.season.desc(),
+        PlayingTimeProjectionORM.computed_at.desc(),
+    ).limit(1)
+
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        detail = f"No playing-time projection found for player {player_id} and school {body.school_id}"
+        if body.season is not None:
+            detail += f" in season {body.season}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    stored = {
+        "expected_minutes": row.expected_minutes,
+        "expected_usage": row.expected_usage,
+        "minutes_ci_lower": row.minutes_ci_lower,
+        "minutes_ci_upper": row.minutes_ci_upper,
+        "role_fit": row.role_fit,
+    }
+    if row.rotation_probability is not None:
+        stored["rotation_probability_model"] = row.rotation_probability
+    if row.starter_probability is not None:
+        stored["starter_probability_model"] = row.starter_probability
+
+    override_role_fit = compute_role_fit_override(
+        stored, minutes_override=body.minutes_override, usage_override=body.usage_override
+    )
+
+    return PlayingTimeOverrideResponse(
+        player_id=str(player_id),
+        school_id=body.school_id,
+        season=row.season,
+        stored_expected_minutes=row.expected_minutes,
+        stored_role_fit=row.role_fit,
+        override_expected_minutes=body.minutes_override,
+        override_role_fit=override_role_fit,
+        model_version=row.model_version,
+        explanation={
+            "version": 1,
+            "method": "role_fit_counterfactual_delta",
+            "stored_expected_minutes": row.expected_minutes,
+            "override_expected_minutes": body.minutes_override,
+            "stored_role_fit": row.role_fit,
+            "override_role_fit": override_role_fit,
+            "role_fit_delta": round(override_role_fit - row.role_fit, 4),
+        },
+        context_staleness=await get_context_staleness(db, row.school_id, row.season),
     )
 
 

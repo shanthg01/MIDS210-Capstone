@@ -65,11 +65,11 @@ export default function OnboardingWizard() {
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
           <TuneIcon color="info" fontSize="small" sx={{ mt: 0.25 }} />
           <Box>
-            <Typography variant="body2" fontWeight={700}>
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>
               Prioritize
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Weights that re-rank candidates. Default split: Gap {fitPct(prefs.fit_weights.gap)}% ·
+              Personalized weights that re-rank candidates. Default split: Gap {fitPct(prefs.fit_weights.gap)}% ·
               Scheme {fitPct(prefs.fit_weights.scheme)}% · Role {fitPct(prefs.fit_weights.role_fit)}% ·
               Program {fitPct(prefs.fit_weights.program_fit)}%
             </Typography>
@@ -79,7 +79,7 @@ export default function OnboardingWizard() {
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2.5 }}>
           <FilterAltIcon color="warning" fontSize="small" sx={{ mt: 0.25 }} />
           <Box>
-            <Typography variant="body2" fontWeight={700}>
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>
               Eliminate
             </Typography>
             <Typography variant="caption" color="text.secondary">

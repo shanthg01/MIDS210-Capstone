@@ -1,5 +1,12 @@
 import client from './client';
-import type { PlayerProfile, PlayerProjectionResponse, PlayerSearchResponse, StatThreshold } from '../types/api';
+import type {
+  PlayerProfile,
+  PlayerProjectionResponse,
+  PlayerSearchResponse,
+  PlayingTimeOverrideRequest,
+  PlayingTimeOverrideResponse,
+  StatThreshold,
+} from '../types/api';
 
 export async function searchPlayers(
   name: string,
@@ -33,5 +40,19 @@ export async function getPlayerProjection(
   const { data } = await client.get<PlayerProjectionResponse>(`/players/${playerId}/projection`, {
     params: schoolId !== undefined ? { school_id: schoolId } : undefined,
   });
+  return data;
+}
+
+// Coach "what if" minutes override — response-only, doesn't persist to
+// playing_time_projections. See modeling.playing_time.compute_role_fit_override
+// for why this is a delta on the stored role_fit, not a full recompute.
+export async function overridePlayingTime(
+  playerId: string,
+  body: PlayingTimeOverrideRequest,
+): Promise<PlayingTimeOverrideResponse> {
+  const { data } = await client.post<PlayingTimeOverrideResponse>(
+    `/players/${playerId}/playing-time/override`,
+    body,
+  );
   return data;
 }

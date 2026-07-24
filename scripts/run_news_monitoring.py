@@ -1,8 +1,10 @@
 """
 scripts/run_news_monitoring.py
 
-Non-interactive CLI entrypoint for the news-monitoring agent.  Matches the
-run_*.py pattern used by every other model in this repo.
+Non-interactive CLI entrypoint for the news-monitoring agent. Thin argparse
+wrapper — the actual run() orchestration lives in
+portalpoint.agents.news_monitoring.runner so the API (agent.py router) can
+import it too (scripts/ isn't a packaged module).
 
 Usage:
     uv run python scripts/run_news_monitoring.py
@@ -16,31 +18,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-import os
 import sys
-from datetime import date, datetime
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-from langchain_core.messages import HumanMessage
+import logging
 
 from portalpoint.agents.news_monitoring.config import GEMINI_MODEL, TAVILY_WINDOW_DAYS
-from portalpoint.agents.news_monitoring.extract import (
-    RateLimiter,
-    build_llm,
-    build_llm_classify_tools,
-    classify_event,
-    classify_events_batch,
-)
-from portalpoint.agents.news_monitoring.graph import build_graph
-from portalpoint.agents.news_monitoring.resolve import build_action_tools
-from portalpoint.agents.news_monitoring.sources.tavily import build_search_news_tool
-from portalpoint.agents.news_monitoring.state import initial_state
-from portalpoint.modeling.io import apply_env_file
+from portalpoint.agents.news_monitoring.runner import run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)

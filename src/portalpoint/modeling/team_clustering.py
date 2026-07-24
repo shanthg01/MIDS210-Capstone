@@ -15,11 +15,12 @@ import pandas as pd
 from psycopg2.extras import Json
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
-from sklearn.metrics import davies_bouldin_score, silhouette_score
+from sklearn.metrics import davies_bouldin_score, silhouette_samples, silhouette_score
 from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
+from portalpoint.modeling.explainability import cluster_confidence
 
 RANDOM_STATE = 42
 DEFAULT_K_OFFENSE = 7
@@ -80,13 +81,15 @@ BART_FEATURES = OFFENSE_FEATURE_GROUPS["style_shape"] + OFFENSE_FEATURE_GROUPS["
 UPSERT_SQL = (
     "INSERT INTO team_system_profiles "
     "(school_id, season, cluster_id, system_label, offense_cluster_id, defense_cluster_id, "
-    "offense_memberships, defense_memberships, system_memberships, style_vector, model_version) "
+    "offense_memberships, defense_memberships, system_memberships, style_vector, explanation, model_version) "
     "VALUES %s "
     "ON CONFLICT ON CONSTRAINT uq_team_system_season DO UPDATE SET "
     "cluster_id = EXCLUDED.cluster_id, system_label = EXCLUDED.system_label, "
     "offense_cluster_id = EXCLUDED.offense_cluster_id, defense_cluster_id = EXCLUDED.defense_cluster_id, "
     "offense_memberships = EXCLUDED.offense_memberships, defense_memberships = EXCLUDED.defense_memberships, "
-    "system_memberships = EXCLUDED.system_memberships, style_vector = EXCLUDED.style_vector, model_version = EXCLUDED.model_version"
+    "system_memberships = EXCLUDED.system_memberships, style_vector = EXCLUDED.style_vector, "
+    "explanation = EXCLUDED.explanation, model_version = EXCLUDED.model_version, "
+    "stale_flag = false, stale_reason = NULL"
 )
 
 
@@ -268,6 +271,20 @@ def fit_two_layer_clusters(
     df_he["offense_confidence"] = confidence_from_dists(offense_dists_he)
     df_he["defense_confidence"] = confidence_from_dists(defense_dists_he)
     df_he["confidence"] = (df_he["offense_confidence"] + df_he["defense_confidence"]) / 2
+    offense_silhouettes = silhouette_samples(X_offense_he, df_he["offense_cluster_id"])
+    defense_silhouettes = silhouette_samples(X_defense_he, df_he["defense_cluster_id"])
+    df_he["cluster_explanation"] = [
+        {
+            "version": 1,
+            "method": "centroid_separation",
+            "feature_coverage": "he_two_way",
+            "offense": cluster_confidence(off_dist, silhouette=float(off_sil)),
+            "defense": cluster_confidence(def_dist, silhouette=float(def_sil)),
+        }
+        for off_dist, def_dist, off_sil, def_sil in zip(
+            offense_dists_he, defense_dists_he, offense_silhouettes, defense_silhouettes
+        )
+    ]
 
     if len(df_fallback):
         df_fallback = df_fallback.copy()
@@ -278,6 +295,20 @@ def fit_two_layer_clusters(
         df_fallback["offense_confidence"] = confidence_from_dists(offense_dists_fb) * 0.75
         df_fallback["defense_confidence"] = np.nan
         df_fallback["confidence"] = df_fallback["offense_confidence"]
+        fallback_explanations = []
+        for distances in offense_dists_fb:
+            offense_explanation = cluster_confidence(distances)
+            offense_explanation["confidence"] = round(
+                float(offense_explanation["confidence"]) * 0.75, 6
+            )
+            fallback_explanations.append({
+                "version": 1,
+                "method": "centroid_separation",
+                "feature_coverage": "base_fallback",
+                "offense": offense_explanation,
+                "defense": None,
+            })
+        df_fallback["cluster_explanation"] = fallback_explanations
     else:
         offense_dists_fb = np.empty((0, k_offense))
 
@@ -354,7 +385,7 @@ def build_team_profile_records(df: pd.DataFrame, model_version: str) -> list[tup
             int(row.school_id), int(row.season), int(row.cluster_id), str(row.system_label),
             int(row.offense_cluster_id), _nullable_int(row.defense_cluster_id),
             Json(row.offense_memberships), Json(row.defense_memberships), Json(row.system_memberships),
-            [float(getattr(row, f)) for f in BART_FEATURES], model_version,
+            [float(getattr(row, f)) for f in BART_FEATURES], Json(row.cluster_explanation), model_version,
         )
         for row in df.itertuples(index=False)
     ]

@@ -14,8 +14,7 @@ from portalpoint.api.schemas.comparison import (
     TradeOff,
 )
 from portalpoint.api.schemas.player import ClassYear, PlayerBase, Position
-from portalpoint.api.schemas.prediction import PredictionResponse
-from portalpoint.api.services import fit_score_service, transfer_success_service
+from portalpoint.api.services import fit_score_service, prediction_service
 from portalpoint.db.models import Player, PlayerSeasonStats, School
 from portalpoint.db.redis_client import get_redis
 
@@ -79,32 +78,16 @@ async def compare_players(
     redis: Redis = Depends(get_redis),
 ):
     season = await fit_score_service.get_current_season(db, redis)
-    prediction_season = await transfer_success_service.get_current_season(db)
     player_info = await _player_info(db, body.player_ids)
 
-    entries: list[ComparisonPlayerEntry] = []
-    for pid in body.player_ids:
-        prediction = await transfer_success_service.get_prediction(
-            db, pid, body.program_id, prediction_season
+    entries = [
+        ComparisonPlayerEntry(
+            player=player_info[pid],
+            fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, season),
+            prediction=await prediction_service.get_prediction(db, pid, body.program_id, season),
         )
-        if prediction is None:
-            prediction = PredictionResponse(
-                player_id=str(pid),
-                school_id=body.program_id,
-                season=prediction_season,
-                success_probability=0.5,
-                success_tier=None,
-                explanation=None,
-                similar_transfers=[],
-                model_version="unavailable",
-            )
-        entries.append(
-            ComparisonPlayerEntry(
-                player=player_info[pid],
-                fit_score=await fit_score_service.get_fit_score(db, pid, body.program_id, season),
-                prediction=prediction,
-            )
-        )
+        for pid in body.player_ids
+    ]
 
     matrix = ComparisonMatrix(
         overall_fit={e.player.full_name: e.fit_score.overall_fit for e in entries},

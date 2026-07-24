@@ -58,7 +58,7 @@ def run_baseline(engine) -> None:
     log.info("Loaded %s player-seasons (games_played >= %d)", f"{len(df):,}", pp.MIN_GAMES)
 
     df = pp.shrink_skills(df)
-    df = pp.skill_percentiles(df)
+    df = pp.skill_percentiles(df, position_col="position")
 
     off_model, off_resid_std = pp.fit_value_model(df, "off_adj_rapm")
     def_model, def_resid_std = pp.fit_value_model(df, "def_adj_rapm")

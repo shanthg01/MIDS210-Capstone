@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Box,
   Typography,
@@ -10,13 +11,19 @@ import {
   Breadcrumbs,
   Link,
   Tooltip,
+  Slider,
+  CircularProgress,
 } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getFitScore, getTeamRatingProjection } from '../api/fitScores';
-import { getPlayer, getPlayerProjection } from '../api/players';
-import type { TeamRatingProjectionResponse } from '../types/api';
+import { getFitScore, getTeamRatingProjection, overrideTeamRating } from '../api/fitScores';
+import { getPlayer, getPlayerProjection, overridePlayingTime } from '../api/players';
+import type {
+  PlayingTimeOverrideResponse,
+  TeamRatingOverrideResponse,
+  TeamRatingProjectionResponse,
+} from '../types/api';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
@@ -79,7 +86,7 @@ function ScoreHeader({
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <DefinitionTooltip title={FIT_COMPONENTS[component as keyof typeof FIT_COMPONENTS]?.short ?? ''}>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {label}
             </Typography>
           </DefinitionTooltip>
@@ -94,9 +101,9 @@ function ScoreHeader({
           </Typography>
         )}
       </Box>
-      <Typography variant="h4" fontWeight={800} color={`${color}.main`}>
+      <Typography variant="h4" color={`${color}.main`} sx={{ fontWeight: 800 }}>
         {fmtScore(score)}
-        <Typography component="span" variant="body2" color="text.secondary" fontWeight={400}>
+        <Typography component="span" variant="body2" color="text.secondary" sx={{ fontWeight: 400 }}>
           /100
         </Typography>
       </Typography>
@@ -127,7 +134,7 @@ function SubBar({
         ) : (
           <Typography variant="body2">{label}</Typography>
         )}
-        <Typography variant="body2" fontWeight={600}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
           {fmtScore(value)}
         </Typography>
       </Box>
@@ -148,7 +155,7 @@ function SubBar({
 function SchemeCategoryHeader({ label, score, note }: { label: string; score: number; note?: string }) {
   return (
     <Box sx={{ mb: 1 }}>
-      <Typography variant="subtitle2" fontWeight={700}>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
         {label} — {fmtScore(score)}/100
       </Typography>
       {note && (
@@ -182,6 +189,8 @@ function OverallPanel({
   scheme,
   role,
   program,
+  personalized,
+  confidence,
   modelVersion,
 }: {
   overall: number;
@@ -189,6 +198,8 @@ function OverallPanel({
   scheme: number;
   role: number;
   program: number;
+  personalized: number | null;
+  confidence: number;
   modelVersion: string;
 }) {
   const color = scoreColor(overall);
@@ -201,18 +212,22 @@ function OverallPanel({
         Overall Fit Score
       </Typography>
       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 2 }}>
-        <Typography variant="h2" fontWeight={900} color={`${color}.main`}>
+        <Typography variant="h2" color={`${color}.main`} sx={{ fontWeight: 900 }}>
           {fmtScore(overall)}
         </Typography>
         <Typography variant="h5" color="text.secondary">
           /100
         </Typography>
       </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Score confidence: {Math.round(confidence * 100)}%
+        {personalized !== null && ` · Personalized Fit: ${Math.round(personalized)}/100`}
+      </Typography>
       <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
           {[
-            { label: 'Gap Match', value: gap, component: 'gap_match' },
-            { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+            { label: 'Roster Need', value: gap, component: 'gap_match' },
+            { label: 'System', value: scheme, component: 'scheme_fit' },
             { label: 'Role Fit', value: role, component: 'role_fit' },
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
@@ -233,7 +248,7 @@ function OverallPanel({
                     {label}
                   </Typography>
                 </Box>
-                <Typography variant="body2" fontWeight={700} color={`${c}.main`}>
+                <Typography variant="body2" color={`${c}.main`} sx={{ fontWeight: 700 }}>
                   {fmtScore(value)}
                 </Typography>
               </Box>
@@ -245,8 +260,8 @@ function OverallPanel({
           <FitRadarChart
             size={180}
             data={[
-              { label: 'Gap Match', value: gap, component: 'gap_match' },
-              { label: 'Scheme', value: scheme, component: 'scheme_fit' },
+              { label: 'Roster Need', value: gap, component: 'gap_match' },
+              { label: 'System', value: scheme, component: 'scheme_fit' },
               { label: 'Role Fit', value: role, component: 'role_fit' },
               { label: 'Program Fit', value: program, component: 'program_fit' },
             ]}
@@ -289,7 +304,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
 
   return (
     <SectionPaper>
-      <Typography variant="h6" fontWeight={700} gutterBottom>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
         Team Rating Projection
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
@@ -310,7 +325,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Current AdjEM
           </Typography>
-          <Typography variant="h5" fontWeight={700}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             {fmtAdjEM(data.current_adjEM)}
           </Typography>
         </Box>
@@ -321,7 +336,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Projected AdjEM
           </Typography>
-          <Typography variant="h5" fontWeight={700}>
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             {fmtAdjEM(data.projected_adjEM)}
           </Typography>
         </Box>
@@ -338,20 +353,20 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>
           {data.baseline_adj_o != null && data.projected_adj_o != null && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Offense (AdjO)
               </Typography>
-              <Typography variant="body2" fontWeight={600}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
                 {fmtAdjEM(data.baseline_adj_o)} → {fmtAdjEM(data.projected_adj_o)}
               </Typography>
             </Box>
           )}
           {data.baseline_adj_d != null && data.projected_adj_d != null && (
             <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-              <Typography variant="caption" color="text.secondary" display="block">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Defense (AdjD) ↓ better
               </Typography>
-              <Typography variant="body2" fontWeight={600}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
                 {fmtAdjEM(data.baseline_adj_d)} → {fmtAdjEM(data.projected_adj_d)}
               </Typography>
             </Box>
@@ -366,7 +381,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             80% CI
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {fmtAdjEM(data.confidence_interval[0])} to {fmtAdjEM(data.confidence_interval[1])}
           </Typography>
         </Box>
@@ -374,7 +389,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             National Percentile
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {data.national_percentile}th
           </Typography>
         </Box>
@@ -382,7 +397,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="caption" color="text.secondary">
             Conference Rank
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
             #{data.conference_rank}
           </Typography>
         </Box>
@@ -411,6 +426,126 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
       <Alert severity="info" sx={{ py: 0.5 }}>
         {data.context}
       </Alert>
+    </SectionPaper>
+  );
+}
+
+// ── Minutes override ("what if this player got more/fewer minutes?", issue #61) ──
+
+function MinutesOverridePanel({
+  playerId,
+  schoolId,
+  storedMinutes,
+  teamRatingSeason,
+}: {
+  playerId: string;
+  schoolId: number;
+  storedMinutes: number;
+  teamRatingSeason: number | null;
+}) {
+  const [minutes, setMinutes] = useState(storedMinutes);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  const [roleResult, setRoleResult] = useState<PlayingTimeOverrideResponse | null>(null);
+  const [ratingResult, setRatingResult] = useState<TeamRatingOverrideResponse | null>(null);
+
+  async function runOverride(value: number) {
+    setPending(true);
+    setError('');
+    try {
+      const [role, rating] = await Promise.all([
+        overridePlayingTime(playerId, { school_id: schoolId, minutes_override: value }),
+        teamRatingSeason !== null
+          ? overrideTeamRating({
+              player_id: playerId,
+              school_id: schoolId,
+              season: teamRatingSeason,
+              minutes_override: value,
+            })
+          : Promise.resolve(null),
+      ]);
+      setRoleResult(role);
+      setRatingResult(rating);
+    } catch {
+      setError('Could not compute this scenario — no scored projection for this pair yet.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const roleDelta = roleResult ? roleResult.override_role_fit - roleResult.stored_role_fit : null;
+
+  return (
+    <SectionPaper>
+      <Typography variant="h6" sx={{ fontWeight: 700 }} gutterBottom>
+        What if minutes changed?
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 3 }}>
+        Drag to see how Role Fit and Team Rating impact change under a different minutes projection.
+        This doesn't change the stored scores — it's a live scenario check.
+      </Typography>
+
+      <Box sx={{ px: 1.5, mb: 1 }}>
+        <Slider
+          value={minutes}
+          min={0}
+          max={40}
+          step={1}
+          marks={[
+            { value: 0, label: '0' },
+            { value: 20, label: '20' },
+            { value: 40, label: '40' },
+          ]}
+          valueLabelDisplay="on"
+          valueLabelFormat={(v) => `${v} MPG`}
+          onChange={(_, v) => setMinutes(v as number)}
+          onChangeCommitted={(_, v) => runOverride(v as number)}
+          disabled={pending}
+        />
+      </Box>
+
+      {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
+
+      {pending && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+          <CircularProgress size={16} />
+          <Typography variant="caption" color="text.secondary">Recomputing…</Typography>
+        </Box>
+      )}
+
+      {!pending && (roleResult || ratingResult) && (
+        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 2, mt: 2 }}>
+          {roleResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                Role Fit at {minutes} MPG
+              </Typography>
+              <Typography variant="h6" color={`${scoreColor(roleResult.override_role_fit)}.main`} sx={{ fontWeight: 700 }}>
+                {roleResult.override_role_fit.toFixed(0)}
+                {roleDelta !== null && (
+                  <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                    ({roleDelta >= 0 ? '+' : ''}{roleDelta.toFixed(1)} vs. stored {roleResult.stored_role_fit.toFixed(0)})
+                  </Typography>
+                )}
+              </Typography>
+            </Box>
+          )}
+          {ratingResult && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                Team AdjEM Impact at {minutes} MPG
+              </Typography>
+              <Typography
+                variant="h6"
+                color={ratingResult.delta_adj_em >= 0 ? 'success.main' : 'error.main'}
+                sx={{ fontWeight: 700 }}
+              >
+                {ratingResult.delta_adj_em >= 0 ? '+' : ''}{ratingResult.delta_adj_em.toFixed(1)} AdjEM
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      )}
     </SectionPaper>
   );
 }
@@ -467,7 +602,7 @@ export default function FitScorePage() {
 
   if (isLoading) {
     return (
-      <Box maxWidth={720}>
+      <Box sx={{ maxWidth: 720 }}>
         <Skeleton width={300} height={28} sx={{ mb: 2 }} />
         <Skeleton width={200} height={44} sx={{ mb: 1 }} />
         <Skeleton variant="rectangular" height={140} sx={{ mb: 2, borderRadius: 1 }} />
@@ -491,23 +626,18 @@ export default function FitScorePage() {
   const playerName = playerQuery.data?.full_name ?? `Player #${playerId}`;
   const position = playerQuery.data?.position ?? '';
 
-  // Display-only: fit.scheme_fit itself (Overall Fit, ranking, Compare) never
-  // changes — this average is just how this page's headline is presented.
+  // The calibrated Scheme score is the canonical headline. Keep the raw HE
+  // play-type score in the explanation below; it is not on the calibrated scale.
   const hasPlayType = fit.breakdown.scheme.he_scheme_fit != null;
-  const schemeDisplay = hasPlayType
-    ? (fit.scheme_fit + fit.breakdown.scheme.he_scheme_fit!) / 2
-    : fit.scheme_fit;
+  const schemeDisplay = fit.scheme_fit;
 
-  // buildFitInsight's strongest/weakest narrative sits right next to the Overall
-  // panel, which already shows schemeDisplay for Scheme — pass the same blended
-  // value in so the two don't disagree on the page (overall_fit itself is untouched).
-  const fitInsight = buildFitInsight({ ...fit, scheme_fit: schemeDisplay });
+  const fitInsight = buildFitInsight(fit);
   if (playerProjectionQuery.data) {
     fitInsight.bullets.push(buildProjectionInsight(playerProjectionQuery.data).headline);
   }
 
   return (
-    <Box maxWidth={720}>
+    <Box sx={{ maxWidth: 720 }}>
       <Breadcrumbs sx={{ mb: 2 }}>
         <Link
           component="button"
@@ -535,7 +665,7 @@ export default function FitScorePage() {
       {/* Player name */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <Box>
-          <Typography variant="h4" fontWeight={800}>
+          <Typography variant="h4" sx={{ fontWeight: 800 }}>
             {playerName}
           </Typography>
           <Box sx={{ display: 'flex', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
@@ -567,7 +697,7 @@ export default function FitScorePage() {
 
       {/* Key insight — plain-language takeaway ahead of the detailed breakdowns */}
       <Alert severity="info" sx={{ mb: 2 }}>
-        <Typography variant="body2" fontWeight={700}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
           {fitInsight.headline}
         </Typography>
         {fitInsight.bullets.map((b) => (
@@ -584,22 +714,23 @@ export default function FitScorePage() {
         scheme={schemeDisplay}
         role={fit.role_fit}
         program={fit.program_fit}
+        personalized={fit.personalized_fit}
+        confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
       />
 
-      {/* Scheme Fit breakdown — headline is display-only average of Shot Distribution
-          + Play Type match when both exist; fit.scheme_fit itself (used by Overall
-          Fit/ranking elsewhere) is untouched, always just the shot-distribution cosine. */}
+      {/* System Match breakdown — headline is calibrated; the category scores
+          below remain raw model diagnostics. */}
       <SectionPaper>
         <ScoreHeader
-          label="Scheme Fit"
+          label="System Match"
           score={schemeDisplay}
-          weight="30%"
+          weight="25%"
           component="scheme_fit"
           headlineNote={
             hasPlayType
-              ? 'Average of Shot Distribution Match and Play Type Match below.'
-              : 'Shot Distribution Match only — no Play Type data available for this pair.'
+              ? 'Calibrated shot-distribution fit; Play Type Match is supporting context below.'
+              : 'Calibrated shot-distribution fit; no Play Type data available for this pair.'
           }
         />
         <Divider sx={{ mb: 2 }} />
@@ -610,7 +741,7 @@ export default function FitScorePage() {
 
         <SchemeCategoryHeader
           label="Shot Distribution Match"
-          score={fit.scheme_fit}
+          score={fit.raw_components.scheme_fit}
           note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
         />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
@@ -659,7 +790,7 @@ export default function FitScorePage() {
                 Projected MPG
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {fmt1(fit.breakdown.role_fit.projected_minutes)}
             </Typography>
             <Typography variant="caption" color="text.secondary">
@@ -673,7 +804,7 @@ export default function FitScorePage() {
                 Starter Probability
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {(fit.breakdown.role_fit.starter_probability * 100).toFixed(0)}%
             </Typography>
           </Box>
@@ -682,7 +813,7 @@ export default function FitScorePage() {
               <Typography variant="caption" color="text.secondary">
                 Depth Chart Position
               </Typography>
-              <Typography variant="h6" fontWeight={700}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
                 #{fit.breakdown.role_fit.depth_chart_position}
               </Typography>
             </Box>
@@ -690,9 +821,16 @@ export default function FitScorePage() {
         </Box>
       </SectionPaper>
 
-      {/* Gap Match breakdown */}
+      <MinutesOverridePanel
+        playerId={playerId}
+        schoolId={schoolId!}
+        storedMinutes={fit.breakdown.role_fit.projected_minutes}
+        teamRatingSeason={proj?.season ?? null}
+      />
+
+      {/* Roster Need breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Gap Match" score={fit.gap_match} weight="20%" component="gap_match" />
+        <ScoreHeader label="Roster Need" score={fit.gap_match} weight="30%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
@@ -714,7 +852,7 @@ export default function FitScorePage() {
                 Position Depth Score
               </Typography>
             </DefinitionTooltip>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
               {fmtScore(fit.breakdown.gap.position_depth_score)}
             </Typography>
           </Box>
@@ -723,7 +861,7 @@ export default function FitScorePage() {
               <Typography variant="caption" color="text.secondary">
                 Gap Confidence
               </Typography>
-              <Typography variant="h6" fontWeight={700}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
                 {(fit.breakdown.gap.gap_reliability * 100).toFixed(0)}%
               </Typography>
             </Box>
@@ -753,7 +891,7 @@ export default function FitScorePage() {
 
       {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="25%" component="program_fit" />
+        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
         <Divider sx={{ mb: 2 }} />
         <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
       </SectionPaper>

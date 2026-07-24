@@ -61,7 +61,7 @@ from sklearn.preprocessing import StandardScaler
 from sqlalchemy import Engine, text
 
 from portalpoint.modeling.db_writers import upsert_with_season_replace
-from portalpoint.modeling.explainability import shrinkage_weight
+from portalpoint.modeling.explainability import kalman_uncertainty_explain, shrinkage_weight
 from portalpoint.modeling.io import find_repo_root
 
 log = logging.getLogger(__name__)
@@ -272,10 +272,25 @@ def shrink_skills(
     return out
 
 
-def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list[str] = RAW_RATE_SKILLS) -> pd.DataFrame:
-    """Within-season percentile rank (0-100) per shrunk skill. Percentile
+def skill_percentiles(
+    df: pd.DataFrame,
+    season_col: str = "season",
+    skills: list[str] = RAW_RATE_SKILLS,
+    position_col: str | None = None,
+) -> pd.DataFrame:
+    """Percentile rank (0-100) per shrunk skill, within season (default) or
+    within season x position when `position_col` is given. Percentile
     direction is flipped for turnover_avoidance (and any other
     `INVERTED_SKILLS` member) so 100 always means "better".
+
+    `position_col` defaults to None (season-only, original behavior) for
+    backward compatibility with every existing caller/stored row — issue #61
+    asked for position-scoped percentiles ("relative to which position?"),
+    but that's an opt-in the caller must request explicitly, not a silent
+    default change to already-written `player_projections` rows. When given,
+    rows with an unmapped position (`he.pos_class` is nullable) fall back to
+    the season-only percentile, same fallback convention `_skill_prior` uses
+    for the shrinkage prior itself.
 
     `skills` defaults to the Shrinkage Baseline's `RAW_RATE_SKILLS` (10) for
     backward compatibility, but the Cross-Season state frame has 11 (master
@@ -289,7 +304,13 @@ def skill_percentiles(df: pd.DataFrame, season_col: str = "season", skills: list
     `pctile_foul_discipline`)."""
     out = df.copy()
     for skill in skills:
-        pct = df.groupby(season_col)[f"skill_{skill}"].rank(pct=True) * 100
+        col = f"skill_{skill}"
+        season_pct = df.groupby(season_col)[col].rank(pct=True) * 100
+        if position_col is not None:
+            pct = df.groupby([season_col, position_col])[col].rank(pct=True) * 100
+            pct = pct.fillna(season_pct)
+        else:
+            pct = season_pct
         if skill in INVERTED_SKILLS:
             pct = 100 - pct
         out[f"pctile_{skill}"] = pct.round(1)
@@ -547,6 +568,8 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
         }
         skill_pcts = {s: float(r[f"pctile_{s}"]) for s in RAW_RATE_SKILLS}
         explanation = {
+            "version": 1,
+            "method": "empirical_bayes_shrinkage_and_ridge_exact",
             "prior_skill_estimate": {s: round(float(r[f"prior_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "observed_performance_signal": {s: round(float(r[f"raw_{s}"]), 4) for s in RAW_RATE_SKILLS},
             "sample_size_weight": round(float(r["_weight"]), 2),
@@ -560,6 +583,13 @@ def build_neutral_records(df: pd.DataFrame, model_version: str = MODEL_VERSION) 
                 for s in RAW_RATE_SKILLS
             },
         }
+        games_played = r.get("games_played")
+        if pd.notna(games_played):
+            explanation["data_sufficiency"] = {
+                "games_played": int(games_played),
+                "label": "low" if int(games_played) < 10 else "standard",
+                "low_sample_size": int(games_played) < 10,
+            }
         residual_std = float(r.get("_residual_std", r.get("_resid_std", 0.0)))
         value_std = float(r.get("_value_std", r.get("_resid_std", residual_std)))
         skill_state_value_std = float(r.get("_skill_state_value_std", 0.0))
@@ -2062,6 +2092,9 @@ def forecast_next_season_states(
             + params["beta_4"] * level
         )
         rho = float(params["rho"])
+        out[f"kalman_observation_var_{skill}"] = out[var_col].clip(lower=0.0)
+        out[f"kalman_process_var_{skill}"] = float(params["Q"])
+        out[f"kalman_rho_{skill}"] = rho
         out[skill_col] = rho * out[skill_col].to_numpy(dtype=np.float64) + mu
         out[var_col] = rho * rho * out[var_col].clip(lower=0.0).to_numpy(dtype=np.float64) + float(params["Q"])
 
@@ -2163,7 +2196,31 @@ def build_cross_season_records(
                 s: round(float(r[f"skill_var_{s}"]), 4) for s in SKILLS if f"skill_var_{s}" in r.index
             },
         }
+        kalman_by_skill: dict[str, dict[str, Any]] = {}
+        for skill in SKILLS:
+            observation_col = f"kalman_observation_var_{skill}"
+            process_col = f"kalman_process_var_{skill}"
+            rho_col = f"kalman_rho_{skill}"
+            posterior_col = f"skill_var_{skill}"
+            if not all(col in r.index and pd.notna(r[col]) for col in (observation_col, process_col, posterior_col)):
+                continue
+            kalman_by_skill[skill] = kalman_uncertainty_explain(
+                posterior_variance=float(r[posterior_col]),
+                process_variance=float(r[process_col]),
+                observation_variance=float(r[observation_col]),
+                persistence=float(r[rho_col]) if rho_col in r.index and pd.notna(r[rho_col]) else None,
+            )
+        if kalman_by_skill:
+            uncertainty["skill_confidence"] = {
+                skill: details["confidence"] for skill, details in kalman_by_skill.items()
+            }
+            uncertainty["low_confidence_skills"] = [
+                skill for skill, details in kalman_by_skill.items()
+                if details["confidence_label"] == "low"
+            ]
         explanation = {
+            "version": 1,
+            "method": "kalman_uncertainty_and_ridge_exact",
             "source": "phase2a_next_season_forecast" if "source_observed_season" in r.index else "phase2a_season_grain_state_space",
             "skill_state_direction": {
                 s: "higher_is_better" if s not in INVERTED_SKILLS else "stored_as_negative_rate_so_higher_is_better"
@@ -2171,6 +2228,11 @@ def build_cross_season_records(
             },
             **archetype_lookup.get((pid, season), {}),
         }
+        if kalman_by_skill:
+            explanation["kalman_uncertainty"] = {
+                "method": "posterior_precision_and_q_r_decomposition",
+                "skills": kalman_by_skill,
+            }
         if "source_observed_season" in r.index and pd.notna(r["source_observed_season"]):
             explanation["source_observed_season"] = int(r["source_observed_season"])
             explanation["target_projected_season"] = season
