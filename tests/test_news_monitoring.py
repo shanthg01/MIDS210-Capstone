@@ -544,6 +544,88 @@ class TestSportFilter:
         assert len(rejected) == 1
         assert rejected[0]["filtered_reason"]
 
+    def test_rejects_non_basketball_portal_without_cbb_signal(self):
+        article = {
+            "title": "Star shortstop enters transfer portal",
+            "content": "The junior infielder is exploring options after a strong spring season.",
+            "url": "https://www.espn.com/college-sports/story/_/id/789",
+        }
+        rejected, reason = is_non_basketball_article(article)
+        assert rejected is True
+        assert reason == "no_mens_basketball_signal"
+
+
+# ---------------------------------------------------------------------------
+# Production entrypoints (runner + CLI wrapper)
+# ---------------------------------------------------------------------------
+
+class TestProductionEntrypoints:
+    def test_runner_unpacks_three_action_tools(self):
+        from unittest.mock import MagicMock, patch
+
+        from portalpoint.agents.news_monitoring.runner import run
+
+        lookup = MagicMock(name="lookup")
+        transfer = MagicMock(name="transfer")
+        coach = MagicMock(name="coach")
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {
+            "detected_events": [],
+            "portal_updates": [],
+            "errors": [],
+            "review_needed": [],
+        }
+
+        with (
+            patch.dict("os.environ", {"TAVILY_API_KEY": "t", "GOOGLE_API_KEY": "g", "DATABASE_URL": "db"}),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_action_tools",
+                return_value=(lookup, transfer, coach),
+            ) as mock_build,
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_graph",
+                return_value=mock_graph,
+            ) as mock_build_graph,
+            patch("portalpoint.agents.news_monitoring.runner.build_llm"),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_llm_classify_tools",
+                return_value=(MagicMock(), MagicMock()),
+            ),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_search_news_tool",
+                return_value=MagicMock(),
+            ),
+            patch("portalpoint.agents.news_monitoring.runner.apply_env_file"),
+        ):
+            summary = run(dry_run=False, season=2026, window_days=1)
+
+        assert summary["success"] is True
+        mock_build.assert_called_once_with(2026)
+        tools = mock_build_graph.call_args[0][0]
+        assert tools.count(lookup) == 1
+        assert tools.count(transfer) == 1
+        assert tools.count(coach) == 1
+        assert len(tools) == 6
+
+    def test_cli_script_delegates_to_runner(self):
+        import importlib.util
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch
+
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_news_monitoring.py"
+        spec = importlib.util.spec_from_file_location("run_news_monitoring_script", script_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with patch.object(module, "run", return_value={"success": True}) as mock_run:
+            with patch.object(sys, "argv", ["run_news_monitoring.py", "--dry-run"]):
+                module.main()
+
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["dry_run"] is True
+
 
 # ---------------------------------------------------------------------------
 # lookup_basketball_player + transfer_player hardening
@@ -589,3 +671,13 @@ class TestClassifySportGate:
         assert result["event_type"] == "unknown"
         assert result["is_target_event"] is False
         assert result.get("filtered_reason")
+
+    def test_baseball_portal_classified_unknown(self):
+        result = _classify_event_payload(
+            text="The star shortstop has entered the NCAA transfer portal.",
+            title="Star shortstop enters transfer portal",
+            source_url="https://www.espn.com/college-sports/story/_/id/789",
+        )
+        assert result["event_type"] == "unknown"
+        assert result["is_target_event"] is False
+        assert result.get("filtered_reason") == "no_mens_basketball_signal"

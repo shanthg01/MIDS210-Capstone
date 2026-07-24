@@ -87,6 +87,7 @@ def is_non_basketball_article(article: dict[str, Any]) -> tuple[bool, str | None
     """Return ``(is_rejected, reason)`` for articles outside men's CBB scope.
 
     When football and basketball signals conflict, reject (precision over recall).
+    Articles with no men's CBB URL/text signal are also rejected.
     """
     blob = _article_blob(article)
     url = str(article.get("url", "") or "")
@@ -109,6 +110,9 @@ def is_non_basketball_article(article: dict[str, Any]) -> tuple[bool, str | None
         if football_url:
             return True, "football_url"
         return True, f"football_text:{football_text}"
+
+    if not (basketball_url or basketball_text):
+        return True, "no_mens_basketball_signal"
 
     return False, None
 
