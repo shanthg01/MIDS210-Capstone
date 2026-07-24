@@ -58,7 +58,10 @@ def _load_roster(conn, school_id: int, season: int) -> list[tuple[int, str, str]
 
 
 def _load_all_players(conn, season: int) -> list[tuple[int, str, str]]:
-    """Full-population fallback: all players with stats in a given season."""
+    """Full-population fallback: all players with stats in a given season.
+
+    Deprecated for news-agent writes — kept for diagnostics only.
+    """
     rows = conn.execute(
         sql_text(
             "SELECT p.id, p.full_name, COALESCE(p.position, '') "
@@ -72,11 +75,139 @@ def _load_all_players(conn, season: int) -> list[tuple[int, str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# lookup_basketball_player implementation
+# ---------------------------------------------------------------------------
+
+def lookup_basketball_player_impl(
+    player_name: str,
+    school_from: str,
+    season: int,
+) -> dict[str, Any]:
+    """Verify a detected name exists on a school's men's CBB roster."""
+    try:
+        engine = _get_engine()
+    except Exception as exc:
+        return {
+            "matched": False,
+            "status": "db_error",
+            "error": str(exc),
+            "queried_name": player_name,
+            "school_from": school_from,
+        }
+
+    try:
+        with engine.connect() as conn:
+            school_map = _load_school_map(conn)
+            from_school_id = resolve_school(school_from, school_map)
+            if from_school_id is None:
+                return {
+                    "matched": False,
+                    "status": "no_school",
+                    "queried_name": player_name,
+                    "school_from": school_from,
+                    "message": f"School not resolved: {school_from}",
+                }
+
+            roster = _load_roster(conn, from_school_id, season)
+            roster_season = season
+            if not roster:
+                roster = _load_roster(conn, from_school_id, season - 1)
+                roster_season = season - 1
+            if not roster:
+                return {
+                    "matched": False,
+                    "status": "no_roster",
+                    "queried_name": player_name,
+                    "school_from": school_from,
+                    "from_school_id": from_school_id,
+                    "message": f"No basketball roster found for {school_from}",
+                }
+
+            player_id, match_confidence, status_tag = match_player(player_name, roster)
+            if status_tag != "matched" or player_id is None:
+                return {
+                    "matched": False,
+                    "status": status_tag,
+                    "queried_name": player_name,
+                    "school_from": school_from,
+                    "from_school_id": from_school_id,
+                    "roster_season": roster_season,
+                    "message": f"Player not on {school_from} basketball roster (status={status_tag})",
+                }
+
+            matched_name_row = conn.execute(
+                sql_text("SELECT full_name FROM players WHERE id = :pid"),
+                {"pid": player_id},
+            ).fetchone()
+            matched_name = matched_name_row[0] if matched_name_row else player_name
+
+            return {
+                "matched": True,
+                "status": "matched",
+                "player_id": player_id,
+                "matched_name": matched_name,
+                "queried_name": player_name,
+                "match_confidence": match_confidence,
+                "school_from": school_from,
+                "from_school_id": from_school_id,
+                "roster_season": roster_season,
+                "message": (
+                    f"{matched_name} matched on {school_from} roster "
+                    f"(confidence={match_confidence:.2f})"
+                ),
+            }
+    except Exception as exc:
+        return {
+            "matched": False,
+            "status": "error",
+            "error": str(exc),
+            "queried_name": player_name,
+            "school_from": school_from,
+        }
+
+
+@tool
+def lookup_basketball_player(player_name: str, school_from: str) -> str:
+    """Check whether a player exists on a school's men's college basketball roster.
+
+    Call this before transfer_player to confirm the detected name is a real CBB
+    player at the departing school. Returns matched=true only when the name
+    resolves to a roster entry in player_season_stats.
+
+    Args:
+        player_name: Player name extracted from the news article.
+        school_from: School the player is departing.
+    """
+    from datetime import date
+
+    return json.dumps(
+        lookup_basketball_player_impl(player_name, school_from, date.today().year),
+        indent=2,
+    )
+
+
+# ---------------------------------------------------------------------------
 # transfer_player implementation
 # ---------------------------------------------------------------------------
 
 def _transfer_player_impl(player_name: str, school_from: str, season: int) -> str:
     """Core transfer-portal write pipeline (season supplied by caller)."""
+    lookup = lookup_basketball_player_impl(player_name, school_from, season)
+    if not lookup.get("matched"):
+        return json.dumps({
+            "success": False,
+            "status": lookup.get("status", "not_basketball_roster"),
+            "queried_name": player_name,
+            "school_from": school_from,
+            "message": lookup.get("message") or "Player not on school basketball roster.",
+            "lookup": lookup,
+        })
+
+    player_id = lookup["player_id"]
+    match_confidence = lookup["match_confidence"]
+    matched_name = lookup["matched_name"]
+    from_school_id = lookup["from_school_id"]
+
     try:
         engine = _get_engine()
     except Exception as exc:
@@ -86,41 +217,6 @@ def _transfer_player_impl(player_name: str, school_from: str, season: int) -> st
 
     try:
         with engine.begin() as conn:
-            school_map = _load_school_map(conn)
-            from_school_id = resolve_school(school_from, school_map)
-
-            if from_school_id:
-                roster = _load_roster(conn, from_school_id, season)
-                if not roster:
-                    roster = _load_roster(conn, from_school_id, season - 1)
-            else:
-                roster = []
-
-            if not roster:
-                log.warning(
-                    "transfer_player: no roster for %s (id=%s) — falling back to full player table",
-                    school_from,
-                    from_school_id,
-                )
-                roster = _load_all_players(conn, season)
-
-            player_id, match_confidence, status_tag = match_player(player_name, roster)
-
-            if status_tag not in ("matched",) or player_id is None:
-                return json.dumps({
-                    "success": False,
-                    "status": status_tag,
-                    "queried_name": player_name,
-                    "school_from": school_from,
-                    "message": f"Player not matched (status={status_tag}). Manual review required.",
-                })
-
-            matched_name_row = conn.execute(
-                sql_text("SELECT full_name FROM players WHERE id = :pid"),
-                {"pid": player_id},
-            ).fetchone()
-            matched_name = matched_name_row[0] if matched_name_row else player_name
-
             conn.execute(
                 sql_text(
                     "INSERT INTO program_events "
@@ -331,7 +427,20 @@ def coach_departure(coach_name: str, school_from: str) -> str:
 
 
 def build_action_tools(season: int) -> tuple:
-    """Return (transfer_player, coach_departure) tools bound to ``season``."""
+    """Return (lookup_basketball_player, transfer_player, coach_departure) tools."""
+
+    @tool
+    def lookup_basketball_player_for_season(player_name: str, school_from: str) -> str:
+        """Check whether a player exists on a school's men's college basketball roster.
+
+        Args:
+            player_name: Player name extracted from the news article.
+            school_from: School the player is departing.
+        """
+        return json.dumps(
+            lookup_basketball_player_impl(player_name, school_from, season),
+            indent=2,
+        )
 
     @tool
     def transfer_player_for_season(player_name: str, school_from: str) -> str:
@@ -353,7 +462,7 @@ def build_action_tools(season: int) -> tuple:
         """
         return _coach_departure_impl(coach_name, school_from, season)
 
-    return transfer_player_for_season, coach_departure_for_season
+    return lookup_basketball_player_for_season, transfer_player_for_season, coach_departure_for_season
 
 
 # ---------------------------------------------------------------------------

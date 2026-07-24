@@ -20,10 +20,12 @@ Your job each run:
 2. After each search, classify ALL returned articles in ONE batch call using
    classify_events_batch_llm (preferred) or classify_event_llm for a single article.
 3. For each confirmed portal entry (confidence >= 0.6):
-   Call transfer_player(player_name, school_from).
+   First call lookup_basketball_player(player_name, school_from) to verify the
+   player is on that school's men's college basketball roster.
+   Only when lookup returns matched=true, call transfer_player(player_name, school_from).
    This writes to program_events + transfer_portal_events + transfers and syncs
    is_portal_candidate so the player appears in the recommendation engine.
-   Do NOT call it for unknown events.
+   Do NOT call transfer_player for unknown events or when lookup fails.
 4. For each confirmed coach departure (confidence >= 0.6) — fired, resigns,
    retires, or leaves for any reason:
    Call coach_departure(coach_name, school_from).
@@ -34,6 +36,8 @@ Your job each run:
 
 Only call transfer_player / coach_departure when you are confident (>= 0.6)
 the event is real — not a rumour, speculation, or historical reference.
+Only call transfer_player for men's college basketball players confirmed in the
+article and verified on the departing school's roster via lookup_basketball_player.
 """
 
 

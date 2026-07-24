@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from portalpoint.api.schemas.common import ContextStaleness
 
 
 class RosterImpactItem(BaseModel):
@@ -51,6 +53,40 @@ class TeamRatingOverrideResponse(BaseModel):
     delta_adj_d: float
     delta_adj_em: float
     confidence_interval: tuple[float, float]
+    explanation: dict[str, Any] | None = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
+
+
+class TeamRatingComparisonRequest(BaseModel):
+    player_ids: list[int] = Field(..., min_length=2, max_length=2)
+    school_id: int
+    season: int = 2027
+
+    @field_validator("player_ids")
+    @classmethod
+    def require_distinct_players(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != 2:
+            raise ValueError("player_ids must contain two distinct players")
+        return value
+
+
+class TeamRatingComparisonItem(BaseModel):
+    player_id: str
+    delta_adj_em: float
+    projected_adj_em: float
+    confidence_interval: tuple[float, float]
+    explanation: dict[str, Any] | None = None
+
+
+class TeamRatingComparisonResponse(BaseModel):
+    school_id: int
+    season: int
+    scenarios: list[TeamRatingComparisonItem]
+    preferred_player_id: str | None
+    delta_margin: float
+    confidence_intervals_overlap: bool
+    reasoning: str
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
 
 
 class TeamRatingProjectionResponse(BaseModel):
@@ -71,4 +107,5 @@ class TeamRatingProjectionResponse(BaseModel):
     expected_minutes_input: float
     candidate_usage_role: Optional[str] = None
     explanation: Optional[dict[str, Any]] = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
     model_version: str

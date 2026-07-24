@@ -14,6 +14,7 @@ from portalpoint.agents.news_monitoring.config import (
     AGENT_SEARCH_QUERIES,
     CONFIDENCE_THRESHOLD,
     GEMINI_MODEL,
+    TARGET_EVENT_TYPES,
     TAVILY_CHUNKS_PER_SOURCE,
     TAVILY_INCLUDE_DOMAINS,
     TAVILY_MAX_RESULTS,
@@ -88,6 +89,9 @@ def eval_regex_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str
     cases = cases or load_golden_cases()
     failures: list[dict[str, str]] = []
     by_type: dict[str, list[bool]] = {"player_enters_portal": [], "coach_leaves": []}
+    negative_cases = [c for c in cases if c["expected"]["event_type"] == "unknown"]
+    positive_cases = [c for c in cases if c["expected"]["event_type"] != "unknown"]
+    negative_false_positives: list[dict[str, str]] = []
 
     for case in cases:
         result = _classify_event_payload(
@@ -97,7 +101,8 @@ def eval_regex_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str
         )
         expected = case["expected"]["event_type"]
         ok = result["event_type"] == expected
-        by_type.setdefault(expected, []).append(ok)
+        if expected != "unknown":
+            by_type.setdefault(expected, []).append(ok)
         if not ok:
             failures.append({
                 "id": case["id"],
@@ -105,13 +110,30 @@ def eval_regex_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str
                 "got": result["event_type"],
                 "difficulty": case.get("difficulty", ""),
             })
+        if expected == "unknown" and result["event_type"] in TARGET_EVENT_TYPES:
+            negative_false_positives.append({
+                "id": case["id"],
+                "got": result["event_type"],
+            })
 
     correct = len(cases) - len(failures)
+    neg_correct = len(negative_cases) - len(negative_false_positives)
     return {
         "accuracy": correct / len(cases) if cases else 0.0,
         "correct": correct,
         "total": len(cases),
         "failures": failures,
+        "positive_accuracy": (
+            sum(1 for c in positive_cases if _classify_event_payload(
+                text=c["content"], title=c["title"], source_url=c.get("url", ""),
+            )["event_type"] == c["expected"]["event_type"]) / len(positive_cases)
+            if positive_cases else 0.0
+        ),
+        "negative_accuracy": neg_correct / len(negative_cases) if negative_cases else 0.0,
+        "false_positive_rate": (
+            len(negative_false_positives) / len(negative_cases) if negative_cases else 0.0
+        ),
+        "negative_false_positives": negative_false_positives,
         "portal_accuracy": (
             sum(by_type.get("player_enters_portal", [])) / len(by_type["player_enters_portal"])
             if by_type.get("player_enters_portal")
@@ -139,6 +161,8 @@ def eval_llm_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str, 
 
     failures: list[dict[str, str]] = []
     extraction_errors: list[dict[str, str]] = []
+    negative_cases = [c for c in cases if c["expected"]["event_type"] == "unknown"]
+    negative_false_positives: list[dict[str, str]] = []
 
     for case in cases:
         article_json = json.dumps({
@@ -154,6 +178,12 @@ def eval_llm_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str, 
             failures.append({
                 "id": case["id"],
                 "expected": expected["event_type"],
+                "got": str(result.get("event_type")),
+            })
+
+        if expected["event_type"] == "unknown" and result.get("event_type") in TARGET_EVENT_TYPES:
+            negative_false_positives.append({
+                "id": case["id"],
                 "got": str(result.get("event_type")),
             })
 
@@ -179,6 +209,7 @@ def eval_llm_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str, 
                 })
 
     correct = len(cases) - len(failures)
+    neg_correct = len(negative_cases) - len(negative_false_positives)
     return {
         "accuracy": correct / len(cases) if cases else 0.0,
         "correct": correct,
@@ -188,6 +219,11 @@ def eval_llm_classifier(cases: list[dict[str, Any]] | None = None) -> dict[str, 
         "entity_extraction_accuracy": (
             1.0 - len(extraction_errors) / len(cases) if cases else 0.0
         ),
+        "negative_accuracy": neg_correct / len(negative_cases) if negative_cases else 0.0,
+        "false_positive_rate": (
+            len(negative_false_positives) / len(negative_cases) if negative_cases else 0.0
+        ),
+        "negative_false_positives": negative_false_positives,
     }
 
 

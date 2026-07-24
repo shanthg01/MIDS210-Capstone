@@ -26,6 +26,7 @@ __all__ = [
     "MODEL_VERSION",
     "calculate_overall_fit",
     "fixed_team_impact_preferences",
+    "explain_candidate_ranking",
     "generate_top_50_candidates",
     "refine_to_top_10",
     "team_impact_fit",
@@ -276,12 +277,16 @@ def generate_top_50_candidates(
     return top50
 
 
-def refine_to_top_10(
+def _rank_stage_2_candidates(
     df_top_50: pd.DataFrame,
     user_preferences: Optional[dict] = None,
     risk_tolerance: str = "medium",
-) -> pd.DataFrame:
-    """Stage 2: re-rank Top-50 with user preference weights + risk penalty → Top 10.
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Score and rank every Stage 2 candidate through the canonical path.
+
+    Keeping the complete ranking separate from the Top-10 truncation lets the
+    explanation endpoint report why an otherwise eligible player missed the
+    cutoff without reimplementing production ranking math.
 
     Parameters
     ----------
@@ -302,18 +307,7 @@ def refine_to_top_10(
         One of ``'low'``, ``'medium'``, ``'high'``.  Controls the confidence
         penalty applied to low-confidence candidates.
 
-    Returns
-    -------
-    pd.DataFrame
-        At most 10 rows sorted descending by ``final_rec_score``.
-        Appended columns: ``personalized_fit``, ``confidence_penalty`` (0.0
-        until predictions table ready), ``final_rec_score``.
-        ``final_rank`` (1-based) is inserted as the first column.
-
-    Raises
-    ------
-    ValueError
-        If *risk_tolerance* is not a recognised value.
+    Returns the complete ranked frame and the normalized component weights.
     """
     if risk_tolerance not in _RISK_CONFIG:
         raise ValueError(
@@ -334,24 +328,145 @@ def refine_to_top_10(
     }
     normalized_weights = _normalize_available_weights(df_top_50, raw_weights)
 
-    risk = _RISK_CONFIG[risk_tolerance]
-    confidence_floor: float = risk["confidence_floor"]
-    penalty_rate: float = risk["penalty"]
-
     df = df_top_50.copy()
     df["personalized_fit"] = calculate_overall_fit(df, normalized_weights)
     df["confidence_penalty"] = 0.0
     df["final_rec_score"] = df["personalized_fit"] / 100
     # future — uncomment when predictions table ready:
-    # df["confidence_penalty"] = (confidence_floor - df["data_confidence"]).clip(lower=0) * penalty_rate
-    # df["final_rec_score"] = df["adjusted_projection"] + (df["personalized_fit"] / 100) - df["confidence_penalty"]
+    # risk = _RISK_CONFIG[risk_tolerance]
+    # df["confidence_penalty"] = (
+    #     risk["confidence_floor"] - df["data_confidence"]
+    # ).clip(lower=0) * risk["penalty"]
+    # df["final_rec_score"] = (
+    #     df["adjusted_projection"]
+    #     + (df["personalized_fit"] / 100)
+    #     - df["confidence_penalty"]
+    # )
 
-    top10 = (
-        df.sort_values("final_rec_score", ascending=False)
-        .head(10)
-        .reset_index(drop=True)
+    ranked = df.sort_values("final_rec_score", ascending=False).reset_index(drop=True)
+    ranked.insert(0, "final_rank", range(1, len(ranked) + 1))
+    return ranked, normalized_weights
+
+
+def refine_to_top_10(
+    df_top_50: pd.DataFrame,
+    user_preferences: Optional[dict] = None,
+    risk_tolerance: str = "medium",
+) -> pd.DataFrame:
+    """Stage 2: re-rank Top-50 with user preference weights + risk penalty → Top 10.
+
+    The complete ordering is produced by :func:`_rank_stage_2_candidates`,
+    which is also used by the ranking explanation path.
+    """
+    ranked, _ = _rank_stage_2_candidates(
+        df_top_50,
+        user_preferences=user_preferences,
+        risk_tolerance=risk_tolerance,
     )
-    top10.insert(0, "final_rank", range(1, len(top10) + 1))
+    top10 = ranked.head(10).copy()
 
-    logger.info("Stage 2 complete: %d candidates → %d selected", len(df), len(top10))
+    logger.info("Stage 2 complete: %d candidates → %d selected", len(ranked), len(top10))
     return top10
+
+
+def explain_candidate_ranking(
+    candidate_pool: pd.DataFrame,
+    player_id: int,
+    *,
+    stage1_weights: dict | None = None,
+    user_preferences: dict | None = None,
+    risk_tolerance: str = "medium",
+) -> dict:
+    """Explain one candidate's passage through the Top-50/Top-10 funnel."""
+    if candidate_pool.empty or player_id not in set(candidate_pool["player_id"].astype(int)):
+        return {
+            "version": 1,
+            "method": "two_stage_rank_funnel",
+            "eligible": False,
+            "selection_stage": "not_in_eligible_pool",
+            "selected": False,
+            "reason": "Player is not in the scored, available portal-candidate pool.",
+        }
+
+    top50 = generate_top_50_candidates(candidate_pool, weights=stage1_weights)
+    pool_scored = candidate_pool.copy()
+    pool_scored["overall_fit"] = calculate_overall_fit(pool_scored, stage1_weights)
+    pool_scored["stage1_rank_score"] = pool_scored["overall_fit"] / 100
+    pool_scored = pool_scored.sort_values("stage1_rank_score", ascending=False).reset_index(drop=True)
+    pool_scored["stage1_rank"] = range(1, len(pool_scored) + 1)
+    player_stage1 = pool_scored.loc[pool_scored["player_id"].astype(int) == player_id].iloc[0]
+    stage1_cutoff = float(pool_scored.iloc[min(49, len(pool_scored) - 1)]["stage1_rank_score"])
+
+    component_weights = stage1_weights or DEFAULT_FIT_WEIGHTS
+    weakest_component = min(
+        component_weights,
+        key=lambda component: float(player_stage1[component]) * float(component_weights[component]),
+    )
+    base = {
+        "version": 1,
+        "method": "two_stage_rank_funnel",
+        "eligible": True,
+        "player_id": int(player_id),
+        "risk_tolerance": risk_tolerance,
+        "stage1_rank": int(player_stage1["stage1_rank"]),
+        "stage1_score": round(float(player_stage1["stage1_rank_score"]), 6),
+        "stage1_cutoff": round(stage1_cutoff, 6),
+        "stage1_margin": round(float(player_stage1["stage1_rank_score"]) - stage1_cutoff, 6),
+        "weakest_component": weakest_component,
+        "weakest_component_score": round(float(player_stage1[weakest_component]), 3),
+        "components": {
+            component: round(float(player_stage1[component]), 3)
+            for component in component_weights
+        },
+        "stage1_weights": {
+            component: round(float(weight), 6)
+            for component, weight in component_weights.items()
+        },
+    }
+    if int(player_stage1["stage1_rank"]) > 50:
+        return {
+            **base,
+            "selection_stage": "top_50_excluded",
+            "selected": False,
+            "reason": (
+                f"Ranked {int(player_stage1['stage1_rank'])} in Stage 1, "
+                f"{abs(base['stage1_margin']):.4f} below the Top-50 cutoff; "
+                f"weakest weighted component was {weakest_component}."
+            ),
+        }
+
+    ranked, normalized = _rank_stage_2_candidates(
+        top50,
+        user_preferences=user_preferences,
+        risk_tolerance=risk_tolerance,
+    )
+    player_final = ranked.loc[ranked["player_id"].astype(int) == player_id].iloc[0]
+    cutoff = float(ranked.iloc[min(9, len(ranked) - 1)]["final_rec_score"])
+    final_rank = int(player_final["final_rank"])
+    next_margin = None
+    if final_rank < len(ranked):
+        next_margin = float(player_final["final_rec_score"] - ranked.iloc[final_rank]["final_rec_score"])
+    selected = final_rank <= 10
+    return {
+        **base,
+        "selection_stage": "selected" if selected else "top_10_excluded",
+        "selected": selected,
+        "final_rank": final_rank,
+        "personalized_fit": round(float(player_final["personalized_fit"]), 3),
+        "confidence_penalty": round(float(player_final["confidence_penalty"]), 6),
+        "personalized_weights": {
+            component: round(float(weight), 6) for component, weight in normalized.items()
+        },
+        "final_score": round(float(player_final["final_rec_score"]), 6),
+        "top_10_cutoff": round(cutoff, 6),
+        "top_10_margin": round(float(player_final["final_rec_score"]) - cutoff, 6),
+        "margin_to_next_rank": round(next_margin, 6) if next_margin is not None else None,
+        "reason": (
+            f"Selected at rank {final_rank}; margin to the next rank is {next_margin:.4f}."
+            if selected and next_margin is not None
+            else f"Selected at rank {final_rank}."
+            if selected
+            else f"Ranked {final_rank} after personalization, "
+            f"{abs(float(player_final['final_rec_score']) - cutoff):.4f} below the Top-10 cutoff."
+        ),
+    }

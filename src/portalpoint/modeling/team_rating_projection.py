@@ -1112,6 +1112,10 @@ def analytical_ci(
     delta_adj_em: float,
     models: TeamRatingModels,
     n_freshman_priors: int = 0,
+    candidate_value_std: float = 0.0,
+    minutes_std: float = 0.0,
+    candidate_value: float = 0.0,
+    expected_minutes: float = 0.0,
 ) -> tuple[float, float]:
     """80% CI via Gaussian approximation (replaces 200-sample bootstrap).
 
@@ -1123,7 +1127,9 @@ def analytical_ci(
     """
     base_variance = 2.0 * (models.off_resid_std ** 2 + models.def_resid_std ** 2)
     freshman_variance = n_freshman_priors * FRESHMAN_VARIANCE_PER_PLAYER
-    sigma = np.sqrt(base_variance + freshman_variance)
+    value_variance = (max(candidate_value_std, 0.0) * max(expected_minutes, 0.0) / 40.0) ** 2
+    minutes_variance = (max(minutes_std, 0.0) * abs(candidate_value) / 40.0) ** 2
+    sigma = np.sqrt(base_variance + freshman_variance + value_variance + minutes_variance)
     z80 = 1.2816  # 80% two-sided = 10th/90th percentile
     return float(delta_adj_em - z80 * sigma), float(delta_adj_em + z80 * sigma)
 
@@ -1233,6 +1239,8 @@ def build_explanation_payload(
             displaced = {}
 
     return {
+        "version": 1,
+        "method": "ridge_exact_feature_delta",
         "candidate_off_contribution":  round(off_attr(talent_features), 3),
         "candidate_def_contribution":  round(def_attr(talent_features), 3),
         "spacing_delta":               round(off_attr(spacing_features), 3),
@@ -1459,7 +1467,7 @@ LIMIT 1
 """
 
 _CANDIDATE_NEUTRAL_PROJ_ONE_SQL = """
-SELECT player_id, value_per_100, model_version
+SELECT player_id, value_per_100, value_ci_lower, value_ci_upper, model_version
 FROM player_projections
 WHERE school_id IS NULL AND projection_mode = 'neutral' AND season = :target_season
   AND model_version = ANY(:model_versions) AND player_id = :player_id
@@ -1601,6 +1609,8 @@ def load_candidate_context(
     cand_value = float(neutral_row["value_per_100"].iloc[0]) if not neutral_row.empty else 0.0
     cand_proj = pd.Series({
         "value_per_100": cand_value,
+        "value_ci_lower": neutral_row["value_ci_lower"].iloc[0] if not neutral_row.empty else None,
+        "value_ci_upper": neutral_row["value_ci_upper"].iloc[0] if not neutral_row.empty else None,
         "position": prior_row["position"].iloc[0] if not prior_row.empty else "SG",
         "three_point_rate": (
             float(prior_row["three_point_rate"].iloc[0]) if not prior_row.empty
@@ -1744,10 +1754,41 @@ def compute_team_rating_override(
     )
 
     delta = compute_counterfactual(baseline_features, candidate_features, models)
+    value_half_width = (
+        (float(cand_proj["value_ci_upper"]) - float(cand_proj["value_ci_lower"])) / 2.0
+        if pd.notna(cand_proj.get("value_ci_upper")) and pd.notna(cand_proj.get("value_ci_lower"))
+        else 0.0
+    )
+    minutes_half_width = max(
+        float(pt_row.get("minutes_ci_upper", minutes_override))
+        - float(pt_row.get("minutes_ci_lower", minutes_override)),
+        0.0,
+    ) / 2.0
     ci_lower, ci_upper = analytical_ci(
-        delta["delta_adj_em"], models, n_freshman_priors=len(freshman_rows)
+        delta["delta_adj_em"],
+        models,
+        n_freshman_priors=len(freshman_rows),
+        candidate_value_std=value_half_width / 1.2816,
+        minutes_std=minutes_half_width / 1.2816,
+        candidate_value=float(cand_proj.get("value_per_100", 0.0)),
+        expected_minutes=float(minutes_override),
     )
     delta["ci_lower"] = round(ci_lower, 3)
     delta["ci_upper"] = round(ci_upper, 3)
     delta["expected_minutes_override"] = float(minutes_override)
+    explanation = build_explanation_payload(
+        baseline_features,
+        candidate_features,
+        models,
+        pt_override,
+        delta,
+    )
+    explanation["uncertainty"] = {
+        "method": "candidate_specific_analytical_80pct_ci",
+        "player_value_std": round(value_half_width / 1.2816, 4),
+        "minutes_std": round(minutes_half_width / 1.2816, 4),
+        "freshman_prior_count": len(freshman_rows),
+        "ci_width": round(ci_upper - ci_lower, 4),
+    }
+    delta["explanation"] = explanation
     return delta

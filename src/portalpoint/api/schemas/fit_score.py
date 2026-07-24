@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from portalpoint.api.schemas.common import ContextStaleness
+
 
 class FitWeights(BaseModel):
     """User-adjustable Personalized Fit weights.
@@ -121,6 +123,7 @@ class FitScoreResponse(BaseModel):
     overall_confidence: float = Field(..., ge=0, le=1)
     data_quality_flags: dict[str, bool | str] = Field(default_factory=dict)
     breakdown: FitBreakdown
+    explanation: dict | None = None
     weights_used: FitWeights
     personalized_weights: FitWeights | None = None
     computed_at: datetime
@@ -150,6 +153,7 @@ class FitScoreResponse(BaseModel):
     # 50.0 program_fit placeholder in personalized_fit only — never in overall_fit.
     program_fit_user_input: Optional[float] = Field(default=None, ge=0, le=100)
     program_fit_user_input_notes: Optional[str] = None
+    context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
 
 
 class ProgramFitUserInputRequest(BaseModel):

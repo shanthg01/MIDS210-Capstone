@@ -11,7 +11,7 @@ GEMINI_CALLS_PER_MINUTE: int = 12
 TAVILY_INCLUDE_DOMAINS: list[str] = ["247sports.com", "on3.com", "espn.com"]
 TAVILY_SEARCH_DEPTH: str = "advanced"
 TAVILY_MIN_SCORE: float = 0.3
-TAVILY_WINDOW_DAYS: int = 7
+TAVILY_WINDOW_DAYS: int = 1
 TAVILY_MAX_RESULTS: int = 10
 TAVILY_CHUNKS_PER_SOURCE: int = 3  # Tavily default for advanced depth
 
