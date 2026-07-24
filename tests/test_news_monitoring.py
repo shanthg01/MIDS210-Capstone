@@ -26,7 +26,11 @@ from portalpoint.agents.news_monitoring.extract import (
     classify_event,
     classify_events_batch,
 )
-from portalpoint.agents.news_monitoring.resolve import cross_source_dedup
+from portalpoint.agents.news_monitoring.resolve import cross_source_dedup, lookup_basketball_player_impl
+from portalpoint.agents.news_monitoring.sport_filter import (
+    filter_basketball_articles,
+    is_non_basketball_article,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -486,3 +490,195 @@ class TestCoachDepartureResponseShape:
         # Defaults: False / None
         assert fields["scheme_fit_stale"].default is False
         assert fields["scheme_fit_stale_reason"].default is None
+
+
+# ---------------------------------------------------------------------------
+# sport_filter
+# ---------------------------------------------------------------------------
+
+class TestSportFilter:
+    def test_rejects_football_portal_article(self):
+        article = {
+            "title": "Duke quarterback Darian Mensah enters NCAA transfer portal",
+            "content": "Mensah is one of the top quarterbacks in college football's portal cycle.",
+            "url": "https://www.espn.com/college-football/story/_/id/123",
+        }
+        rejected, reason = is_non_basketball_article(article)
+        assert rejected is True
+        assert reason is not None
+
+    def test_keeps_basketball_portal_article(self):
+        article = {
+            "title": "Duke guard enters NCAA transfer portal",
+            "content": "The sophomore guard averaged 12 points for the Blue Devils this season.",
+            "url": "https://www.espn.com/mens-college-basketball/story/_/id/123",
+        }
+        rejected, _ = is_non_basketball_article(article)
+        assert rejected is False
+
+    def test_rejects_womens_basketball_portal(self):
+        article = {
+            "title": "UConn women's basketball forward enters transfer portal",
+            "content": "She averaged 8 points for the Huskies last season.",
+            "url": "https://www.espn.com/womens-college-basketball/story/_/id/456",
+        }
+        rejected, reason = is_non_basketball_article(article)
+        assert rejected is True
+        assert "womens" in (reason or "")
+
+    def test_filter_basketball_articles_partitions(self):
+        articles = [
+            {
+                "title": "Guard enters portal",
+                "content": "Men's college basketball player enters portal.",
+                "url": "https://247sports.com/college/kentucky/article/guard-portal/",
+            },
+            {
+                "title": "QB enters portal",
+                "content": "Quarterback enters college football portal.",
+                "url": "https://www.espn.com/college-football/story/_/id/1",
+            },
+        ]
+        kept, rejected = filter_basketball_articles(articles)
+        assert len(kept) == 1
+        assert len(rejected) == 1
+        assert rejected[0]["filtered_reason"]
+
+    def test_rejects_baseball_portal_without_cbb_signal(self):
+        article = {
+            "title": "Star shortstop enters transfer portal",
+            "content": "The junior infielder is exploring options after a strong spring season.",
+            "url": "https://www.espn.com/college-sports/story/_/id/789",
+        }
+        rejected, reason = is_non_basketball_article(article)
+        assert rejected is True
+        assert reason is not None
+        assert reason.startswith("other_sport_text:")
+
+
+# ---------------------------------------------------------------------------
+# Production entrypoints (runner + CLI wrapper)
+# ---------------------------------------------------------------------------
+
+class TestProductionEntrypoints:
+    def test_runner_unpacks_three_action_tools(self):
+        from unittest.mock import MagicMock, patch
+
+        from portalpoint.agents.news_monitoring.runner import run
+
+        lookup = MagicMock(name="lookup")
+        transfer = MagicMock(name="transfer")
+        coach = MagicMock(name="coach")
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {
+            "detected_events": [],
+            "portal_updates": [],
+            "errors": [],
+            "review_needed": [],
+        }
+
+        with (
+            patch.dict("os.environ", {"TAVILY_API_KEY": "t", "GOOGLE_API_KEY": "g", "DATABASE_URL": "db"}),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_action_tools",
+                return_value=(lookup, transfer, coach),
+            ) as mock_build,
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_graph",
+                return_value=mock_graph,
+            ) as mock_build_graph,
+            patch("portalpoint.agents.news_monitoring.runner.build_llm"),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_llm_classify_tools",
+                return_value=(MagicMock(), MagicMock()),
+            ),
+            patch(
+                "portalpoint.agents.news_monitoring.runner.build_search_news_tool",
+                return_value=MagicMock(),
+            ),
+            patch("portalpoint.agents.news_monitoring.runner.apply_env_file"),
+        ):
+            summary = run(dry_run=False, season=2026, window_days=1)
+
+        assert summary["success"] is True
+        mock_build.assert_called_once_with(2026)
+        tools = mock_build_graph.call_args[0][0]
+        assert tools.count(lookup) == 1
+        assert tools.count(transfer) == 1
+        assert tools.count(coach) == 1
+        assert len(tools) == 6
+
+    def test_cli_script_delegates_to_runner(self):
+        import importlib.util
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch
+
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_news_monitoring.py"
+        spec = importlib.util.spec_from_file_location("run_news_monitoring_script", script_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with patch.object(module, "run", return_value={"success": True}) as mock_run:
+            with patch.object(sys, "argv", ["run_news_monitoring.py", "--dry-run"]):
+                module.main()
+
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# lookup_basketball_player + transfer_player hardening
+# ---------------------------------------------------------------------------
+
+class TestLookupBasketballPlayer:
+    def test_rejects_unknown_football_player(self):
+        from unittest.mock import patch
+
+        with patch(
+            "portalpoint.agents.news_monitoring.resolve._get_engine",
+            side_effect=Exception("no db"),
+        ):
+            result = lookup_basketball_player_impl("Darian Mensah", "Duke", 2026)
+        assert result["matched"] is False
+
+    def test_transfer_player_rejects_without_roster_match(self):
+        from unittest.mock import patch
+
+        with patch(
+            "portalpoint.agents.news_monitoring.resolve.lookup_basketball_player_impl",
+            return_value={
+                "matched": False,
+                "status": "unmatched",
+                "message": "Player not on Duke basketball roster",
+            },
+        ):
+            from portalpoint.agents.news_monitoring.resolve import _transfer_player_impl
+
+            raw = _transfer_player_impl("Darian Mensah", "Duke", 2026)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["status"] == "unmatched"
+
+
+class TestClassifySportGate:
+    def test_football_portal_classified_unknown(self):
+        result = _classify_event_payload(
+            text="Duke quarterback Darian Mensah has entered the NCAA transfer portal.",
+            title="Duke quarterback Darian Mensah enters NCAA transfer portal",
+            source_url="https://www.espn.com/college-football/story/_/id/123",
+        )
+        assert result["event_type"] == "unknown"
+        assert result["is_target_event"] is False
+        assert result.get("filtered_reason")
+
+    def test_baseball_portal_classified_unknown(self):
+        result = _classify_event_payload(
+            text="The star shortstop has entered the NCAA transfer portal.",
+            title="Star shortstop enters transfer portal",
+            source_url="https://www.espn.com/college-sports/story/_/id/789",
+        )
+        assert result["event_type"] == "unknown"
+        assert result["is_target_event"] is False
+        assert (result.get("filtered_reason") or "").startswith("other_sport_text:")

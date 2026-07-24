@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -25,13 +26,10 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-import logging
-
 from portalpoint.agents.news_monitoring.config import GEMINI_MODEL, TAVILY_WINDOW_DAYS
 from portalpoint.agents.news_monitoring.runner import run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
 
 
 def main() -> None:
