@@ -1,6 +1,6 @@
 # PortalPoint Application Status
 
-**Last updated:** July 16, 2026 (news-monitoring agent wired for manual live runs — CLI, RDS migrations, DB write pipeline, integration tests)
+**Last updated:** July 21, 2026 (M5 Transfer Success v2 — inference live, `/api/predictions` wired to `transfer_success_scores`)
 **Scope:** Product direction, backend API, frontend, tests, and app-side blockers.
 
 Model context lives in [`MODEL_STATUS.md`](MODEL_STATUS.md). Infrastructure/data-store context lives in
@@ -58,7 +58,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `users.py` | Real DB | Preferences and shortlist CRUD; shortlists store `player_id`; user isolation enforced. |
 | `fit_scores.py` | Partial real | Queries `player_team_fit_scores` by `(player_id, school_id, season)`, dynamic current-season default. Real `scheme_fit` + `gap_match` (both all-pairs now — `scheme-cos-v3`/`gap-cos-v4` code path) and 2027 `role_fit` where `playing-time-rotation-v2` has synced rows. `program_fit` remains stubbed at 50.0. Response includes `is_portal_candidate` (player has a matched Entered/Committed portal event this season), `is_current_school` (raw player_season_stats row for this school/season), `is_roster_baseline_member` (player counts in the shared roster baseline used by roster-aware models), and (Gate 7) `scheme_fit_stale`/`scheme_fit_stale_reason` — set when the news-monitoring agent has detected a coaching change at that school and M2 `team_system_profiles` has not yet been re-run. Falls back to full stub only when the pair predates model scope. |
 | `recommendations.py` | Real, live | Wired 2026-07-15 — was a hardcoded stub list since the original scaffold, on every branch, despite the real 2-stage engine (`src/portalpoint/modeling/recommendations.py`, `rec-v1.2`) existing and being run for real by the batch script. Router now resolves the caller's `school_id`/saved weights, builds the candidate pool live via `CANDIDATE_SQL` (moved into `modeling/recommendations.py` — `scripts/` isn't a packaged module, can't be imported from the API), and runs `generate_top_50_candidates()`/`refine_to_top_10()` in-process per request. `FitComponents.program_fit` → `team_impact_fit` in this response only (engine has no program_fit signal). |
-| `predictions.py` | Real, live (wired 2026-07-19) | Transfer Success model (`transfer-success-eb-v1`, PR #48) queries `transfer_success_scores` via `api/services/prediction_service.py` (real/stub split, mirrors `fit_score_service.py`); stub fallback only for player/school pairs with no scored row. `schemas/prediction.py` reshaped to the model's real empirical-Bayes output (`success_probability`/`success_tier`/`explanation`/`similar_transfers`) — no SHAP fields, this isn't a tree model. Not yet run against the shared RDS — `transfer_success_scores` may be empty/stale until `scripts/run_transfer_success.py` executes for real. |
+| `predictions.py` | Real, live | Wired via `prediction_service.py` — reads non-expired `transfer_success_scores` for `SERVING_MODEL_VERSION` (`transfer-success-eb-v1` as of 2026-07-23; v2 backtest Brier 0.2521 did not beat `@champion` v1 at 0.2492). Real/stub split mirrors `fit_score_service.py`. v2 inference rows refreshed after z-score chunk bug fix. |
 | `projections.py` | Real | Team Rating Projection (M6, PR #49, merged to `main` 2026-07-11) — `/team-rating/top` (ranked roster-impact list) and per-pair fetch both query `team_rating_projections` directly. Confirmed real by direct read 2026-07-19 — this doc previously said "Stub on `main`," which was stale even before that merge landed. |
 | `comparison.py` | Real (prediction piece fixed 2026-07-19) | Player/fit-score halves were already real DB (`_player_info`, `fit_score_service`); the `prediction` field used a hardcoded `_stub_prediction()` until 2026-07-19, now wired to the same `prediction_service.get_prediction()` as `predictions.py`. |
 
@@ -67,7 +67,8 @@ Important backend modules:
 | Path | Purpose |
 |---|---|
 | `src/portalpoint/main.py` | App factory/router registration. |
-| `src/portalpoint/api/deps.py` | DB/auth dependencies. |
+| `src/portalpoint/api/services/fit_score_service.py` | Shared `player_team_fit_scores` → `FitScoreResponse` mapping (used by fit scores + compare). |
+| `src/portalpoint/api/services/transfer_success_service.py` | Shared `transfer_success_scores` → `PredictionResponse` mapping (used by predictions + compare). |
 | `src/portalpoint/api/schemas/` | Pydantic request/response schemas. |
 | `src/portalpoint/core/security.py` | Password hashing/JWT helpers. |
 | `src/portalpoint/db/models.py` | SQLAlchemy ORM models. |
@@ -141,12 +142,11 @@ Watch-outs:
 
 ## Tests
 
-Current state (2026-07-16):
+Current state (2026-07-21):
 
 ```text
-~531+ tests passing repo-wide (uv run pytest -q) — run it for the current exact count.
-tests/test_news_monitoring.py (36) + tests/test_news_monitoring_integration.py (4) green
-after ON CONFLICT / program_events wiring fixes (2026-07-16).
+660 passed, 10 skipped repo-wide (uv run pytest -q) — with RDS tunnel up.
+tests/test_transfer_success.py (28) + tests/test_transfer_success_service.py (3) added for M5 v2.
 ```
 
 Test areas:
@@ -159,7 +159,9 @@ Test areas:
 | `tests/test_fit_scores.py` | Fit score router behavior — includes Scheme Fit breakdown field checks (`mid_range_match`, not `usage_match`/`ball_movement_match`, 2026-07-15). |
 | `tests/test_recommendations.py` | Recommendation endpoint — now exercises the real engine end-to-end (real `user_id` fixture, `season` pinned explicitly, `team_impact_fit` field, ownership-check 403 case), not just response shape. |
 | `tests/test_recommendation_engine.py` | Pure-unit tests for `modeling/recommendations.py` (no DB) — 46 tests. |
-| `tests/test_predictions.py` | Prediction endpoint shape. |
+| `tests/test_predictions.py` | Transfer success endpoint — real DB rows, M5 response shape, expiry 404. |
+| `tests/test_transfer_success.py` | M5 modeling unit tests (hierarchy, covariates, calibration, inference explanations). |
+| `tests/test_transfer_success_service.py` | API service mapping for `similar_transfers` JSONB → response schema. |
 | `tests/test_projections.py` | Projection endpoint shape. |
 | `tests/test_comparison.py` | Comparison endpoint shape. |
 | `tests/test_health.py` | App health. |
@@ -195,7 +197,9 @@ The app becomes truly useful when the fit stack is no longer mostly stubbed.
 ✳️ build Program Fit — descoped, not on this path
 -> wire complete fit_scores.py (reweight decision pending, program_fit descoped)
 ✅ news-monitoring agent manual live runs (2026-07-16)
+✅ M5 Transfer Success v2 inference + `/api/predictions` wiring (2026-07-21)
 -> schedule news agent (GitHub Actions cron or Airflow)
+-> surface transfer success on Fit Score / Compare UI (API ready, no frontend consumer yet)
 ```
 
 Recommended app-side order:

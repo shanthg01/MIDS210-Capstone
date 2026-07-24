@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portalpoint.api.schemas.prediction import PredictionResponse, SimilarTransfer, SuccessTier
 from portalpoint.db.models import TransferSuccessScore
+from portalpoint.modeling.transfer_success import SERVING_MODEL_VERSION
 
 _STUB_MODEL_VERSION = "pred_v1.0-stub"
 
@@ -69,6 +70,7 @@ async def get_prediction(
             TransferSuccessScore.player_id == player_id,
             TransferSuccessScore.to_school_id == school_id,
             TransferSuccessScore.season == season,
+            TransferSuccessScore.model_version == SERVING_MODEL_VERSION,
             TransferSuccessScore.expires_at > datetime.now(timezone.utc),
         )
         .order_by(TransferSuccessScore.computed_at.desc())
