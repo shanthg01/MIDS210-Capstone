@@ -111,6 +111,7 @@ class FitBreakdown(BaseModel):
 class FitScoreResponse(BaseModel):
     player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
     school_id: int
+    season: int
     overall_fit: float = Field(..., ge=0, le=100)
     personalized_fit: float | None = Field(default=None, ge=0, le=100)
     gap_match: float = Field(..., ge=0, le=100)
@@ -147,4 +148,26 @@ class FitScoreResponse(BaseModel):
     # and M2 team_system_profiles has not yet been re-run for this school/season.
     scheme_fit_stale: bool = False
     scheme_fit_stale_reason: Optional[str] = None
+    # This user's manual qualitative "off the court" grade for this pair, if
+    # they've entered one (program_fit_user_inputs). Substitutes for the shared
+    # 50.0 program_fit placeholder in personalized_fit only — never in overall_fit.
+    program_fit_user_input: Optional[float] = Field(default=None, ge=0, le=100)
+    program_fit_user_input_notes: Optional[str] = None
     context_staleness: ContextStaleness = Field(default_factory=ContextStaleness)
+
+
+class ProgramFitUserInputRequest(BaseModel):
+    player_id: int
+    school_id: int
+    season: int
+    qualitative_score: float = Field(..., ge=0, le=100)
+    notes: str | None = None
+
+
+class ProgramFitUserInputResponse(BaseModel):
+    player_id: str
+    school_id: int
+    season: int
+    qualitative_score: float
+    notes: str | None = None
+    updated_at: datetime

@@ -63,7 +63,7 @@ function Section({
 
 export default function GlossaryPage() {
   return (
-    <Box sx={{ maxWidth: 720 }}>
+    <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
       <Typography variant="h4" sx={{ fontWeight: 800 }} gutterBottom>
         Glossary
       </Typography>

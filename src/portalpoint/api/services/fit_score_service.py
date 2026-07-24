@@ -29,6 +29,7 @@ from portalpoint.api.services.context_staleness import context_staleness_payload
 from portalpoint.db.models import (
     PlayerSeasonStats,
     PlayerTeamFitScore,
+    ProgramFitUserInput,
     RosterBaselineMember,
     TeamSystemProfile,
     UserPreference,
@@ -119,9 +120,15 @@ def _personalized_score(
     components: dict[str, float],
     weights: FitWeights | None,
     canonical_score: float | None = None,
+    override_active: bool = False,
 ) -> float | None:
+    # A manual program_fit_user_input always needs a personalized_fit computed
+    # from it, even for a user with no saved weight preferences — otherwise the
+    # override has nowhere to surface. Default weights apply in that case.
     if weights is None:
-        return None
+        if not override_active:
+            return None
+        weights = FitWeights()
     normalized = normalized_weights(
         {
             "scheme_fit": weights.scheme,
@@ -130,21 +137,34 @@ def _personalized_score(
             "program_fit": weights.program_fit,
         }
     )
-    if canonical_score is not None and all(
-        abs(normalized[key] - DEFAULT_FIT_WEIGHTS[key]) < 1e-9 for key in normalized
+    if (
+        not override_active
+        and canonical_score is not None
+        and all(abs(normalized[key] - DEFAULT_FIT_WEIGHTS[key]) < 1e-9 for key in normalized)
     ):
         return round(canonical_score, 2)
     return round(sum(components[key] * weight for key, weight in normalized.items()), 2)
 
 
+def _personalization_components(
+    components: dict[str, float], program_fit_user_input: float | None
+) -> dict[str, float]:
+    if program_fit_user_input is None:
+        return components
+    return {**components, "program_fit": program_fit_user_input}
+
+
 def stub_fit_score(
     player_id: int,
     school_id: int,
+    season: int,
     is_current_school: bool = False,
     is_roster_baseline_member: bool = False,
     scheme_fit_stale: bool = False,
     scheme_fit_stale_reason: str | None = None,
     personalized_weights: FitWeights | None = None,
+    program_fit_user_input: float | None = None,
+    program_fit_user_input_notes: str | None = None,
 ) -> FitScoreResponse:
     rng = random.Random(player_id * 1000 + school_id)
     gap = round(rng.uniform(55.0, 95.0), 1)
@@ -159,21 +179,36 @@ def stub_fit_score(
         "program_fit": program,
     }
     overall = round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 1)
+    # program_fit shown to this user is their own qualitative grade when they've
+    # entered one — per-user, never written back to the shared row. Falls back
+    # to the random stub value only when ungraded (see the per-user vs.
+    # shared-row design decision this mirrors in real_fit_score below).
+    program_fit_display = program_fit_user_input if program_fit_user_input is not None else program
     return FitScoreResponse(
         player_id=str(player_id),
         school_id=school_id,
+        season=season,
         overall_fit=overall,
-        personalized_fit=_personalized_score(components, personalized_weights, overall),
+        personalized_fit=_personalized_score(
+            _personalization_components(components, program_fit_user_input),
+            personalized_weights,
+            overall,
+            override_active=program_fit_user_input is not None,
+        ),
         gap_match=gap,
         scheme_fit=scheme,
         role_fit=role,
-        program_fit=program,
+        program_fit=program_fit_display,
         raw_components=RawFitComponents(**components),
         component_confidences=ComponentConfidences(
-            gap_match=0.0, scheme_fit=0.0, role_fit=0.0, program_fit=0.0
+            gap_match=0.0, scheme_fit=0.0, role_fit=0.0,
+            program_fit=1.0 if program_fit_user_input is not None else 0.0,
         ),
         overall_confidence=0.0,
-        data_quality_flags={"fallback_only_pair": True, "missing_program_fit": True},
+        data_quality_flags={
+            "fallback_only_pair": True,
+            "missing_program_fit": program_fit_user_input is None,
+        },
         breakdown=FitBreakdown(
             scheme=SchemeBreakdown(
                 three_point_match=round(rng.uniform(60.0, 98.0), 1),
@@ -199,6 +234,8 @@ def stub_fit_score(
         is_roster_baseline_member=is_roster_baseline_member,
         scheme_fit_stale=scheme_fit_stale,
         scheme_fit_stale_reason=scheme_fit_stale_reason,
+        program_fit_user_input=program_fit_user_input,
+        program_fit_user_input_notes=program_fit_user_input_notes,
         context_staleness=context_staleness_payload(scheme_fit_stale, scheme_fit_stale_reason),
     )
 
@@ -210,9 +247,15 @@ def real_fit_score(
     scheme_fit_stale: bool = False,
     scheme_fit_stale_reason: str | None = None,
     personalized_weights: FitWeights | None = None,
+    program_fit_user_input: float | None = None,
+    program_fit_user_input_notes: str | None = None,
 ) -> FitScoreResponse:
     # role_fit is model-written where playing-time rows have been synced.
-    # program_fit is still the 50.0 placeholder until the Program Fit calculator lands.
+    # program_fit shown to THIS user is their own qualitative grade
+    # (program_fit_user_inputs) when they've entered one — per-user, per the
+    # 2026-07-21 design decision (a shared player_team_fit_scores row can't
+    # hold one coach's subjective culture read for every other program).
+    # The shared row/canonical overall_fit below is untouched by it.
     rng = random.Random(row.player_id * 1000 + row.school_id)
     bd = row.breakdown or {}
     scheme_bd = bd.get("scheme", {})
@@ -229,12 +272,15 @@ def real_fit_score(
         "role_fit": calibrated_role if calibrated_role is not None else row.role_fit,
         "program_fit": calibrated_program if calibrated_program is not None else row.program_fit,
     }
-    confidences = getattr(row, "component_confidences", None) or {
+    confidences = dict(getattr(row, "component_confidences", None) or {
         "gap_match": float(gap_bd.get("gap_reliability", 0.0)),
         "scheme_fit": 0.0 if scheme_fit_stale else 1.0,
         "role_fit": 1.0 if role_bd else 0.0,
-        "program_fit": 0.0,  # Program Fit descoped — no real model backs it
-    }
+        "program_fit": 0.0,
+    })
+    # Always user-specific, never taken from the stored row — a calibration
+    # job's snapshot can't know which user has graded this pair.
+    confidences["program_fit"] = 1.0 if program_fit_user_input is not None else 0.0
     overall_confidence = getattr(row, "overall_confidence", None)
     if overall_confidence is None:
         overall_confidence = sum(
@@ -248,19 +294,28 @@ def real_fit_score(
         else round(sum(components[key] * weight for key, weight in DEFAULT_FIT_WEIGHTS.items()), 2)
     )
     quality_flags = dict(getattr(row, "data_quality_flags", None) or {})
-    quality_flags["missing_program_fit"] = True
+    quality_flags["missing_program_fit"] = program_fit_user_input is None
     if scheme_fit_stale:
         quality_flags["stale_scheme_fit"] = True
+    program_fit_display = (
+        program_fit_user_input if program_fit_user_input is not None else components["program_fit"]
+    )
 
     return FitScoreResponse(
         player_id=str(row.player_id),
         school_id=row.school_id,
+        season=row.season,
         overall_fit=canonical,
-        personalized_fit=_personalized_score(components, personalized_weights, canonical),
+        personalized_fit=_personalized_score(
+            _personalization_components(components, program_fit_user_input),
+            personalized_weights,
+            canonical,
+            override_active=program_fit_user_input is not None,
+        ),
         gap_match=components["gap_match"],
         scheme_fit=components["scheme_fit"],
         role_fit=components["role_fit"],
-        program_fit=components["program_fit"],
+        program_fit=program_fit_display,
         raw_components=RawFitComponents(
             gap_match=gap_bd.get("raw_gap_match", row.gap_match),
             scheme_fit=row.scheme_fit,
@@ -335,6 +390,8 @@ def real_fit_score(
         is_roster_baseline_member=is_roster_baseline_member,
         scheme_fit_stale=scheme_fit_stale,
         scheme_fit_stale_reason=scheme_fit_stale_reason,
+        program_fit_user_input=program_fit_user_input,
+        program_fit_user_input_notes=program_fit_user_input_notes,
         context_staleness=context_staleness_payload(scheme_fit_stale, scheme_fit_stale_reason),
     )
 
@@ -431,6 +488,22 @@ async def get_fit_score(
     scheme_fit_stale = bool(stale_row.stale_flag) if stale_row else False
     scheme_fit_stale_reason = stale_row.stale_reason if stale_row else None
 
+    program_fit_user_input = None
+    program_fit_user_input_notes = None
+    if user_id is not None:
+        input_result = await db.execute(
+            select(ProgramFitUserInput).where(
+                ProgramFitUserInput.user_id == user_id,
+                ProgramFitUserInput.player_id == player_id,
+                ProgramFitUserInput.school_id == school_id,
+                ProgramFitUserInput.season == season,
+            )
+        )
+        input_row = input_result.scalar_one_or_none()
+        if input_row is not None:
+            program_fit_user_input = input_row.qualitative_score
+            program_fit_user_input_notes = input_row.notes
+
     if row is not None:
         return real_fit_score(
             row,
@@ -439,15 +512,20 @@ async def get_fit_score(
             scheme_fit_stale=scheme_fit_stale,
             scheme_fit_stale_reason=scheme_fit_stale_reason,
             personalized_weights=personalized_weights,
+            program_fit_user_input=program_fit_user_input,
+            program_fit_user_input_notes=program_fit_user_input_notes,
         )
     return stub_fit_score(
         player_id,
         school_id,
+        season,
         is_current_school=is_current_school,
         is_roster_baseline_member=is_roster_baseline_member,
         scheme_fit_stale=scheme_fit_stale,
         scheme_fit_stale_reason=scheme_fit_stale_reason,
         personalized_weights=personalized_weights,
+        program_fit_user_input=program_fit_user_input,
+        program_fit_user_input_notes=program_fit_user_input_notes,
     )
 
 

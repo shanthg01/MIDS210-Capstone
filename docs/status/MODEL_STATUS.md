@@ -436,7 +436,7 @@ CI: analytical Gaussian approximation (`delta ± 1.28×sqrt(2×(off_resid_std² 
 | 4a | Neutral Player Projection | ✅ Phase 2a next-season forecast production API default; Phase 0 v2 retained as baseline comparator | player game logs or season-level fallback, HE impact labels | `player_projections` (`player-proj-phase2a-fcast-v1` production rows; `player-projection-shrinkage-v2` / `player-projection-phase2a-v2` comparators) |
 | 4b | Destination-Adjusted Player Projection | ✅ Complete baseline; `player-destination-proj-v1` writes destination-mode `player_projections` rows | neutral player projection + role/minutes outputs | destination projection rows/artifacts |
 | - | Program Fit Calculator | **Descoped from active roadmap (2026-07-11)** | user preferences, NIL/location/academic proxies | `player_team_fit_scores.program_fit` |
-| 5 | Transfer Success Predictor | ✅ `transfer-success-eb-v1` (PR #48, 2026-07-19); `predictions.py`/`comparison.py` wired to real rows same day. Not yet run against live/shared RDS. | historical transfers/outcomes (`transfers`) | `transfer_success_scores` |
+| 5 | Transfer Success Predictor | ✅ `transfer-success-eb-v1`; `predictions.py`/`comparison.py` wired to real rows. **First real run against shared RDS 2026-07-21** — 456,615 rows, Brier=0.2492, MLflow `@champion`. | historical transfers/outcomes (`transfers`) | `transfer_success_scores` |
 | 6 | Team Rating Projection | ✅ `team-roster-proj-v1`; PR #49 merged to `main` (2026-07-11) | shared roster baseline + player projection + role/minutes | `team_rating_projections` |
 | 7 | Recommendation Engine | ✅ `rec-v1.2`; M6 macro signal wired in and run for real (2026-07-11); `/api/recommendations` wired to the live engine 2026-07-15 (confirmed real, not the docs' prior stale "stub" note) | scheme/gap/role/team_impact_fit all real (plan: `../models/recommendation_engine_plan.md`); program/projection deferred (program_fit descoped) | `recommendations` |
 
@@ -455,15 +455,14 @@ Critical path:
 ✅ Team Rating Projection PR #49 merged to main
 ✅ Recommendation Engine v1.2 (M6 team_rating_delta macro signal wired in + run for real, 2026-07-11, see ../models/recommendation_engine_plan.md)
 ✅ /api/recommendations wiring   (computes live per request, 2026-07-15 — was a hardcoded stub since the original scaffold)
-✅ Transfer Success model + API  (transfer-success-eb-v1, PR #48 2026-07-19; predictions.py/comparison.py wired same day)
+✅ Transfer Success model + API  (transfer-success-eb-v1; predictions.py/comparison.py wired)
+✅ Transfer Success live run     (456,615 rows, 2026-07-21, see M5 row for real bugs found/fixed)
 ✳️ Program Fit — descoped, not on this path
   -> fit_scores.py full scoring (reweight decision pending, program_fit descoped)
-  -> Transfer Success live run (scripts/run_transfer_success.py against shared RDS — not yet executed)
 ```
 
 Parallel work:
 
-- Transfer Success Predictor: model + API wiring done (2026-07-19); remaining work is a real run against the shared RDS to populate `transfer_success_scores`.
 - Team Rating Projection is merged and ready for M7 to consume — see `../models/recommendation_engine_plan.md`.
 
 ---

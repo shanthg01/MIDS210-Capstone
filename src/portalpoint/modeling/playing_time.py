@@ -6,6 +6,9 @@ derived Role Fit score that gets synced back onto player_team_fit_scores.
 
 from __future__ import annotations
 
+import csv
+import io
+import itertools
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -46,11 +49,20 @@ SYNTHETIC_SCHOOL_ID_FLOOR = 9_900_000
 # instead of erroring out). 600_000 (10 min) was tried first and was too tight — it
 # fired on a legitimate INFERENCE_SQL read (a 12-table CTE) on a cold cache right
 # after an RDS reboot; cache starts empty regardless of instance size, so a first
-# chunk post-reboot is a genuine worst case, not a hang. 40 min leaves large headroom
-# over every real chunk duration observed (worst seen: ~90 min for a full
-# score+write+sync chunk, of which the read is one part) while still bounded far
-# short of "silent hang for hours."
-RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 2_400_000
+# chunk post-reboot is a genuine worst case, not a hang. 40 min (2_400_000) was raised
+# to 60 min (2026-07-22) after it fired for real on a --school-chunk-size 75 run's
+# very first chunk. That same day, an EXPLAIN-cost-based theory (chunking forces a
+# scattered Bitmap Heap Scan instead of a Seq Scan) briefly pushed both the default
+# chunk size to 365 and this timeout to 110 min — but real *timed* fetches (not just
+# planner cost units) disproved it: a bare filter+count over the full population runs
+# in 0.48s server-side, and the actual bottleneck is data transfer over the SSM tunnel,
+# measured at ~0.76 MB/s regardless of chunk size (~2.7-2.9h total either way for the
+# full population's ~7GB of wide rows). --school-chunk-size default reverted to 75 —
+# chunking doesn't reduce total transfer time, but bounds how much progress a single
+# tunnel drop destroys (the tunnel died mid-run twice in one session: a credential
+# expiry, then a separate idle-timeout-adjacent drop). 110 min is kept as a generous
+# per-chunk ceiling; a real 75-school chunk measured well under that (~26.7s/school).
+RAW_CONNECTION_STATEMENT_TIMEOUT_MS = 6_600_000
 
 # PERF: prepare_playing_time_frame/derive_usage_role/compute_role_fit_score/
 # allocate_displaced_minutes/uncertainty_multiplier/data_quality_flags previously used
@@ -505,6 +517,17 @@ def materialize_inference_staging(
                 cur.execute(f"CREATE TABLE {table_name} AS {select_sql}", params)
             for table_name, index_cols in PT_STAGING_INDEXES:
                 cur.execute(f"CREATE INDEX ON {table_name} ({index_cols})")
+            # A table created via CREATE TABLE AS SELECT has zero planner statistics
+            # until ANALYZE runs — Postgres falls back to default row-count guesses,
+            # which can pick a catastrophically bad join strategy (e.g. a nested loop
+            # against a staging table the planner assumes is tiny but is actually
+            # hundreds of thousands of rows) for INFERENCE_SQL's 13-way join against
+            # these tables. Real, reproducible production symptom this targets: wildly
+            # inconsistent runtimes for the same query (2026-07-22 — one run's first
+            # chunk finished in under an hour, another run's first chunk was still
+            # running an hour later with no end in sight).
+            for table_name, _ in PT_STAGING_TABLES:
+                cur.execute(f"ANALYZE {table_name}")
         raw_conn.commit()
     finally:
         raw_conn.close()
@@ -2247,26 +2270,279 @@ def build_playing_time_records(
     model_version: str = MODEL_VERSION,
     expires_days: int = 7,
 ) -> tuple[list[tuple], list[tuple]]:
+    """Vectorized form of the per-row build below — same output, far cheaper.
+
+    The itertuples() loop this replaces called `_as_float()` (a Python function with
+    an internal pd.isna check) roughly 20 times per row to build two nested JSON dicts —
+    ~10M Python-level calls for a single 75-school chunk (~491K rows), the actual
+    bottleneck in a real production run (2026-07-22: a full chunk's SQL query + TreeSHAP
+    finished in under an hour, but this step alone ran for over an hour after that).
+    Every one of those `_as_float()`+round() calls reads directly from an existing
+    scored_df column with no cross-row dependency, so each is precomputed once as a
+    whole-frame numpy array (reusing `_numeric_column_or_default`, the same helper
+    `allocate_displaced_minutes_batch`/`data_quality_flags_batch` already use for this
+    exact pattern) — the remaining per-row loop just assembles two dicts from clean
+    scalars and calls json.dumps(), the one part that's inherently per-record.
+    Verified bit-for-bit identical against `_build_playing_time_records_scalar_reference`
+    (the original implementation, kept only for that equivalence test) on randomized
+    synthetic data covering every fallback branch — see test_playing_time.py.
+    """
+    n = len(scored_df)
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=expires_days)
+    if n == 0:
+        return [], []
+
+    displaced_batch = allocate_displaced_minutes_batch(scored_df)
+    flags_batch = data_quality_flags_batch(scored_df)
+    role_fit_batch = compute_role_fit_scores(scored_df)
+
+    season_arr = pd.to_numeric(scored_df["season"], errors="coerce").to_numpy(dtype=np.float64)
+    expected_minutes_arr = _numeric_column_or_default(scored_df, "expected_minutes", 0.0)
+    ci_lower_arr = _numeric_column_or_default(scored_df, "minutes_ci_lower", 0.0)
+    ci_upper_arr = _numeric_column_or_default(scored_df, "minutes_ci_upper", 0.0)
+    expected_usage_arr = _numeric_column_or_default(scored_df, "expected_usage", 0.0)
+
+    # role/role_conf: reuse score_frame()'s already-computed usage_role/usage_role_confidence
+    # for every row that has both; derive_usage_roles (already vectorized) only re-runs on
+    # the rare subset missing one, instead of unconditionally re-deriving for all rows.
+    usage_role_col = scored_df.get("usage_role")
+    usage_conf_col = scored_df.get("usage_role_confidence")
+    if usage_role_col is not None and usage_conf_col is not None:
+        role_series = usage_role_col.copy()
+        conf_series = pd.to_numeric(usage_conf_col, errors="coerce")
+        missing_mask = usage_role_col.isna() | conf_series.isna()
+    else:
+        role_series = pd.Series([None] * n, index=scored_df.index, dtype=object)
+        conf_series = pd.Series(np.nan, index=scored_df.index)
+        missing_mask = pd.Series(True, index=scored_df.index)
+    if missing_mask.any():
+        fb_roles, fb_confs = derive_usage_roles(scored_df.loc[missing_mask])
+        role_series.loc[missing_mask] = fb_roles
+        conf_series.loc[missing_mask] = fb_confs
+    role_list = role_series.tolist()
+    role_conf_r3_list = conf_series.round(3).tolist()
+    role_conf_r6_list = conf_series.round(6).tolist()
+
+    # sp/rp: reuse the model's own starter/rotation probability columns, clamped, for every
+    # row that has one; the sigmoid fallback only runs on the rare subset missing it.
+    # _numeric_column_or_default (not a raw scored_df.get() + pd.to_numeric chain) — a
+    # fully-missing column makes .get() return a bare None/scalar, not a Series, which
+    # crashes any chained .clip()/.notna() call (the exact gotcha that helper exists for).
+    nan_arr = np.full(n, np.nan)
+    starter_model_raw = _numeric_column_or_default(scored_df, "starter_probability_model", nan_arr)
+    rotation_model_raw = _numeric_column_or_default(scored_df, "rotation_probability_model", nan_arr)
+    sp_missing = np.isnan(starter_model_raw)
+    rp_missing = np.isnan(rotation_model_raw)
+    sp_arr = np.clip(np.where(sp_missing, 0.0, starter_model_raw), 0.0, 1.0)
+    rp_arr = np.clip(np.where(rp_missing, 0.0, rotation_model_raw), 0.0, 1.0)
+    if sp_missing.any():
+        m, lo, hi = expected_minutes_arr[sp_missing], ci_lower_arr[sp_missing], ci_upper_arr[sp_missing]
+        spread = np.maximum((hi - lo) / 2.0, 1.0)
+        sigmoid = np.clip(1.0 / (1.0 + np.exp(-(m - 24.0) / spread)), 0.0, 1.0)
+        sp_arr[sp_missing] = np.where(hi <= lo, np.where(m >= 24.0, 1.0, 0.0), sigmoid)
+    if rp_missing.any():
+        m, lo, hi = expected_minutes_arr[rp_missing], ci_lower_arr[rp_missing], ci_upper_arr[rp_missing]
+        spread = np.maximum((hi - lo) / 2.0, 1.0)
+        sigmoid = np.clip(1.0 / (1.0 + np.exp(-(m - 12.0) / spread)), 0.0, 1.0)
+        rp_arr[rp_missing] = np.where(hi <= lo, np.where(m >= 12.0, 1.0, 0.0), sigmoid)
+
+    role_fit_raw = _numeric_column_or_default(scored_df, "role_fit", nan_arr)
+    role_fit_arr = np.where(np.isnan(role_fit_raw), np.asarray(role_fit_batch, dtype=np.float64), role_fit_raw)
+
+    explanation_col = scored_df.get("explanation")
+    explanation_dicts = [_json_dict(v) for v in explanation_col] if explanation_col is not None else [{}] * n
+    explanation_json_list = [json.dumps(e) if e else None for e in explanation_dicts]
+    fit_breakdown_col = scored_df.get("fit_breakdown")
+    fit_breakdown_json_list = (
+        [json.dumps(_json_dict(v)) for v in fit_breakdown_col] if fit_breakdown_col is not None
+        else [json.dumps({})] * n
+    )
+
+    roster_snapshot_col = (
+        pd.to_numeric(scored_df["roster_snapshot_id"], errors="coerce")
+        if "roster_snapshot_id" in scored_df.columns else pd.Series(np.nan, index=scored_df.index)
+    )
+    roster_snapshot_list = [int(v) if pd.notna(v) else None for v in roster_snapshot_col]
+
+    neutral_proj_version_col = scored_df.get("neutral_projection_model_version")
+    neutral_proj_version_list = (
+        neutral_proj_version_col.tolist() if neutral_proj_version_col is not None else [None] * n
+    )
+
+    # opportunity_drivers fields — every one reads straight from an existing column with a
+    # scalar or per-row (season_arr) default, the exact shape _numeric_column_or_default
+    # exists for.
+    source_stat_season = np.round(_numeric_column_or_default(scored_df, "source_stat_season", season_arr)).astype(int)
+    roster_context_season = np.round(_numeric_column_or_default(scored_df, "roster_context_season", season_arr)).astype(int)
+    fit_context_season = np.round(_numeric_column_or_default(scored_df, "fit_context_season", season_arr)).astype(int)
+    team_context_season = np.round(_numeric_column_or_default(scored_df, "team_context_season", season_arr)).astype(int)
+    roster_open_minutes = np.round(_numeric_column_or_default(scored_df, "roster_open_minutes", 0.0), 2)
+    returning_minutes_position = np.round(_numeric_column_or_default(scored_df, "returning_minutes_position", 0.0), 2)
+    same_position_prior_minutes = np.round(_numeric_column_or_default(scored_df, "same_position_prior_minutes", 0.0), 2)
+    position_crowding_ratio = np.round(_numeric_column_or_default(scored_df, "position_crowding_ratio", 0.0), 3)
+    opportunity_to_prior_minutes_ratio = np.round(_numeric_column_or_default(scored_df, "opportunity_to_prior_minutes_ratio", 0.0), 3)
+    prior_team_rotation_hhi = np.round(_numeric_column_or_default(scored_df, "prior_team_rotation_hhi", 0.0), 3)
+    prior_team_rotation_players = np.round(_numeric_column_or_default(scored_df, "prior_team_rotation_players", 0.0), 1)
+    prior_minutes = np.round(_numeric_column_or_default(scored_df, "prior_minutes", 0.0), 2)
+    sample_reliability = np.round(_numeric_column_or_default(scored_df, "sample_reliability", 0.0), 3)
+    projection_reliability = np.round(_numeric_column_or_default(scored_df, "projection_reliability", 0.0), 3)
+    rotation_probability_model_r3 = np.round(_numeric_column_or_default(scored_df, "rotation_probability_model", 0.0), 3)
+    starter_probability_model_r3 = np.round(_numeric_column_or_default(scored_df, "starter_probability_model", 0.0), 3)
+    heavy_minutes_probability_r3 = np.round(_numeric_column_or_default(scored_df, "heavy_minutes_probability", 0.0), 3)
+    high_usage_probability_r3 = np.round(_numeric_column_or_default(scored_df, "high_usage_probability", 0.0), 3)
+    candidate_changes_school = _numeric_column_or_default(scored_df, "candidate_changes_school", 0.0) >= 0.5
+    is_portal_candidate = _numeric_column_or_default(scored_df, "is_portal_candidate", 0.0) >= 0.5
+    expected_usage_raw = np.round(
+        _numeric_column_or_default(scored_df, "expected_usage_raw", expected_usage_arr), 2
+    )
+
+    expected_minutes_r2 = np.round(expected_minutes_arr, 2)
+    ci_lower_r2 = np.round(ci_lower_arr, 2)
+    ci_upper_r2 = np.round(ci_upper_arr, 2)
+    expected_usage_r2 = np.round(expected_usage_arr, 2)
+    depth_chart_position = np.select(
+        [expected_minutes_arr >= 24, expected_minutes_arr >= 16], [1, 2], default=3
+    )
+
+    player_id_list = scored_df["player_id"].astype(int).tolist()
+    school_id_list = scored_df["school_id"].astype(int).tolist()
+    season_list = scored_df["season"].astype(int).tolist()
+    gap_match_r4 = np.round(_numeric_column_or_default(scored_df, "gap_match", 50.0), 4)
+    scheme_fit_r4 = np.round(_numeric_column_or_default(scored_df, "scheme_fit", 50.0), 4)
+    program_fit_r4 = np.round(_numeric_column_or_default(scored_df, "program_fit", 50.0), 4)
+    weight_gap = _numeric_column_or_default(scored_df, "weight_gap", 0.20)
+    weight_scheme = _numeric_column_or_default(scored_df, "weight_scheme", 0.30)
+    weight_role = _numeric_column_or_default(scored_df, "weight_role", 0.25)
+    weight_program = _numeric_column_or_default(scored_df, "weight_program", 0.25)
+
+    projection_records: list[tuple] = []
+    fit_sync_records: list[tuple] = []
+    for i in range(n):
+        displaced = displaced_batch[i]
+        flags = flags_batch[i]
+        role_fit = float(role_fit_arr[i])
+        opportunity = {
+            "target_season": int(season_arr[i]),
+            "source_stat_season": int(source_stat_season[i]),
+            "roster_context_season": int(roster_context_season[i]),
+            "fit_context_season": int(fit_context_season[i]),
+            "team_context_season": int(team_context_season[i]),
+            "neutral_projection_model_version": neutral_proj_version_list[i],
+            "roster_open_minutes": float(roster_open_minutes[i]),
+            "returning_minutes_position": float(returning_minutes_position[i]),
+            "same_position_prior_minutes": float(same_position_prior_minutes[i]),
+            "position_crowding_ratio": float(position_crowding_ratio[i]),
+            "opportunity_to_prior_minutes_ratio": float(opportunity_to_prior_minutes_ratio[i]),
+            "prior_team_rotation_hhi": float(prior_team_rotation_hhi[i]),
+            "prior_team_rotation_players": float(prior_team_rotation_players[i]),
+            "prior_minutes": float(prior_minutes[i]),
+            "sample_reliability": float(sample_reliability[i]),
+            "projection_reliability": float(projection_reliability[i]),
+            "rotation_probability_model": float(rotation_probability_model_r3[i]),
+            "starter_probability_model": float(starter_probability_model_r3[i]),
+            "heavy_minutes_probability": float(heavy_minutes_probability_r3[i]),
+            "high_usage_probability": float(high_usage_probability_r3[i]),
+            "candidate_changes_school": bool(candidate_changes_school[i]),
+            "is_portal_candidate": bool(is_portal_candidate[i]),
+            "expected_usage_raw": float(expected_usage_raw[i]),
+        }
+        role_breakdown = {
+            "projected_minutes": float(expected_minutes_r2[i]),
+            "confidence_interval": [float(ci_lower_r2[i]), float(ci_upper_r2[i])],
+            "minutes_ci_lower": float(ci_lower_r2[i]),
+            "minutes_ci_upper": float(ci_upper_r2[i]),
+            "expected_usage": float(expected_usage_r2[i]),
+            "usage_role": role_list[i],
+            "usage_role_confidence": float(role_conf_r3_list[i]),
+            "starter_probability": round(float(sp_arr[i]), 3),
+            "rotation_probability": round(float(rp_arr[i]), 3),
+            "heavy_minutes_probability": float(heavy_minutes_probability_r3[i]),
+            "high_usage_probability": float(high_usage_probability_r3[i]),
+            "depth_chart_position": int(depth_chart_position[i]),
+            "displaced_minutes": displaced,
+            "opportunity_drivers": opportunity,
+            "data_quality_flags": flags,
+        }
+        projection_records.append(
+            (
+                player_id_list[i],
+                school_id_list[i],
+                season_list[i],
+                roster_snapshot_list[i],
+                round(float(expected_minutes_arr[i]), 4),
+                round(float(_numeric_column_or_default(scored_df, "expected_minutes_share", 0.0)[i]), 6),
+                round(float(ci_lower_arr[i]), 4),
+                round(float(ci_upper_arr[i]), 4),
+                round(float(expected_usage_arr[i]), 4),
+                role_list[i],
+                float(role_conf_r6_list[i]),
+                round(float(sp_arr[i]), 6),
+                round(float(rp_arr[i]), 6),
+                json.dumps(displaced),
+                json.dumps(opportunity),
+                json.dumps(flags),
+                None,
+                role_fit,
+                explanation_json_list[i],
+                model_version,
+                now,
+                expires,
+            )
+        )
+        fit_sync_records.append(
+            (
+                player_id_list[i],
+                school_id_list[i],
+                season_list[i],
+                float(gap_match_r4[i]),
+                float(scheme_fit_r4[i]),
+                role_fit,
+                float(program_fit_r4[i]),
+                float(weight_gap[i]),
+                float(weight_scheme[i]),
+                float(weight_role[i]),
+                float(weight_program[i]),
+                fit_breakdown_json_list[i],
+                json.dumps(role_breakdown),
+                bool(is_portal_candidate[i]),
+                model_version,
+                now,
+                expires,
+            )
+        )
+    # Sort by (player_id, school_id, season) before upsert — both records' target tables
+    # (playing_time_projections, player_team_fit_scores) are keyed/indexed on this order,
+    # so a sorted batch touches heap pages in a more locality-friendly order than the
+    # scored_df's incidental row order, improving cache reuse within one execute_values
+    # page. Cheap, no schema change; player_team_fit_scores is the ~15GB heap-cache-bound
+    # table from Issue #53's follow-up investigation.
+    projection_records.sort(key=lambda t: (t[0], t[1], t[2]))
+    fit_sync_records.sort(key=lambda t: (t[0], t[1], t[2]))
+    return projection_records, fit_sync_records
+
+
+def _build_playing_time_records_scalar_reference(
+    scored_df: pd.DataFrame,
+    *,
+    model_version: str = MODEL_VERSION,
+    expires_days: int = 7,
+) -> tuple[list[tuple], list[tuple]]:
+    """Original per-row implementation of build_playing_time_records, kept only as a
+    reference for the equivalence test (test_playing_time.py) proving the vectorized
+    version above produces bit-for-bit identical output. Do not call from production
+    code — this is the ~10M-function-call-per-chunk version that motivated the rewrite."""
     now = datetime.now(timezone.utc)
     expires = now + timedelta(days=expires_days)
     projection_records: list[tuple] = []
     fit_sync_records: list[tuple] = []
 
-    # Precomputed whole-frame once, outside the loop — neither data_quality_flags nor
-    # compute_role_fit_score actually reads usage_role/usage_role_confidence, so (unlike the
-    # role/role_conf fallback below, which genuinely needs a per-row value) there was never
-    # a reason to reconstruct a pd.Series per row for these. That per-row Series
-    # reconstruction (`pd.Series({**r, ...})`) was exactly the apply(axis=1)-shaped cost this
-    # vectorization pass targets, just inside an itertuples() loop instead of .apply().
     displaced_batch = allocate_displaced_minutes_batch(scored_df)
     flags_batch = data_quality_flags_batch(scored_df)
     role_fit_batch = compute_role_fit_scores(scored_df)
 
     for i, row in enumerate(scored_df.itertuples(index=False)):
         r = row._asdict()
-        # `score_frame()` (scripts/run_playing_time.py) already computes usage_role/
-        # usage_role_confidence/role_fit before calling this function. Reuse those
-        # instead of recomputing — same deterministic output, half the row-apply cost.
         if pd.notna(r.get("usage_role")) and pd.notna(r.get("usage_role_confidence")):
             role = r["usage_role"]
             role_conf = float(r["usage_role_confidence"])
@@ -2406,18 +2682,181 @@ def build_playing_time_records(
                 expires,
             )
         )
-    # Sort by (player_id, school_id, season) before upsert — both records' target tables
-    # (playing_time_projections, player_team_fit_scores) are keyed/indexed on this order,
-    # so a sorted batch touches heap pages in a more locality-friendly order than the
-    # scored_df's incidental row order, improving cache reuse within one execute_values
-    # page. Cheap, no schema change; player_team_fit_scores is the ~15GB heap-cache-bound
-    # table from Issue #53's follow-up investigation.
     projection_records.sort(key=lambda t: (t[0], t[1], t[2]))
     fit_sync_records.sort(key=lambda t: (t[0], t[1], t[2]))
     return projection_records, fit_sync_records
 
 
+_UPSERT_PLAYING_TIME_TEMP_COLUMNS = """
+    player_id BIGINT,
+    school_id INTEGER,
+    season INTEGER,
+    roster_snapshot_id BIGINT,
+    expected_minutes DOUBLE PRECISION,
+    expected_minutes_share DOUBLE PRECISION,
+    minutes_ci_lower DOUBLE PRECISION,
+    minutes_ci_upper DOUBLE PRECISION,
+    expected_usage DOUBLE PRECISION,
+    usage_role TEXT,
+    usage_role_confidence DOUBLE PRECISION,
+    starter_probability DOUBLE PRECISION,
+    rotation_probability DOUBLE PRECISION,
+    displaced_minutes TEXT,
+    opportunity_drivers TEXT,
+    data_quality_flags TEXT,
+    scenario_overrides TEXT,
+    role_fit DOUBLE PRECISION,
+    explanation TEXT,
+    model_version TEXT,
+    computed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+"""
+
+_UPSERT_PLAYING_TIME_BULK_UPDATE_SQL = """
+UPDATE playing_time_projections AS ptp
+SET
+    roster_snapshot_id = data.roster_snapshot_id,
+    expected_minutes = data.expected_minutes,
+    expected_minutes_share = data.expected_minutes_share,
+    minutes_ci_lower = data.minutes_ci_lower,
+    minutes_ci_upper = data.minutes_ci_upper,
+    expected_usage = data.expected_usage,
+    usage_role = data.usage_role,
+    usage_role_confidence = data.usage_role_confidence,
+    starter_probability = data.starter_probability,
+    rotation_probability = data.rotation_probability,
+    displaced_minutes = data.displaced_minutes::jsonb,
+    opportunity_drivers = data.opportunity_drivers::jsonb,
+    data_quality_flags = data.data_quality_flags::jsonb,
+    scenario_overrides = data.scenario_overrides::jsonb,
+    role_fit = data.role_fit,
+    explanation = data.explanation::jsonb,
+    computed_at = data.computed_at,
+    expires_at = data.expires_at
+FROM pt_projection_upsert_temp AS data
+WHERE ptp.player_id = data.player_id
+  AND ptp.school_id = data.school_id
+  AND ptp.season = data.season
+  AND ptp.model_version = data.model_version
+"""
+
+# Rare fallback, same rationale as _SYNC_ROLE_FIT_BULK_INSERT_MISSING_SQL — a
+# (player_id, school_id, season, model_version) row not already present.
+_UPSERT_PLAYING_TIME_BULK_INSERT_MISSING_SQL = """
+INSERT INTO playing_time_projections
+    (player_id, school_id, season, roster_snapshot_id,
+     expected_minutes, expected_minutes_share, minutes_ci_lower, minutes_ci_upper,
+     expected_usage, usage_role, usage_role_confidence,
+     starter_probability, rotation_probability, displaced_minutes,
+     opportunity_drivers, data_quality_flags, scenario_overrides, role_fit,
+     explanation, model_version, computed_at, expires_at)
+SELECT
+    data.player_id, data.school_id, data.season, data.roster_snapshot_id,
+    data.expected_minutes, data.expected_minutes_share, data.minutes_ci_lower, data.minutes_ci_upper,
+    data.expected_usage, data.usage_role, data.usage_role_confidence,
+    data.starter_probability, data.rotation_probability, data.displaced_minutes::jsonb,
+    data.opportunity_drivers::jsonb, data.data_quality_flags::jsonb, data.scenario_overrides::jsonb,
+    data.role_fit, data.explanation::jsonb, data.model_version, data.computed_at, data.expires_at
+FROM pt_projection_upsert_temp AS data
+WHERE NOT EXISTS (
+    SELECT 1 FROM playing_time_projections ptp
+    WHERE ptp.player_id = data.player_id AND ptp.school_id = data.school_id
+      AND ptp.season = data.season AND ptp.model_version = data.model_version
+)
+ON CONFLICT ON CONSTRAINT uq_playing_time_projection DO NOTHING
+"""
+
+
+class _RecordsCSVStream:
+    """File-like adapter so psycopg2's copy_expert can stream `records` as CSV
+    text in small batches, instead of building the whole payload as one Python
+    string up front.
+
+    Real fix, not a bandaid (2026-07-23): running sync_role_fit_scores/
+    upsert_playing_time_projections's original io.StringIO().writerows(records)
+    against a real ~491,625-row chunk (with real, JSON-heavy explanation/
+    breakdown fields — not the small synthetic fixtures used in this file's own
+    equivalence tests) OOM-killed a Fargate task repeatedly, at 1GB, 8GB, then
+    16GB. The problem wasn't network speed (an in-VPC ECS task, not the SSM
+    tunnel, hit this) and wasn't fixed by more memory — the whole CSV text was
+    being held in memory as one Python string at the same time as the source
+    DataFrame, feature arrays, and the records list itself, all coexisting.
+    Streaming in fixed-size batches caps the CSV-text footprint to one batch
+    regardless of total row count.
+    """
+
+    _BATCH_ROWS = 5000
+
+    def __init__(self, records: Sequence[tuple]):
+        self._row_iter = iter(records)
+        self._pending = ""
+
+    def _next_batch_text(self) -> str:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        wrote_any = False
+        for row in itertools.islice(self._row_iter, self._BATCH_ROWS):
+            writer.writerow(row)
+            wrote_any = True
+        return buf.getvalue() if wrote_any else ""
+
+    def read(self, size: int = -1) -> str:
+        if size is None or size < 0:
+            parts = [self._pending]
+            self._pending = ""
+            while True:
+                chunk = self._next_batch_text()
+                if not chunk:
+                    break
+                parts.append(chunk)
+            return "".join(parts)
+        while len(self._pending) < size:
+            chunk = self._next_batch_text()
+            if not chunk:
+                break
+            self._pending += chunk
+        result, self._pending = self._pending[:size], self._pending[size:]
+        return result
+
+
 def upsert_playing_time_projections(engine, records: Sequence[tuple], page_size: int = 1000) -> int:
+    """COPY + bulk UPDATE...FROM rewrite, same pattern and rationale as
+    sync_role_fit_scores (2026-07-22): playing_time_projections is a 4M-row table
+    getting a ~491K-row upsert per chunk via ~492 execute_values round-trips — over an
+    SSM-tunneled connection, each round trip pays the tunnel's latency/bandwidth tax,
+    same anti-pattern already fixed once for sync_role_fit_scores and left unaddressed
+    here until a chunk's score+write+sync phase (~1h40-1h46min, more than the read
+    step itself) pointed back at this function. page_size kept for call-site
+    compatibility, unused now. CSV payload is streamed via _RecordsCSVStream
+    (2026-07-23) — see that class's docstring for the real OOM this fixed.
+    """
+    if not records:
+        return 0
+
+    raw_conn = _raw_connection_with_timeout(engine)
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(
+                f"CREATE TEMP TABLE pt_projection_upsert_temp ({_UPSERT_PLAYING_TIME_TEMP_COLUMNS}) ON COMMIT DROP"
+            )
+            cur.copy_expert(
+                "COPY pt_projection_upsert_temp FROM STDIN WITH (FORMAT csv)",
+                _RecordsCSVStream(records),
+            )
+            cur.execute(_UPSERT_PLAYING_TIME_BULK_UPDATE_SQL)
+            cur.execute(_UPSERT_PLAYING_TIME_BULK_INSERT_MISSING_SQL)
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return len(records)
+
+
+def _upsert_playing_time_projections_execute_values_reference(
+    engine, records: Sequence[tuple], page_size: int = 1000
+) -> int:
+    """Original execute_values-based implementation, kept only as a reference for the
+    equivalence test proving the COPY + bulk UPDATE...FROM rewrite above produces the
+    same resulting DB state. Do not call from production code."""
     if not records:
         return 0
     raw_conn = _raw_connection_with_timeout(engine)
@@ -2430,7 +2869,140 @@ def upsert_playing_time_projections(engine, records: Sequence[tuple], page_size:
     return len(records)
 
 
+_SYNC_ROLE_FIT_TEMP_COLUMNS = """
+    player_id BIGINT,
+    school_id INTEGER,
+    season INTEGER,
+    gap_match DOUBLE PRECISION,
+    scheme_fit DOUBLE PRECISION,
+    role_fit DOUBLE PRECISION,
+    program_fit DOUBLE PRECISION,
+    weight_gap DOUBLE PRECISION,
+    weight_scheme DOUBLE PRECISION,
+    weight_role DOUBLE PRECISION,
+    weight_program DOUBLE PRECISION,
+    fit_breakdown TEXT,
+    role_breakdown TEXT,
+    is_portal_candidate BOOLEAN,
+    model_version TEXT,
+    computed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+"""
+
+# Recomputes overall_fit/breakdown identically in both branches below — kept as one
+# literal expression per branch rather than factored out, since Postgres doesn't let
+# a SQL string fragment span an UPDATE's SET list and an INSERT's SELECT list cleanly
+# without a CTE (which would just re-add the join cost this rewrite removes).
+_SYNC_ROLE_FIT_BULK_UPDATE_SQL = """
+UPDATE player_team_fit_scores AS fit
+SET
+    gap_match = data.gap_match,
+    scheme_fit = data.scheme_fit,
+    role_fit = data.role_fit,
+    program_fit = data.program_fit,
+    overall_fit = round((
+        data.weight_gap * data.gap_match
+        + data.weight_scheme * data.scheme_fit
+        + data.weight_role * data.role_fit
+        + data.weight_program * data.program_fit
+    )::numeric, 2),
+    weight_gap = data.weight_gap,
+    weight_scheme = data.weight_scheme,
+    weight_role = data.weight_role,
+    weight_program = data.weight_program,
+    breakdown = jsonb_set(
+        COALESCE(data.fit_breakdown::jsonb, '{}'::jsonb),
+        '{role_fit}',
+        data.role_breakdown::jsonb,
+        true
+    ),
+    is_portal_candidate = data.is_portal_candidate,
+    model_version = data.model_version,
+    computed_at = data.computed_at,
+    expires_at = data.expires_at
+FROM pt_role_fit_sync_temp AS data
+WHERE fit.player_id = data.player_id
+  AND fit.school_id = data.school_id
+  AND fit.season = data.season
+"""
+
+# Rare fallback — the all-pairs scheme_fit/gap_matching population should already
+# have written every (player_id, school_id, season) triple before role_fit sync ever
+# runs, but this preserves the original UPSERT's exact semantics for the case where
+# it hasn't (e.g. a portal candidate scored by playing_time before a fresh
+# scheme_fit/gap_matching rebuild has caught up).
+_SYNC_ROLE_FIT_BULK_INSERT_MISSING_SQL = """
+INSERT INTO player_team_fit_scores
+    (player_id, school_id, season, overall_fit,
+     gap_match, scheme_fit, role_fit, program_fit,
+     weight_gap, weight_scheme, weight_role, weight_program,
+     breakdown, is_portal_candidate, model_version, computed_at, expires_at)
+SELECT
+    data.player_id, data.school_id, data.season,
+    round((
+        data.weight_gap * data.gap_match
+        + data.weight_scheme * data.scheme_fit
+        + data.weight_role * data.role_fit
+        + data.weight_program * data.program_fit
+    )::numeric, 2),
+    data.gap_match, data.scheme_fit, data.role_fit, data.program_fit,
+    data.weight_gap, data.weight_scheme, data.weight_role, data.weight_program,
+    jsonb_set(COALESCE(data.fit_breakdown::jsonb, '{}'::jsonb), '{role_fit}', data.role_breakdown::jsonb, true),
+    data.is_portal_candidate, data.model_version, data.computed_at, data.expires_at
+FROM pt_role_fit_sync_temp AS data
+WHERE NOT EXISTS (
+    SELECT 1 FROM player_team_fit_scores fit
+    WHERE fit.player_id = data.player_id AND fit.school_id = data.school_id AND fit.season = data.season
+)
+ON CONFLICT ON CONSTRAINT uq_fit_score DO NOTHING
+"""
+
+
 def sync_role_fit_scores(engine, records: Sequence[tuple], page_size: int = 1000) -> int:
+    """COPY the batch into a temp table, then one bulk UPDATE...FROM (plus a rare
+    fallback INSERT for any genuinely-missing rows) instead of ~500 separate
+    INSERT...ON CONFLICT DO UPDATE round-trips.
+
+    Real production finding (2026-07-22): player_team_fit_scores is an existing
+    17GB/~11M-row table (5 indexes) — this call UPDATES ~491K of those rows scattered
+    across it, not fresh inserts into an empty table (unlike transfer_success_scores'
+    upsert, which this originally mirrored but isn't a valid comparison — that write
+    was overwhelmingly inserts into a table that started at 0 rows). Each of the old
+    ~492 ON CONFLICT DO UPDATE batches paid its own index-probe-and-update cost against
+    that large table; COPY into an index-free temp table is index-probe-free, and the
+    single bulk UPDATE lets Postgres plan one merge join instead of ~492 individually
+    planned upserts. page_size kept as an accepted parameter for call-site compatibility
+    but is unused now — COPY has no batching concept. CSV payload is streamed via
+    _RecordsCSVStream (2026-07-23) — see that class's docstring for the real OOM
+    (not a tunnel/network problem — an in-VPC ECS task hit it) that motivated this.
+    """
+    if not records:
+        return 0
+
+    raw_conn = _raw_connection_with_timeout(engine)
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute(f"CREATE TEMP TABLE pt_role_fit_sync_temp ({_SYNC_ROLE_FIT_TEMP_COLUMNS}) ON COMMIT DROP")
+            cur.copy_expert(
+                "COPY pt_role_fit_sync_temp FROM STDIN WITH (FORMAT csv)",
+                _RecordsCSVStream(records),
+            )
+            cur.execute(_SYNC_ROLE_FIT_BULK_UPDATE_SQL)
+            cur.execute(_SYNC_ROLE_FIT_BULK_INSERT_MISSING_SQL)
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
+    return len(records)
+
+
+def _sync_role_fit_scores_execute_values_reference(
+    engine, records: Sequence[tuple], page_size: int = 1000
+) -> int:
+    """Original execute_values-based implementation of sync_role_fit_scores, kept only
+    as a reference for the equivalence test (test_playing_time.py) proving the COPY +
+    bulk UPDATE...FROM rewrite above produces the same resulting DB state. Do not call
+    from production code — this is the ~492-round-trip version that motivated the
+    rewrite."""
     if not records:
         return 0
     raw_conn = _raw_connection_with_timeout(engine)

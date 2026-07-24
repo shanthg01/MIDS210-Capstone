@@ -55,22 +55,52 @@ jobs:
             --cluster portalpoint-prod --services portalpoint-backend \
             --query 'services[0].networkConfiguration' --output json)
 
-          # Overrides the container command to run the migration instead of uvicorn,
-          # and swaps DATABASE_URL to portalpoint_master — some tables aren't owned
-          # by portalpoint_app (the app's runtime user), so DDL fails under it (real
-          # incident, 2026-07-20: see docs/status/ARCHITECTURE_STATUS.md).
+          # ECS run-task's `overrides.containerOverrides` schema does not support a
+          # `secrets` key (ParamValidationError — that key only exists at task-definition
+          # registration time, real failure hit on 2026-07-21). So instead of overriding
+          # DATABASE_URL at run-task time, derive a one-off "migrate" task-definition
+          # revision from the live portalpoint-backend def every run — same image/cpu/
+          # mem/roles, just DATABASE_URL's secret swapped to the master-user ARN (some
+          # tables aren't owned by portalpoint_app, the app's runtime user, so DDL fails
+          # under it — real incident, 2026-07-20, see docs/status/ARCHITECTURE_STATUS.md).
+          # Deriving from the live def each run (rather than a static separate task-def)
+          # keeps it correct automatically if image/cpu/mem/env ever change.
+          LIVE_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition portalpoint-backend --query 'taskDefinition')
+
+          MIGRATE_CONTAINER_DEFS=$(echo "$LIVE_TASK_DEF" | jq '
+            .containerDefinitions | map(
+              if .name == "backend" then
+                .secrets = ((.secrets // []) | map(select(.name != "DATABASE_URL")) + [
+                  {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:424056758764:secret:portalpoint/database-master-url"}
+                ])
+              else . end
+            )')
+
+          MIGRATE_TASK_DEF=$(echo "$LIVE_TASK_DEF" | jq --argjson cd "$MIGRATE_CONTAINER_DEFS" '{
+            family: "portalpoint-backend-migrate",
+            networkMode: .networkMode,
+            requiresCompatibilities: .requiresCompatibilities,
+            cpu: .cpu,
+            memory: .memory,
+            executionRoleArn: .executionRoleArn,
+            taskRoleArn: .taskRoleArn,
+            containerDefinitions: $cd
+          }')
+
+          aws ecs register-task-definition --cli-input-json "$MIGRATE_TASK_DEF" >/dev/null
+
+          # Only a command override needed now — DATABASE_URL is already baked into
+          # the portalpoint-backend-migrate task-def registered above.
           TASK_ARN=$(aws ecs run-task \
             --cluster portalpoint-prod \
-            --task-definition portalpoint-backend \
+            --task-definition portalpoint-backend-migrate \
             --launch-type FARGATE \
             --network-configuration "$NETWORK_CONFIG" \
             --overrides '{
               "containerOverrides": [{
                 "name": "backend",
-                "command": ["alembic", "upgrade", "head"],
-                "secrets": [
-                  {"name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:424056758764:secret:portalpoint/database-master-url"}
-                ]
+                "command": ["alembic", "upgrade", "head"]
               }]
             }' \
             --query 'tasks[0].taskArn' --output text)
@@ -94,3 +124,44 @@ jobs:
             --cluster portalpoint-prod \
             --service portalpoint-backend \
             --force-new-deployment
+
+  deploy-frontend:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::424056758764:role/portalpoint-gha-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Waits for the new backend task to actually be running and healthy before
+      # publishing frontend code that may call new/changed endpoints — same
+      # ordering the manual "Day 2" checklist (docs/production_deployment_commands.md)
+      # already calls for, just enforced instead of relied on.
+      - name: Wait for backend service to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster portalpoint-prod --services portalpoint-backend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Sync to S3 and invalidate CloudFront
+        run: |
+          aws s3 sync frontend/dist/ s3://portalpoint-frontend --delete
+          aws cloudfront create-invalidation --distribution-id E2HF7HKH8Y1FKD --paths "/*"

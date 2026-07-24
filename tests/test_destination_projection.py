@@ -42,6 +42,7 @@ from portalpoint.modeling.destination_projection import (
     fit_role_usage_model,
     fit_style_skill_weights,
     propagate_destination_uncertainty,
+    recompute_box_score_for_minutes,
     run_rolling_origin_cv,
     translate_neutral_to_destination_value,
     translate_rates_to_destination_stats,
@@ -822,6 +823,44 @@ class TestRateTranslation:
         ratio = result["destination_total_value"] / result["destination_value_per_100"]
         # All rows have same pace and minutes → same ratio
         assert ratio.std() < 1e-9
+
+
+class TestRecomputeBoxScoreForMinutes:
+    """recompute_box_score_for_minutes mirrors translate_rates_to_destination_stats's
+    per_40 * factor * (minutes/40) formula, but as a scalar fn over a stored
+    box_score_adjustments dict — the FE minutes-slider preview path."""
+
+    RATES = {"pts_per_40": 18.0, "reb_per_40": 8.0, "ast_per_40": 4.0}
+    ADJUSTMENTS = {
+        "usage_factor": 1.2,
+        "assist_factor": 1.0,
+        "turnover_factor": 1.0,
+        "rebound_factor": 1.0,
+        "block_factor": 1.0,
+    }
+
+    def test_matches_stored_projected_minutes(self):
+        # Same minutes the model actually used should reproduce the same
+        # per-game value the write path computed (18 * 0.5 * 1.2 = 10.8).
+        box = recompute_box_score_for_minutes(self.RATES, self.ADJUSTMENTS, 20.0)
+        assert box["pts_per_game"] == pytest.approx(10.8)
+
+    def test_scales_linearly_with_minutes(self):
+        low = recompute_box_score_for_minutes(self.RATES, self.ADJUSTMENTS, 10.0)
+        high = recompute_box_score_for_minutes(self.RATES, self.ADJUSTMENTS, 30.0)
+        assert high["pts_per_game"] == pytest.approx(low["pts_per_game"] * 3.0)
+
+    def test_zero_minutes_gives_zero(self):
+        box = recompute_box_score_for_minutes(self.RATES, self.ADJUSTMENTS, 0.0)
+        assert all(v == 0.0 for v in box.values())
+
+    def test_missing_rates_returns_empty_dict(self):
+        assert recompute_box_score_for_minutes(None, self.ADJUSTMENTS, 20.0) == {}
+
+    def test_missing_adjustments_falls_back_to_neutral_factor(self):
+        # No adjustments stored → factor of 1.0, plain per_40 * (minutes/40).
+        box = recompute_box_score_for_minutes(self.RATES, None, 20.0)
+        assert box["pts_per_game"] == pytest.approx(9.0)
 
 
 # ---------------------------------------------------------------------------

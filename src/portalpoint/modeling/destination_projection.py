@@ -1540,6 +1540,48 @@ def translate_rates_to_destination_stats(
     return df
 
 
+def _rate_multiplier_from_adjustments(key: str, adjustments: dict) -> float:
+    """Scalar mirror of translate_rates_to_destination_stats's vectorized
+    _rate_multiplier — same prefix rules, reading pre-computed factors from a
+    stored box_score_adjustments dict instead of the pandas Series it's fit from."""
+    lower_key = key.lower()
+    if lower_key.startswith("pts"):
+        return float(adjustments.get("usage_factor", 1.0))
+    if lower_key.startswith("ast"):
+        return float(adjustments.get("assist_factor", 1.0))
+    if lower_key.startswith("tov") or lower_key.startswith("to_"):
+        return float(adjustments.get("turnover_factor", 1.0))
+    if lower_key.startswith("reb") or lower_key.startswith("oreb") or lower_key.startswith("dreb"):
+        return float(adjustments.get("rebound_factor", 1.0))
+    if lower_key.startswith("blk"):
+        return float(adjustments.get("block_factor", 1.0))
+    return 1.0
+
+
+def recompute_box_score_for_minutes(
+    projected_rates: dict | None,
+    box_score_adjustments: dict | None,
+    minutes: float,
+) -> dict:
+    """Recompute a destination per-game box score for a hypothetical minutes value.
+
+    Same per-40-rate * factor * (minutes/40) formula translate_rates_to_destination_stats
+    uses at write time, with a user-supplied minutes swapped in for the model's own
+    expected_minutes — lets a coach preview "what if this player only plays X minutes"
+    against the real fitted usage/assist/turnover/rebound/block factors (stored per-row
+    in explanation.box_score_adjustments) without a full model rerun.
+    """
+    rates = projected_rates or {}
+    adjustments = box_score_adjustments or {}
+    per_40_to_per_game = max(float(minutes), 0.0) / 40.0
+    return {
+        k.replace("_per_40", "_per_game"): round(
+            float(v or 0) * _rate_multiplier_from_adjustments(k, adjustments) * per_40_to_per_game, 2
+        )
+        for k, v in rates.items()
+    }
+
+
 # ---------------------------------------------------------------------------
 # Inference frame construction
 # ---------------------------------------------------------------------------
@@ -1868,7 +1910,11 @@ def upsert_destination_projections(engine: Engine, records: list[tuple]) -> int:
     raw_conn = engine.raw_connection()
     try:
         with raw_conn.cursor() as cur:
-            execute_values(cur, _UPSERT_DESTINATION_SQL, records)
+            # page_size default (100) meant ~4,548 round trips for a ~454,790-row
+            # write instead of ~455 -- a real drift from the page_size=1000 this
+            # module's own docs (see transfer_success.py's upsert comment) claimed
+            # to already match. Fixed 2026-07-23.
+            execute_values(cur, _UPSERT_DESTINATION_SQL, records, page_size=1000)
         raw_conn.commit()
     finally:
         raw_conn.close()

@@ -1,49 +1,94 @@
-%%{init: {"flowchart": {"rankSpacing": 80, "nodeSpacing": 40}}}%%
+%%{init: {"flowchart": {"rankSpacing": 70, "nodeSpacing": 35}}}%%
 flowchart LR
 
-    subgraph SOURCES["Data Sources"]
-        direction TB
-        S1["barttorvik.com\nAdjEM · 4 Factors · Rosters\ntemp/pace/shot-type splits"]
-        S2["Hoop Explorer CSVs\nRAPM · play-type freq\nspatial shot zones · pos confidence"]
-        S3["hoopR / ESPN PBP\nsportsdataverse parquet releases\nPBP + schedule + game-log box scores"]
-        S4["247Sports\nTransfer portal events\nEntry/Committed dates · school names"]
-        S5["barttorvik rostercast.php\nPer-school roster snapshots\nPlayer · Yr · Mins · Ortg · Usage"]
-        S6["News Feeds\nVerbalCommits · beat writers\nCoaching & staffing changes\nRecruiting social/RSS"]
+    subgraph CLIENT["Client"]
+        BR["Browser\nReact 18 + TypeScript SPA"]
     end
 
-    subgraph ORCH["Ingestion & Orchestration"]
+    subgraph EDGE["Edge — live"]
         direction TB
-        AW["Apache Airflow\ndaily_data_ingestion_dag  2 AM EST\nhourly_portal_monitoring_dag  Mar–Aug\nweekly_model_training_dag  Sun 3 AM"]
-        FA["FastAPI App  :8000\nJWT auth · CORS · /health\n/api/players  /api/fit-scores\n/api/projections  /api/users"]
-        MQ["Celery + RabbitMQ\nAsync task queue\nPriority lanes: ETL · Agent · Model\nRetry + dead-letter routing"]
+        CF["CloudFront CDN\nE2HF7HKH8Y1FKD\nSSL termination · routes /api/* to ALB"]
+        S3F["S3: portalpoint-frontend\nstatic SPA assets"]
     end
 
-    subgraph WORKERS["Async Background Processing"]
+    subgraph APP["AWS ECS Fargate — portalpoint-prod cluster — live"]
         direction TB
-        ETL["ETL Workers\ningest_barttorvik.py\ningest_hoop_explorer.py  --all-seasons\ningest_hoopr.py  --game-logs\ningest_transfers_247sports.py\ningest_roster_snapshots.py\nbuild_roster_state_features.py"]
-        AGT["News / Portal Agent\nIngest layer: per-source scrapers\nClassify/Extract: LLM  free-text only\nResolve/Dedup: fuzzy-match\n  reuses _match_player() logic\nAlert: portal entry detected\n  coaching change · staffing news\nWrites: transfer_portal_events\n  → sync_portal_candidate_flags()\n  → targeted gap re-score\n    --include-player-ids override"]
-        MTW["Model Training Workers\nrun_player_clustering.py\nrun_team_clustering.py\nrun_scheme_fit.py   all-pairs 9.7M rows\nrun_gap_matching.py   departure-aware\nrun_player_projection.py   Ph0 + Ph2a\nrun_playing_time.py   school-chunk 365\nrun_destination_projection.py\nrun_team_rating_projection.py"]
+        ALB["Application Load Balancer\nhealth check → /ready (real SELECT 1, not /health)"]
+        SVC["portalpoint-backend service\nFastAPI · JWT auth · CORS\n/api/players · /api/fit-scores\n/api/projections · /api/recommendations\n/api/predictions · /api/users"]
     end
 
-    subgraph LAKE["Data Lake & MLOps Store"]
+    subgraph DATA["Data & Cache — live"]
         direction TB
-        S3L["AWS S3  s3://portalpoint-data\nraw/barttorvik/YYYY-MM-DD/\nraw/hoop_explorer/YYYY-MM-DD/\nraw/hoopr/  PBP + game-log parquet\nraw/features/  player + team parquet\nmodels/  pkl artifacts"]
-        MLF["MLflow\nExperiment tracking · run metadata\nModel Registry  5 registered models\n  player-projection\n  gap-matching-scorer\n  scheme-fit-scorer\n  player-clustering\n  team-clustering\n  team-rating-scorer\n  player-destination-proj\nalias @champion  auto-promote at +5%\nArtifact backend → S3"]
+        RDS["RDS PostgreSQL 15 + pg_vector\nportalpoint-db.....rds.amazonaws.com\napp user: portalpoint_app"]
+        REDIS["ElastiCache Redis\nportalpoint-cache — live since 2026-07-21\nfit-score cache · agent run-tracking"]
     end
 
-    subgraph DB["Relational Store & Cache"]
+    subgraph DEPLOY["CI/CD — GitHub Actions (OIDC) — live"]
         direction TB
-        PG["PostgreSQL 15\n+ TimescaleDB  + pg_vector\n~27 tables · 5 logical layers\nCore: schools · players · games\nAnalytics: season stats · archetypes\n  system profiles · roster state\nIngest: hoop_explorer · hoopr · logs\nTransfer: portal_events · transfers\n  snapshots · roster_baseline\nML Outputs: fit_scores · projections\n  playing_time · team_rating\nUser: users · shortlists · feedback"]
-        RD["Redis 7.0\nFit score cache  30-min TTL\nSession store · rate limiting"]
+        GHA["deploy.yml\ntriggers on merge to main\nno long-lived AWS keys (OIDC)"]
+        ECR["Build & push image → ECR"]
+        MIG["alembic upgrade head\none-off ECS task — BLOCKING gate\nadded 2026-07-21 after a real incident:\nmigrations merged but never applied"]
+        UPD["Update portalpoint-backend service"]
     end
 
-    SOURCES   -- "HTTP / CSV / parquet" --> ORCH
-    ORCH      -- "enqueue tasks" -->        WORKERS
-    WORKERS   -- "upsert rows" -->          DB
-    WORKERS   -- "write artifacts / parquet" --> LAKE
-    LAKE      -. "load model artifacts\nfeature parquet" .-> WORKERS
-    DB        -. "query training data\nfeature joins" .->   WORKERS
-    FA        -- "async/await SQLAlchemy" --> PG
-    FA        -- "aioredis cache reads" --> RD
-    AGT       -- "is_portal_candidate sync\nnew transfer_portal_events" --> PG
-    AGT       -- "alert payloads" -->        FA
+    subgraph DEVACCESS["Dev DB Access — SSM tunnel (SSH closed, 2026-07-20)"]
+        direction TB
+        DEV["Developer laptop"]
+        SSM["aws ssm start-session\nAWS-StartPortForwardingSessionToRemoteHost\nbastion i-0a6e1bafc1cb6f379 → 127.0.0.1:5433\nIAM: PortalPoint-Dev group, infra account"]
+    end
+
+    subgraph MLOPS["MLOps — live"]
+        direction TB
+        MLF["MLflow\nsqlite mlruns.db + S3 artifact backend\n9 registered models · alias-based (@champion)\nauto-promote gate: +5% vs current champion"]
+        S3M["S3: s3://portalpoint-data\nraw/ · features/ · models/ · mlflow/"]
+    end
+
+    subgraph MONITOR["Monitoring — live (minimal)"]
+        CW["1 CloudWatch alarm\nALB UnHealthyHostCount → SNS"]
+    end
+
+    subgraph PLANNED["Planned / Explicitly NOT Implemented\n(product decision, not oversight — no automated-freshness need yet)"]
+        direction TB
+        AIRFLOW["Apache Airflow\ndaily_data_ingestion_dag · hourly_portal_monitoring_dag\nweekly_model_training_dag"]
+        CELERY["Celery + RabbitMQ\nasync task queue, priority lanes"]
+        WS["WebSocket service\nlive portal-update push"]
+        PROM["Prometheus + Grafana\nmetrics/dashboards"]
+        DRIFT["Feature-drift monitoring\nKS-test, RMSE > baseline × 1.2 alerting"]
+    end
+
+    %% ── Live request path ──────────────────────────────────────────────────────
+    BR -- "HTTPS" --> CF
+    CF -- "static assets" --> S3F
+    CF -- "/api/* proxied" --> ALB
+    ALB --> SVC
+    SVC -- "async SQLAlchemy" --> RDS
+    SVC -- "aioredis" --> REDIS
+    ALB -. "health checks" .-> CW
+
+    %% ── Deploy path ─────────────────────────────────────────────────────────────
+    GHA --> ECR --> MIG --> UPD
+    MIG -- "must succeed first" --> RDS
+    UPD -.-> SVC
+
+    %% ── Dev DB access (not the live request path) ───────────────────────────────
+    DEV -. "manual, dev-only" .-> SSM
+    SSM -. "127.0.0.1:5433 → 5432" .-> RDS
+
+    %% ── Training scripts / notebooks (offline, not live requests) ──────────────
+    SCRIPTS["scripts/run_*.py, ingest_*.py\n(via DEVACCESS tunnel or CI)"] -- "writes runs/artifacts" --> MLF
+    MLF --> S3M
+    SCRIPTS -.->|"upsert"| RDS
+
+    %% ── Planned integration points (dashed = not wired, shown for context) ─────
+    AIRFLOW -. "would schedule" .-> SCRIPTS
+    CELERY -. "would queue" .-> SCRIPTS
+    WS -. "would sit beside" .-> SVC
+    PROM -. "would scrape /metrics (not exposed)" .-> SVC
+    DRIFT -. "would gate" .-> MLF
+
+    style PLANNED fill:#f5f5f5,stroke:#ccc,color:#888
+    style AIRFLOW fill:#f5f5f5,stroke:#ccc,color:#888
+    style CELERY fill:#f5f5f5,stroke:#ccc,color:#888
+    style WS fill:#f5f5f5,stroke:#ccc,color:#888
+    style PROM fill:#f5f5f5,stroke:#ccc,color:#888
+    style DRIFT fill:#f5f5f5,stroke:#ccc,color:#888

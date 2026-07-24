@@ -61,6 +61,32 @@ MLFLOW_MODEL_NAME = "team-rating-scorer"
 GATE_METRIC = "fold3_em_rmse"
 
 
+def _safe_log_dict(data: dict, filename: str) -> None:
+    """mlflow.log_dict, but a failure only warns instead of aborting the run.
+
+    Real incident (2026-07-23): this call failed inside the real script with a
+    PermissionError writing to a local artifact path, despite an isolated
+    reproduction of the identical setup_mlflow()+start_run()+artifact_uri call
+    succeeding cleanly against the correctly-configured S3 artifact root —
+    root cause not yet found (flagged as a follow-up). The real DB write
+    (upsert_team_rating_projections) happens later in this same run and must
+    not be blocked by an MLflow artifact-logging problem, matching how
+    destination_projection.py's equivalent crash was already found to be
+    non-blocking for its own DB write.
+    """
+    try:
+        mlflow.log_dict(data, filename)
+    except Exception:
+        log.warning("mlflow.log_dict(%s) failed, continuing without it", filename, exc_info=True)
+
+
+def _safe_log_artifact(local_path, artifact_path: str | None = None) -> None:
+    try:
+        mlflow.log_artifact(local_path, artifact_path=artifact_path)
+    except Exception:
+        log.warning("mlflow.log_artifact(%s) failed, continuing without it", local_path, exc_info=True)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run Team Rating Projection model")
     p.add_argument("--target-season", type=int, default=2027,
@@ -159,7 +185,7 @@ def run_team_rating_projection(
         mlflow.log_metric("def_resid_std", models.def_resid_std)
 
         # Log slot baselines as artifact (convert tuple keys to str for JSON)
-        mlflow.log_dict(
+        _safe_log_dict(
             {str(k): v for k, v in slot_baselines.items()},
             "slot_baselines.json",
         )
@@ -170,7 +196,7 @@ def run_team_rating_projection(
                 "def_coef": float(models.def_model.coef_[i])}
             for i, f in enumerate(ROSTER_FEATURES)
         }
-        mlflow.log_dict(coef_report, "model_coefficients.json")
+        _safe_log_dict(coef_report, "model_coefficients.json")
         log.info("  off_resid_std=%.3f  def_resid_std=%.3f", models.off_resid_std, models.def_resid_std)
 
         # ------------------------------------------------------------------
@@ -219,7 +245,7 @@ def run_team_rating_projection(
         audit_df = pd.DataFrame(freshman_audit)
         mlflow.log_metric("n_schools_with_freshman_priors", int((audit_df["n_freshman_priors"] > 0).sum()))
         mlflow.log_metric("n_schools_heavy_freshman_priors", len(heavy_fr))
-        mlflow.log_dict(
+        _safe_log_dict(
             audit_df.to_dict(orient="records"),
             "freshman_prior_audit.json",
         )
@@ -415,8 +441,8 @@ def run_team_rating_projection(
                 pickle.dump({"model": models.off_model, "scaler": models.off_scaler}, f)
             with open(def_path, "wb") as f:
                 pickle.dump({"model": models.def_model, "scaler": models.def_scaler}, f)
-            mlflow.log_artifact(off_path, artifact_path="team_rating_models")
-            mlflow.log_artifact(def_path, artifact_path="team_rating_models")
+            _safe_log_artifact(off_path, artifact_path="team_rating_models")
+            _safe_log_artifact(def_path, artifact_path="team_rating_models")
 
         fresh_metrics = mlflow.get_run(run_id).data.metrics
         if not skip_cv and GATE_METRIC in fresh_metrics:

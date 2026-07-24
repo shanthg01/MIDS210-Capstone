@@ -6,7 +6,7 @@ const LABEL_MAP: Record<string, string> = {
   gap_match: 'Roster Need',
   scheme_fit: 'System Match',
   role_fit: 'Role Fit',
-  program_fit: 'Program Fit',    // FitScorePage breakdown (stubbed, descoped)
+  program_fit: 'Program Fit',    // real per-user grade once program_fit_user_inputs exists for this pair
   team_impact_fit: 'Team Rating', // RecommendationCard — M6 delta_adjEM normalized
 };
 
@@ -18,24 +18,34 @@ export function scoreColor(v: number): 'success' | 'warning' | 'error' {
 
 // Components backed by a real model for every row: scheme_fit (scheme-cos-v3),
 // gap_match (gap-cos-v4), team_impact_fit (M6 delta_adjEM normalized).
-// program_fit is always a 50.0 stub until the Program Fit calculator is built
-// (descoped 2026-07-11 — no NIL/geography/academic proxy data yet). role_fit
-// is NOT in this set — unlike the others, its liveness is per-row (real only
-// where playing-time-rotation-v2/Issue #25 has actually synced that pair, see
-// isComponentLive below), not a fixed property of the component.
+// role_fit and program_fit are NOT in this set — unlike the others, their
+// liveness is per-row/per-user (see isComponentLive below), not a fixed
+// property of the component.
 export const LIVE_COMPONENTS = new Set(['scheme_fit', 'gap_match', 'team_impact_fit']);
 
 // role_fit is real only on rows run_playing_time.py has actually synced
 // (model_version === ROLE_FIT_LIVE_MODEL_VERSION); everywhere else it's still
-// the 50.0 stub baked in by gap_matching.py. Every other component's liveness
-// is a fixed property, so it falls back to the static LIVE_COMPONENTS check.
-export function isComponentLive(component: string, modelVersion?: string): boolean {
+// the 50.0 stub baked in by gap_matching.py. program_fit is real only once
+// this user has entered their own qualitative grade (program_fit_user_inputs,
+// 2026-07-21 design decision) — per-user, never a property of the row itself.
+// Every other component's liveness is a fixed property, so it falls back to
+// the static LIVE_COMPONENTS check.
+export function isComponentLive(component: string, modelVersion?: string, isGraded?: boolean): boolean {
   if (component === 'role_fit') return modelVersion === ROLE_FIT_LIVE_MODEL_VERSION;
+  if (component === 'program_fit') return !!isGraded;
   return LIVE_COMPONENTS.has(component);
 }
 
-export function DataStatusChip({ component, modelVersion }: { component: string; modelVersion?: string }) {
-  const isLive = isComponentLive(component, modelVersion);
+export function DataStatusChip({
+  component,
+  modelVersion,
+  isGraded,
+}: {
+  component: string;
+  modelVersion?: string;
+  isGraded?: boolean;
+}) {
+  const isLive = isComponentLive(component, modelVersion, isGraded);
   return (
     <Tooltip
       title={isLive ? DATA_STATUS.live.short : DATA_STATUS.placeholder.short}

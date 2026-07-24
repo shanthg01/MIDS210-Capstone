@@ -287,7 +287,7 @@ export default function ComparePage() {
   // Show results if mutation succeeded
   if (result) {
     return (
-      <Box sx={{ maxWidth: 900 }}>
+      <Box sx={{ width: '100%' }}>
         <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players
         </Typography>
@@ -299,7 +299,7 @@ export default function ComparePage() {
   const players = shortlist?.players ?? [];
 
   return (
-    <Box sx={{ maxWidth: 700 }}>
+    <Box sx={{ width: '100%' }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Compare Players

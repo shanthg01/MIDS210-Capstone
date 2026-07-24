@@ -1,6 +1,8 @@
 import client from './client';
 import type {
   FitScoreResponse,
+  ProgramFitUserInputRequest,
+  ProgramFitUserInputResponse,
   RosterImpactResponse,
   TeamRatingOverrideRequest,
   TeamRatingOverrideResponse,
@@ -14,6 +16,16 @@ export async function getFitScore(
   const { data } = await client.get<FitScoreResponse>('/fit-scores', {
     params: { player_id: playerId, school_id: schoolId },
   });
+  return data;
+}
+
+// Manual qualitative "off the court" grade for one player x school pair —
+// per-user, substitutes into personalized_fit only. See
+// ProgramFitUserInput/program_fit_model_plan.md.
+export async function upsertProgramFitUserInput(
+  body: ProgramFitUserInputRequest,
+): Promise<ProgramFitUserInputResponse> {
+  const { data } = await client.put<ProgramFitUserInputResponse>('/fit-scores/program-fit-input', body);
   return data;
 }
 

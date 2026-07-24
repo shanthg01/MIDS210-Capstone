@@ -39,22 +39,38 @@ def ensure_aws_env() -> None:
 
 
 def get_artifact_root() -> str | None:
-    """S3 artifact root when S3_BUCKET is set; else local default."""
-    bucket = load_env().get("S3_BUCKET", "").strip()
+    """S3 artifact root when S3_BUCKET is set; else local default.
+
+    Same real env var vs .env-file bug as get_tracking_uri() (2026-07-23): only
+    checked load_env()'s .env-file dict, never os.environ, so a container with
+    S3_BUCKET set as a real task-def env var (confirmed already present on the
+    live portalpoint-backend task def) silently fell through to MLflow's local
+    artifact store default -- a path under the non-root container's unwritable
+    /app -- "PermissionError: [Errno 13] Permission denied: '/app/mlruns'".
+    """
+    bucket = (os.environ.get("S3_BUCKET") or load_env().get("S3_BUCKET", "")).strip()
     if bucket and not bucket.startswith("#"):
         return f"s3://{bucket}/mlflow"
     return None
 
 def get_tracking_uri() -> str:
-    """Read MLFLOW_TRACKING_URI from .env; fall back to SQLite at repo root.
+    """Read MLFLOW_TRACKING_URI from the real environment (or .env); fall back
+    to SQLite at repo root.
+
+    Real env vars must win over .env, matching get_sync_engine()'s precedence
+    (needed for CI and for containers, which set MLFLOW_TRACKING_URI directly
+    and have no .env file at all — confirmed 2026-07-23: an ECS task pointed
+    MLFLOW_TRACKING_URI at an EFS-mounted sqlite path via a task-def env var,
+    but this function only ever checked load_env()'s .env-file dict, silently
+    ignored the real env var, and fell back to a repo-root sqlite path the
+    non-root container user can't write to — "unable to open database file").
 
     A relative `sqlite:///mlruns.db` resolves against the *process* CWD, which
     differs between notebooks (cwd=notebooks/models) and scripts (cwd=repo
     root) — they'd silently track to two different files. Anchor relative
     sqlite paths to the repo root so both land in the same store.
     """
-    env = load_env()
-    uri = env.get("MLFLOW_TRACKING_URI", "")
+    uri = os.environ.get("MLFLOW_TRACKING_URI") or load_env().get("MLFLOW_TRACKING_URI", "")
     if not uri or uri.startswith("#") or uri.startswith("file:"):
         db_path = find_repo_root() / "mlruns.db"
         return f"sqlite:///{db_path}"
@@ -72,15 +88,27 @@ def setup_mlflow(experiment_name: str) -> MlflowClient:
 
     exp = client.get_experiment_by_name(experiment_name)
     if exp is None:
+        # artifact_location is immutable once an experiment is created (no such
+        # thing as MlflowClient.update_experiment) — can't patch a pre-existing
+        # local-artifact experiment onto S3 here. Just use it as-is.
         if artifact_root:
             client.create_experiment(experiment_name, artifact_location=artifact_root)
         else:
             client.create_experiment(experiment_name)
-    else:
-        # artifact_location is immutable once an experiment is created (no such
-        # thing as MlflowClient.update_experiment) — can't patch a pre-existing
-        # local-artifact experiment onto S3 here. Just use it as-is.
-        pass
+
+    # client.create_experiment() only registers the experiment on the backend
+    # store -- it does NOT mark it active for the fluent API. Without this
+    # call, a freshly-created experiment is never attached to, and the next
+    # mlflow.start_run() silently falls back to MLflow's Default experiment
+    # (id "0"), which has a local file:///.../mlruns artifact root -- not S3.
+    # This was the real cause of "PermissionError: [Errno 13] Permission
+    # denied: '/app/mlruns'" on ECS (2026-07-23/24): every individual piece
+    # (get_artifact_root(), the experiment's own artifact_location) resolved
+    # correctly in isolation because those diagnostics ran against an
+    # already-existing experiment (else branch, set_experiment was reached);
+    # the real scripts hit this on a brand-new experiment name against the
+    # fresh EFS-mounted sqlite store, where exp was None and set_experiment()
+    # was never called at all.
     mlflow.set_experiment(experiment_name)
 
     return client

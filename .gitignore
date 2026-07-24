@@ -83,3 +83,5 @@ s3-bucket-policy.json
 logs-policy.json
 ssm-tunnel-params.json
 ssm-cache-tunnel-params.json
+gha-frontend-deploy-policy.json
+efs-mlflow-policy.json

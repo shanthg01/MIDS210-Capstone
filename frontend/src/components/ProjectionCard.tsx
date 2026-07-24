@@ -45,7 +45,7 @@ const BOX_SCORE_LABELS: Record<string, string> = {
   tov_per_40: 'TOV/40',
 };
 
-const BOX_SCORE_LABELS_PER_GAME: Record<string, string> = {
+export const BOX_SCORE_LABELS_PER_GAME: Record<string, string> = {
   pts_per_game: 'PTS/G',
   reb_per_game: 'REB/G',
   ast_per_game: 'AST/G',

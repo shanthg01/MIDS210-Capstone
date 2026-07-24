@@ -33,12 +33,18 @@ export async function getPlayer(playerId: string): Promise<PlayerProfile> {
 // 404 means no projection row for this player — real "not available", not an error to surface.
 // Omit schoolId for the neutral (context-free) projection; pass it for the
 // destination-adjusted projection (school-specific, includes projected_minutes/usage).
+// minutesOverride (destination mode only) recomputes projected_box_score_at_minutes
+// for a hypothetical minutes value — no model rerun, see recompute_box_score_for_minutes.
 export async function getPlayerProjection(
   playerId: string,
   schoolId?: number,
+  minutesOverride?: number,
 ): Promise<PlayerProjectionResponse> {
+  const params: Record<string, number> = {};
+  if (schoolId !== undefined) params.school_id = schoolId;
+  if (minutesOverride !== undefined) params.minutes_override = minutesOverride;
   const { data } = await client.get<PlayerProjectionResponse>(`/players/${playerId}/projection`, {
-    params: schoolId !== undefined ? { school_id: schoolId } : undefined,
+    params: Object.keys(params).length > 0 ? params : undefined,
   });
   return data;
 }

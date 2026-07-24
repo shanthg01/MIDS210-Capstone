@@ -204,7 +204,7 @@ export default function PipelinePage() {
   const players = sortPlayers(data?.players ?? []);
 
   return (
-    <Box sx={{ maxWidth: 800 }}>
+    <Box sx={{ width: '100%' }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Recruiting Pipeline

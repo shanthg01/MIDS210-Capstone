@@ -57,12 +57,17 @@ flowchart TD
     GM --> PTFS_GM
     GM --> MLF_GM
 
-    %% ── News / Portal Agent ────────────────────────────────────────────────────
-    AGT["News / Portal Agent\nIngest: VerbalCommits · beat writers\n  coaching & staffing news\nClassify/Extract: LLM  free-text\nResolve/Dedup: fuzzy _match_player()\nAlerts: portal entry · coaching change"]
+    %% ── News Monitoring Agent (PR #50, production scaffolding) ─────────────────
+    AGT["News Monitoring Agent\nTavily search → dual classifier (regex / Gemini)\nentity_resolution.py — shared w/ 247sports ingest\ntransfer_player tool: 4-step pipeline\ncoach_departure tool: program_events + stale_flag\nrun_news_monitoring.py — schedule-agnostic CLI\nVerbalCommits/beat writers: not yet ingested (Phase B/C)"]
+    PE[(program_events\ncoach departures · transfers)]
+    PERQ[(program_events_review_queue\nsub-threshold / pending human review)]
 
-    TPE --> AGT
+    AGT -->|"transfer_player: ON CONFLICT COALESCE"| TPE
+    AGT -->|writes| PE
+    AGT -->|sub-threshold events| PERQ
     AGT -->|"sync_portal_candidate_flags()\nis_portal_candidate flag"| PTFS_GM
     AGT -->|"--include-player-ids override\ntargeted one-off re-score"| GM
+    AGT -->|"coach_departure: stale_flag=true\nstale_reason='coaching_change'"| TSP
 
     %% ── M8 Phase 0: Player Projection ─────────────────────────────────────────
     M8P0["M8 · Player Projection  Phase 0\nEmpirical-Bayes shrinkage\n+ Ridge value model vs HE RAPM\nplayer-projection-shrinkage-v1\n27047 player-seasons 2021–2026"]
@@ -108,39 +113,38 @@ flowchart TD
     %% ── M6: Team Rating Projection ─────────────────────────────────────────────
     M6["M6 · Team Rating Projection\nRoster-counterfactual Ridge\nOff + Def models vs BartTorvik adj_o/adj_d\n14 ROSTER_FEATURES · 2158 school-seasons\nteam-roster-proj-v1\n457345 rows  1253 candidates x 365 schools"]
     TRP[/"team_rating_projections\ndelta_adj_em · off/def CI"/]
-    MLF_M6(["MLflow\nteam-rating-scorer\nStaging"])
+    MLF_M6(["MLflow\nteam-rating-scorer\n@champion (v1)"])
 
     PP_NEU & RSF & PA & TSS --> M6
     M6 --> TRP
     M6 --> MLF_M6
 
-    %% ── M7: Recommendation Engine (not built) ──────────────────────────────────
-    M7["M7 · Recommendation Engine\nSVD + content + fit composite\nNeeds all 4 fit components live\n❌ Not started"]
-    REC[/"recommendations table\n❌ stub"/]
+    %% ── M7: Recommendation Engine ─────────────────────────────────────────────
+    M7["M7 · Recommendation Engine ✅\n2-stage: Top-50 vectorized rank → Top-10 preference re-rank\nscheme + gap + role + team_impact_fit (M6 delta_adj_em)\nrec-v1.2 · program_fit descoped, not blocking\nFirst real run: school_id=301, season=2027"]
+    REC[/"recommendations table\n80 rows (first prod run)\n/api/recommendations wired to real engine"/]
+    MLF_M7(["MLflow\nrecommendation-engine\n@champion v1 (first baseline)"])
 
     PTFS_RF --> M7
-    PP_DEST --> M7
     TRP --> M7
     M7 --> REC
+    M7 --> MLF_M7
 
-    %% ── M5: Transfer Success Predictor (not built) ─────────────────────────────
-    M5["M5 · Transfer Success Predictor\nXGBoost  post-transfer outcome\n❌ Not started"]
-    PRED[/"predictions table\n❌ stub"/]
+    %% ── M5: Transfer Success Predictor ────────────────────────────────────────
+    M5["M5 · Transfer Success Predictor ✅\nEmpirical-Bayes shrinkage over (player_cluster x team_system) cells\ntime-decay weighted · expanding-window, no leakage\ntransfer-success-eb-v1 — not XGBoost (Issue #23 product decision)\nBrier 0.2492 (backtest, out-of-sample) · 53.5% overall success rate"]
+    TSCORE[/"transfer_success_scores\n456615 rows · success_probability/tier/explanation"/]
+    MLF_M5(["MLflow\ntransfer-success\n@champion v1 (first prod run)"])
 
-    PP_DEST & TRF & PSS --> M5
-    M5 --> PRED
+    PP_DEST & TRF & PSS & HEPS --> M5
+    M5 --> TSCORE
+    M5 --> MLF_M5
 
     %% ── API surfaces ────────────────────────────────────────────────────────────
-    API["FastAPI\nGET /api/players/{id}/projection\nGET /api/players/{id}/playing-time\nGET /api/fit-scores\nGET /api/projections/team-rating\nGET /api/recommendations"]
+    API["FastAPI\nGET /api/players/{id}/projection\nGET /api/players/{id}/playing-time\nGET /api/fit-scores  (+ scheme_fit_stale)\nGET /api/projections/team-rating\nGET /api/recommendations\nGET /api/predictions"]
 
-    PP_DEST & PP_NEU & PTFS_RF & TRP & REC --> API
+    PP_DEST & PP_NEU & PTFS_RF & TRP & REC & TSCORE --> API
+    TSP -.->|"queried live by fit_score_service\nsurfaced as scheme_fit_stale"| API
 
     %% ── Styles ──────────────────────────────────────────────────────────────────
-    style M7  fill:#f5f5f5,stroke:#ccc,color:#999
-    style M5  fill:#f5f5f5,stroke:#ccc,color:#999
-    style REC fill:#f5f5f5,stroke:#ccc,color:#999
-    style PRED fill:#f5f5f5,stroke:#ccc,color:#999
     style AGT fill:#fff8e1,stroke:#f9a825,color:#333
     style MLF_P2 fill:#fff3e0,stroke:#fb8c00,color:#333
     style MLF_M9 fill:#fff3e0,stroke:#fb8c00,color:#333
-    style MLF_M6 fill:#fff3e0,stroke:#fb8c00,color:#333

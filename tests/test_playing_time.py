@@ -746,3 +746,477 @@ def test_resolve_promotion_gate_metric_none_when_missing():
 
 def test_resolve_promotion_gate_metric_none_on_empty_metrics():
     assert pt.resolve_promotion_gate_metric({}) is None
+
+
+# ---------------------------------------------------------------------------
+# build_playing_time_records vectorization equivalence
+# (regression: real production bottleneck found 2026-07-22 — the itertuples()
+# loop called _as_float() ~20x/row to build two JSON dicts, ~10M Python-level
+# calls for one 75-school chunk; this proves the vectorized rewrite is
+# bit-for-bit identical to the original per-row implementation, kept as
+# _build_playing_time_records_scalar_reference for exactly this comparison)
+# ---------------------------------------------------------------------------
+
+def _assert_records_equivalent(vec_row: tuple, ref_row: tuple) -> None:
+    """Field-by-field comparison, robust to float rounding noise, JSON key-order
+    differences, and the trailing (model_version, now, expires) fields — the last
+    two are independently computed via datetime.now(timezone.utc) inside each
+    function, so they legitimately differ by microseconds between the two calls."""
+    assert len(vec_row) == len(ref_row)
+    for vec_val, ref_val in zip(vec_row[:-2], ref_row[:-2]):
+        if isinstance(vec_val, float) or isinstance(ref_val, float):
+            assert vec_val == pytest.approx(ref_val, abs=1e-9)
+        elif isinstance(vec_val, str) and vec_val.startswith(("{", "[")):
+            # JSON-string fields — compare parsed, not the raw string (key
+            # order isn't guaranteed identical between the two code paths).
+            assert json.loads(vec_val) == json.loads(ref_val)
+        else:
+            assert vec_val == ref_val
+    assert isinstance(vec_row[-2], datetime) and isinstance(ref_row[-2], datetime)
+    assert isinstance(vec_row[-1], datetime) and isinstance(ref_row[-1], datetime)
+
+
+def _make_varied_scored_frame(n: int = 24, seed: int = 7) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n):
+        expected_minutes = float(rng.uniform(0.0, 38.0))
+        ci_lower = max(expected_minutes - rng.uniform(2.0, 8.0), 0.0)
+        ci_upper = expected_minutes + rng.uniform(2.0, 8.0)
+        row: dict = {
+            "player_id": TEST_PLAYER_ID + i,
+            "school_id": TEST_SCHOOL_ID,
+            "season": 2027,
+            "roster_snapshot_id": None if i % 3 == 0 else 100 + i,
+            "expected_minutes": expected_minutes,
+            "expected_minutes_share": expected_minutes / 40.0,
+            "minutes_ci_lower": ci_lower,
+            "minutes_ci_upper": ci_upper,
+            "expected_usage": float(rng.uniform(5.0, 35.0)),
+            "roster_open_minutes": float(rng.uniform(0.0, 40.0)),
+            "returning_minutes_position": float(rng.uniform(0.0, 40.0)),
+            "same_position_prior_minutes": float(rng.uniform(0.0, 100.0)),
+            "position_crowding_ratio": float(rng.uniform(0.0, 2.0)),
+            "opportunity_to_prior_minutes_ratio": float(rng.uniform(0.0, 3.0)),
+            "prior_team_rotation_hhi": float(rng.uniform(0.0, 1.0)),
+            "prior_team_rotation_players": float(rng.integers(0, 12)),
+            "prior_minutes": float(rng.uniform(0.0, 30.0)),
+            "sample_reliability": float(rng.uniform(0.0, 1.0)),
+            "projection_reliability": float(rng.uniform(0.0, 1.0)),
+            "heavy_minutes_probability": float(rng.uniform(0.0, 1.0)),
+            "high_usage_probability": float(rng.uniform(0.0, 1.0)),
+            "candidate_changes_school": float(rng.integers(0, 2)),
+            "is_portal_candidate": float(rng.integers(0, 2)),
+            "source_stat_season": 2026,
+            "roster_context_season": 2026,
+            "fit_context_season": 2026,
+            "team_context_season": 2026,
+            "neutral_projection_model_version": "player-proj-phase2a-fcast-v1",
+            "gap_match": float(rng.uniform(0.0, 100.0)),
+            "scheme_fit": float(rng.uniform(0.0, 100.0)),
+            "program_fit": 50.0,
+            "weight_gap": 0.20,
+            "weight_scheme": 0.30,
+            "weight_role": 0.25,
+            "weight_program": 0.25,
+            "fit_breakdown": {"scheme_fit": {"pace_match": 50.0}} if i % 4 == 0 else {},
+            "explanation": {"value_drivers": {"top_positive": []}} if i % 5 == 0 else None,
+        }
+        # Deliberately vary which rows carry model-provided values vs need the
+        # scalar-fallback branches (usage_role/confidence, starter/rotation
+        # model, role_fit) — the exact branches build_playing_time_records and
+        # its scalar reference must agree on.
+        if i % 2 == 0:
+            row["usage_role"] = ["primary_creator", "connector", "depth", "spacing_specialist"][i % 4]
+            row["usage_role_confidence"] = float(rng.uniform(0.3, 0.95))
+        if i % 3 != 0:
+            row["starter_probability_model"] = float(rng.uniform(0.0, 1.0))
+            row["rotation_probability_model"] = float(rng.uniform(0.0, 1.0))
+        if i % 4 != 0:
+            row["role_fit"] = float(rng.uniform(0.0, 100.0))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def test_build_playing_time_records_matches_scalar_reference_on_varied_frame():
+    scored = _make_varied_scored_frame()
+    vec_projection, vec_sync = pt.build_playing_time_records(scored)
+    ref_projection, ref_sync = pt._build_playing_time_records_scalar_reference(scored)
+
+    assert len(vec_projection) == len(ref_projection) == len(scored)
+    for vec_row, ref_row in zip(vec_projection, ref_projection):
+        _assert_records_equivalent(vec_row, ref_row)
+    for vec_row, ref_row in zip(vec_sync, ref_sync):
+        _assert_records_equivalent(vec_row, ref_row)
+
+
+def test_build_playing_time_records_matches_scalar_reference_on_minimal_frame():
+    # Entirely-missing-optional-columns case — same convention as
+    # test_compute_role_fit_scores_handles_entirely_missing_optional_columns etc.
+    scored = pd.DataFrame(
+        [
+            {
+                "player_id": TEST_PLAYER_ID,
+                "school_id": TEST_SCHOOL_ID,
+                "season": 2027,
+                "expected_minutes": 18.0,
+                "expected_minutes_share": 0.45,
+                "expected_usage": 15.0,
+                "minutes_ci_lower": 12.0,
+                "minutes_ci_upper": 24.0,
+            }
+        ]
+    )
+    vec_projection, vec_sync = pt.build_playing_time_records(scored)
+    ref_projection, ref_sync = pt._build_playing_time_records_scalar_reference(scored)
+
+    assert len(vec_projection) == len(ref_projection) == 1
+    _assert_records_equivalent(vec_projection[0], ref_projection[0])
+    _assert_records_equivalent(vec_sync[0], ref_sync[0])
+
+
+def test_build_playing_time_records_empty_frame_returns_empty():
+    empty = pd.DataFrame(columns=["player_id", "school_id", "season", "expected_minutes"])
+    projection_records, sync_records = pt.build_playing_time_records(empty)
+    assert projection_records == []
+    assert sync_records == []
+
+
+# ---------------------------------------------------------------------------
+# sync_role_fit_scores: COPY + bulk UPDATE...FROM rewrite (real DB)
+# (regression: player_team_fit_scores is a 17GB/~11.15M-row table with 5
+# indexes — the old execute_values ON CONFLICT DO UPDATE paid an
+# index-probe-and-update cost per ~1000-row batch, ~492 round-trips for one
+# 75-school chunk. This proves the COPY-into-temp-table + single bulk
+# UPDATE...FROM (plus rare fallback INSERT) rewrite lands the exact same
+# resulting row as the original _sync_role_fit_scores_execute_values_reference,
+# for both the update-existing-row and insert-missing-row paths.)
+# ---------------------------------------------------------------------------
+
+def _one_sync_record(
+    player_id: int = TEST_PLAYER_ID,
+    school_id: int = TEST_SCHOOL_ID,
+    season: int = TEST_SEASON,
+    gap_match: float = 61.5,
+    scheme_fit: float = 72.25,
+    role_fit: float = 44.0,
+    program_fit: float = 50.0,
+) -> tuple:
+    scored = _make_varied_scored_frame(n=1)
+    scored.loc[0, "player_id"] = player_id
+    scored.loc[0, "school_id"] = school_id
+    scored.loc[0, "season"] = season
+    scored.loc[0, "gap_match"] = gap_match
+    scored.loc[0, "scheme_fit"] = scheme_fit
+    scored.loc[0, "role_fit"] = role_fit
+    scored.loc[0, "program_fit"] = program_fit
+    _, sync_records = pt.build_playing_time_records(scored)
+    return sync_records[0]
+
+
+def _fetch_fit_score_row(player_id: int, school_id: int, season: int) -> dict | None:
+    engine = get_sync_engine()
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text(
+                    """
+                    SELECT overall_fit, gap_match, scheme_fit, role_fit, program_fit,
+                           weight_gap, weight_scheme, weight_role, weight_program,
+                           breakdown, is_portal_candidate, model_version
+                    FROM player_team_fit_scores
+                    WHERE player_id = :player_id AND school_id = :school_id AND season = :season
+                    """
+                ),
+                {"player_id": player_id, "school_id": school_id, "season": season},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+
+def test_sync_role_fit_scores_updates_existing_row():
+    engine = get_sync_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO player_team_fit_scores
+                    (player_id, school_id, season, overall_fit, gap_match, scheme_fit,
+                     role_fit, program_fit, weight_gap, weight_scheme, weight_role,
+                     weight_program, breakdown, is_portal_candidate, model_version,
+                     expires_at)
+                VALUES
+                    (:player_id, :school_id, :season, 10.0, 5.0, 5.0, 0.0, 50.0,
+                     0.20, 0.30, 0.25, 0.25, '{}'::jsonb, false, 'seed-test',
+                     now() + interval '1 day')
+                """
+            ),
+            {"player_id": TEST_PLAYER_ID, "school_id": TEST_SCHOOL_ID, "season": TEST_SEASON},
+        )
+
+    record = _one_sync_record(role_fit=63.5, gap_match=71.0, scheme_fit=82.0)
+    written = pt.sync_role_fit_scores(engine, [record])
+    assert written == 1
+
+    row = _fetch_fit_score_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert row is not None
+    assert row["role_fit"] == pytest.approx(63.5)
+    assert row["gap_match"] == pytest.approx(71.0)
+    assert row["scheme_fit"] == pytest.approx(82.0)
+    assert row["model_version"] != "seed-test"
+    assert "role_fit" in row["breakdown"]
+
+
+def test_sync_role_fit_scores_inserts_missing_row():
+    engine = get_sync_engine()
+    assert _fetch_fit_score_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON) is None
+
+    record = _one_sync_record(role_fit=48.0)
+    written = pt.sync_role_fit_scores(engine, [record])
+    assert written == 1
+
+    row = _fetch_fit_score_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert row is not None
+    assert row["role_fit"] == pytest.approx(48.0)
+
+
+def test_sync_role_fit_scores_matches_execute_values_reference():
+    engine = get_sync_engine()
+    record = _one_sync_record(role_fit=55.5, gap_match=66.0, scheme_fit=77.0)
+
+    pt._sync_role_fit_scores_execute_values_reference(engine, [record])
+    ref_row = _fetch_fit_score_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert ref_row is not None
+    _cleanup_playing_time_rows()
+
+    pt.sync_role_fit_scores(engine, [record])
+    new_row = _fetch_fit_score_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert new_row is not None
+
+    for key in (
+        "overall_fit", "gap_match", "scheme_fit", "role_fit", "program_fit",
+        "weight_gap", "weight_scheme", "weight_role", "weight_program",
+    ):
+        assert new_row[key] == pytest.approx(ref_row[key])
+    assert new_row["breakdown"] == ref_row["breakdown"]
+    assert new_row["is_portal_candidate"] == ref_row["is_portal_candidate"]
+
+
+def test_sync_role_fit_scores_empty_records_returns_zero():
+    engine = get_sync_engine()
+    assert pt.sync_role_fit_scores(engine, []) == 0
+
+
+# ---------------------------------------------------------------------------
+# upsert_playing_time_projections: COPY + bulk UPDATE...FROM rewrite (real DB)
+# (regression: same anti-pattern as sync_role_fit_scores, on the sibling write —
+# ~492 execute_values round-trips per 491K-row chunk against playing_time_projections
+# over an SSM-tunneled connection was the dominant cost in a chunk's score+write+sync
+# phase, more than the read step itself, 2026-07-22)
+# ---------------------------------------------------------------------------
+
+def _one_projection_record(
+    player_id: int = TEST_PLAYER_ID,
+    school_id: int = TEST_SCHOOL_ID,
+    season: int = TEST_SEASON,
+    role_fit: float = 44.0,
+) -> tuple:
+    scored = _make_varied_scored_frame(n=1)
+    scored.loc[0, "player_id"] = player_id
+    scored.loc[0, "school_id"] = school_id
+    scored.loc[0, "season"] = season
+    scored.loc[0, "role_fit"] = role_fit
+    projection_records, _ = pt.build_playing_time_records(scored)
+    return projection_records[0]
+
+
+def _fetch_projection_row(player_id: int, school_id: int, season: int) -> dict | None:
+    engine = get_sync_engine()
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text(
+                    """
+                    SELECT expected_minutes, expected_minutes_share, minutes_ci_lower,
+                           minutes_ci_upper, expected_usage, usage_role, usage_role_confidence,
+                           role_fit, displaced_minutes, opportunity_drivers, data_quality_flags,
+                           explanation, model_version
+                    FROM playing_time_projections
+                    WHERE player_id = :player_id AND school_id = :school_id AND season = :season
+                    """
+                ),
+                {"player_id": player_id, "school_id": school_id, "season": season},
+            )
+            .mappings()
+            .first()
+        )
+        return dict(row) if row else None
+
+
+def test_upsert_playing_time_projections_updates_existing_row():
+    engine = get_sync_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO playing_time_projections
+                    (player_id, school_id, season, expected_minutes, expected_minutes_share,
+                     minutes_ci_lower, minutes_ci_upper, expected_usage, usage_role,
+                     usage_role_confidence, role_fit, model_version, expires_at)
+                VALUES
+                    (:player_id, :school_id, :season, 10.0, 0.25, 5.0, 15.0, 8.0, 'depth',
+                     0.5, 0.0, :model_version, now() + interval '1 day')
+                """
+            ),
+            {
+                "player_id": TEST_PLAYER_ID,
+                "school_id": TEST_SCHOOL_ID,
+                "season": TEST_SEASON,
+                "model_version": pt.MODEL_VERSION,
+            },
+        )
+
+    record = _one_projection_record(role_fit=63.5)
+    written = pt.upsert_playing_time_projections(engine, [record])
+    assert written == 1
+
+    row = _fetch_projection_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert row is not None
+    assert row["role_fit"] == pytest.approx(63.5)
+    assert row["model_version"] == pt.MODEL_VERSION
+
+
+def test_upsert_playing_time_projections_inserts_missing_row():
+    engine = get_sync_engine()
+    assert _fetch_projection_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON) is None
+
+    record = _one_projection_record(role_fit=48.0)
+    written = pt.upsert_playing_time_projections(engine, [record])
+    assert written == 1
+
+    row = _fetch_projection_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert row is not None
+    assert row["role_fit"] == pytest.approx(48.0)
+
+
+def test_upsert_playing_time_projections_matches_execute_values_reference():
+    engine = get_sync_engine()
+    record = _one_projection_record(role_fit=55.5)
+
+    pt._upsert_playing_time_projections_execute_values_reference(engine, [record])
+    ref_row = _fetch_projection_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert ref_row is not None
+    _cleanup_playing_time_rows()
+
+    pt.upsert_playing_time_projections(engine, [record])
+    new_row = _fetch_projection_row(TEST_PLAYER_ID, TEST_SCHOOL_ID, TEST_SEASON)
+    assert new_row is not None
+
+    for key in (
+        "expected_minutes", "expected_minutes_share", "minutes_ci_lower", "minutes_ci_upper",
+        "expected_usage", "usage_role", "usage_role_confidence", "role_fit",
+    ):
+        if isinstance(ref_row[key], float):
+            assert new_row[key] == pytest.approx(ref_row[key])
+        else:
+            assert new_row[key] == ref_row[key]
+    assert new_row["displaced_minutes"] == ref_row["displaced_minutes"]
+    assert new_row["opportunity_drivers"] == ref_row["opportunity_drivers"]
+    assert new_row["data_quality_flags"] == ref_row["data_quality_flags"]
+    assert new_row["explanation"] == ref_row["explanation"]
+
+
+def test_upsert_playing_time_projections_empty_records_returns_zero():
+    engine = get_sync_engine()
+    assert pt.upsert_playing_time_projections(engine, []) == 0
+
+
+# ---------------------------------------------------------------------------
+# _RecordsCSVStream (pure unit, no DB)
+# (real fix, not a bandaid, 2026-07-23: sync_role_fit_scores/
+# upsert_playing_time_projections building the whole CSV payload as one
+# io.StringIO string OOM-killed a real Fargate task at 1GB, 8GB, then 16GB for
+# a single ~491,625-row chunk with real JSON-heavy explanation/breakdown
+# fields — not a network problem, an in-VPC ECS task hit it. _RecordsCSVStream
+# streams the CSV to copy_expert in fixed-size row batches instead. These
+# tests prove it reproduces the exact same CSV bytes as the original
+# io.StringIO/writerows approach, across read() sizes and batch boundaries,
+# so the DB write's content is unaffected by the memory fix.)
+# ---------------------------------------------------------------------------
+
+def _reference_csv_text(records: list[tuple]) -> str:
+    import csv as csv_module
+    import io as io_module
+
+    buf = io_module.StringIO()
+    csv_module.writer(buf).writerows(records)
+    return buf.getvalue()
+
+
+def _drain(stream: "pt._RecordsCSVStream", read_size: int) -> str:
+    parts = []
+    while True:
+        chunk = stream.read(read_size)
+        if not chunk:
+            break
+        parts.append(chunk)
+    return "".join(parts)
+
+
+def _varied_csv_records(n: int, seed: int = 11) -> list[tuple]:
+    rng = np.random.default_rng(seed)
+    records = []
+    for i in range(n):
+        breakdown = json.dumps({"scheme_fit": {"pace_match": float(rng.uniform(0, 100))}, "note": 'has "quotes", commas, and\nnewlines'})
+        records.append((
+            1000 + i,
+            9900301,
+            2026,
+            float(rng.uniform(0, 100)),
+            float(rng.uniform(0, 100)),
+            None if i % 5 == 0 else float(rng.uniform(0, 100)),
+            "some,text,with,commas" if i % 3 == 0 else "plain",
+            breakdown,
+        ))
+    return records
+
+
+def test_records_csv_stream_matches_reference_at_various_read_sizes():
+    records = _varied_csv_records(37)
+    expected = _reference_csv_text(records)
+    for read_size in (1, 7, 64, 1024, -1):
+        stream = pt._RecordsCSVStream(records)
+        assert _drain(stream, read_size) == expected
+
+
+def test_records_csv_stream_matches_reference_across_batch_boundary():
+    # _BATCH_ROWS is 5000 — exercise a batch boundary with a small override
+    # rather than generating 10000+ real rows in a unit test.
+    original_batch_rows = pt._RecordsCSVStream._BATCH_ROWS
+    pt._RecordsCSVStream._BATCH_ROWS = 3
+    try:
+        records = _varied_csv_records(10)
+        expected = _reference_csv_text(records)
+        stream = pt._RecordsCSVStream(records)
+        assert _drain(stream, -1) == expected
+        # Also verify with a read size smaller than one row's worth of bytes,
+        # forcing read() to pull multiple internal batches to satisfy a request.
+        stream = pt._RecordsCSVStream(records)
+        assert _drain(stream, 5) == expected
+    finally:
+        pt._RecordsCSVStream._BATCH_ROWS = original_batch_rows
+
+
+def test_records_csv_stream_empty_records_reads_empty():
+    stream = pt._RecordsCSVStream([])
+    assert stream.read(-1) == ""
+    assert stream.read(100) == ""
+
+
+def test_records_csv_stream_single_record():
+    records = [(1, "a", None, 3.5)]
+    expected = _reference_csv_text(records)
+    stream = pt._RecordsCSVStream(records)
+    assert _drain(stream, -1) == expected

@@ -50,7 +50,7 @@ export default function PlayerSearchPage() {
   const showResults = query.length >= 2;
 
   return (
-    <Box sx={{ maxWidth: 680 }}>
+    <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h5" sx={{ fontWeight: 700 }} gutterBottom>
           Player Search

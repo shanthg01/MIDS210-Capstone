@@ -1314,17 +1314,29 @@ def compute_national_percentiles(
 # DB write
 # ---------------------------------------------------------------------------
 
-def upsert_team_rating_projections(
-    engine: Engine,
+def _num(rec: dict, key: str, default: float) -> float:
+    """rec.get(key, default) only falls back when the key is *missing* — not
+    when a pandas LEFT JOIN miss left a present-but-NaN value (real bug found
+    in production: NaN silently stored in a NOT NULL float column, then
+    serialized as the bare JSON token `NaN`, which browsers can't parse —
+    crashed FitScorePage's Team Rating Projection panel)."""
+    val = rec.get(key, default)
+    return default if val is None or (isinstance(val, float) and np.isnan(val)) else val
+
+
+def build_team_rating_rows(
     records: list[dict],
     model_version: str = MODEL_VERSION,
-) -> int:
-    """Upsert records into team_rating_projections. Returns row count written."""
-    if not records:
-        return 0
+    computed_at: datetime | None = None,
+    expires_days: int = EXPIRES_DAYS,
+) -> list[tuple]:
+    """Build the tuple rows upsert_team_rating_projections writes via execute_values.
 
-    now = datetime.now(timezone.utc)
-    expires = now + timedelta(days=EXPIRES_DAYS)
+    Pulled out as its own pure function so the NaN-sanitization in _num is
+    testable without a DB connection.
+    """
+    now = computed_at or datetime.now(timezone.utc)
+    expires = now + timedelta(days=expires_days)
 
     rows = []
     for r in records:
@@ -1334,18 +1346,18 @@ def upsert_team_rating_projections(
             r["player_id"],
             r["school_id"],
             r["season"],
-            round(r.get("current_adj_em", 0.0), 3),
-            round(r.get("projected_adj_em", 0.0), 3),
-            round(r.get("delta_adj_em", 0.0), 3),
-            round(r.get("baseline_adj_o", 0.0), 3),
-            round(r.get("baseline_adj_d", 0.0), 3),
-            round(r.get("projected_adj_o", 0.0), 3),
-            round(r.get("projected_adj_d", 0.0), 3),
-            round(r.get("ci_lower", -1.0), 3),
-            round(r.get("ci_upper", 1.0), 3),
-            int(r.get("national_percentile", 50)),
-            int(r.get("conference_rank", 5)),
-            round(r.get("expected_minutes_input", 0.0), 1),
+            round(_num(r, "current_adj_em", 0.0), 3),
+            round(_num(r, "projected_adj_em", 0.0), 3),
+            round(_num(r, "delta_adj_em", 0.0), 3),
+            round(_num(r, "baseline_adj_o", 0.0), 3),
+            round(_num(r, "baseline_adj_d", 0.0), 3),
+            round(_num(r, "projected_adj_o", 0.0), 3),
+            round(_num(r, "projected_adj_d", 0.0), 3),
+            round(_num(r, "ci_lower", -1.0), 3),
+            round(_num(r, "ci_upper", 1.0), 3),
+            int(_num(r, "national_percentile", 50)),
+            int(_num(r, "conference_rank", 5)),
+            round(_num(r, "expected_minutes_input", 0.0), 1),
             r.get("candidate_usage_role", "rotation"),
             json.dumps(explanation),
             json.dumps(minutes_dist),
@@ -1353,11 +1365,27 @@ def upsert_team_rating_projections(
             now,
             expires,
         ))
+    return rows
+
+
+def upsert_team_rating_projections(
+    engine: Engine,
+    records: list[dict],
+    model_version: str = MODEL_VERSION,
+) -> int:
+    """Upsert records into team_rating_projections. Returns row count written."""
+    if not records:
+        return 0
+
+    rows = build_team_rating_rows(records, model_version=model_version)
 
     with engine.connect() as conn:
         raw = conn.connection.connection  # type: ignore[attr-defined]
         with raw.cursor() as cur:
-            execute_values(cur, _UPSERT_SQL, rows)
+            # page_size default (100) meant ~4,573 round trips for a ~457,345-row
+            # write instead of ~458 -- same drift as destination_projection.py's
+            # sibling upsert, fixed 2026-07-23.
+            execute_values(cur, _UPSERT_SQL, rows, page_size=1000)
         raw.commit()
 
     log.info("Upserted %d rows into team_rating_projections", len(rows))

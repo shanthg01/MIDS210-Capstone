@@ -168,7 +168,7 @@ export default function PlayerProfilePage() {
   }
 
   return (
-    <Box sx={{ maxWidth: 720 }}>
+    <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
       <Breadcrumbs sx={{ mb: 2 }}>
         <Link
           component="button"

@@ -13,11 +13,18 @@ import {
   Tooltip,
   Slider,
   CircularProgress,
+  TextField,
+  Button,
 } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getFitScore, getTeamRatingProjection, overrideTeamRating } from '../api/fitScores';
+import {
+  getFitScore,
+  getTeamRatingProjection,
+  overrideTeamRating,
+  upsertProgramFitUserInput,
+} from '../api/fitScores';
 import { getPlayer, getPlayerProjection, overridePlayingTime } from '../api/players';
 import type {
   PlayingTimeOverrideResponse,
@@ -27,7 +34,7 @@ import type {
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip, isComponentLive } from '../components/FitScoreBar';
 import FitRadarChart, { RadarLegend } from '../components/FitRadarChart';
-import ProjectionCard from '../components/ProjectionCard';
+import ProjectionCard, { BOX_SCORE_LABELS_PER_GAME } from '../components/ProjectionCard';
 import DefinitionTooltip from '../components/DefinitionTooltip';
 import { FIT_COMPONENTS, SUB_METRICS, GAP_FEATURES, HE_PLAY_TYPES, PLAY_TYPE_MATCH } from '../constants/definitions';
 import { buildFitInsight, buildProjectionInsight } from '../utils/fitInsights';
@@ -53,16 +60,24 @@ const GAP_FEATURE_LABELS: Record<string, string> = {
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
+// Guard against null/undefined/NaN — a real backend bug (NaN silently stored
+// in a NOT NULL float column, then serialized as the bare JSON token `NaN`,
+// which browsers can't parse) has reached these call sites in production;
+// showing "—" beats a page-crashing TypeError regardless of the data's shape.
+function isBadNumber(n: unknown): boolean {
+  return n === null || n === undefined || typeof n !== 'number' || Number.isNaN(n);
+}
+
 function fmt1(n: number): string {
-  return n.toFixed(1);
+  return isBadNumber(n) ? '—' : n.toFixed(1);
 }
 
 function fmtScore(n: number): string {
-  return n.toFixed(0);
+  return isBadNumber(n) ? '—' : n.toFixed(0);
 }
 
 function fmtAdjEM(n: number): string {
-  return `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
+  return isBadNumber(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
 }
 
 function ScoreHeader({
@@ -71,6 +86,7 @@ function ScoreHeader({
   weight,
   component,
   modelVersion,
+  isGraded,
   headlineNote,
 }: {
   label: string;
@@ -78,6 +94,7 @@ function ScoreHeader({
   weight: string;
   component: string;
   modelVersion?: string;
+  isGraded?: boolean;
   headlineNote?: string;
 }) {
   const color = scoreColor(score);
@@ -90,7 +107,7 @@ function ScoreHeader({
               {label}
             </Typography>
           </DefinitionTooltip>
-          <DataStatusChip component={component} modelVersion={modelVersion} />
+          <DataStatusChip component={component} modelVersion={modelVersion} isGraded={isGraded} />
         </Box>
         <Typography variant="caption" color="text.secondary">
           {weight} weight
@@ -192,6 +209,7 @@ function OverallPanel({
   personalized,
   confidence,
   modelVersion,
+  isProgramFitGraded,
 }: {
   overall: number;
   gap: number;
@@ -201,6 +219,7 @@ function OverallPanel({
   personalized: number | null;
   confidence: number;
   modelVersion: string;
+  isProgramFitGraded: boolean;
 }) {
   const color = scoreColor(overall);
   return (
@@ -232,7 +251,11 @@ function OverallPanel({
             { label: 'Program Fit', value: program, component: 'program_fit' },
           ].map(({ label, value, component }) => {
             const c = scoreColor(value);
-            const isLive = isComponentLive(component, modelVersion);
+            const isLive = isComponentLive(
+              component,
+              modelVersion,
+              component === 'program_fit' ? isProgramFitGraded : undefined,
+            );
             return (
               <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -382,7 +405,9 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
             80% CI
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            {fmtAdjEM(data.confidence_interval[0])} to {fmtAdjEM(data.confidence_interval[1])}
+            {data.confidence_interval
+              ? `${fmtAdjEM(data.confidence_interval[0])} to ${fmtAdjEM(data.confidence_interval[1])}`
+              : '—'}
           </Typography>
         </Box>
         <Box>
@@ -430,6 +455,90 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
   );
 }
 
+// ── Program Fit manual qualitative grade ("off the court" input) ──────────────
+
+function ProgramFitInputEditor({
+  playerId,
+  schoolId,
+  season,
+  initialScore,
+  initialNotes,
+  onSaved,
+}: {
+  playerId: string;
+  schoolId: number;
+  season: number;
+  initialScore: number | null;
+  initialNotes: string | null;
+  onSaved: () => void;
+}) {
+  const [score, setScore] = useState(initialScore ?? 50);
+  const [notes, setNotes] = useState(initialNotes ?? '');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSave() {
+    setSaving(true);
+    setError('');
+    setSaved(false);
+    try {
+      await upsertProgramFitUserInput({
+        player_id: playerId,
+        school_id: schoolId,
+        season,
+        qualitative_score: score,
+        notes: notes.trim() || null,
+      });
+      setSaved(true);
+      onSaved();
+    } catch {
+      setError('Could not save this grade — try again.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+        Your grade — how well does this player's off-the-court fit (culture, work ethic,
+        coachability) match this program? This is personal to you, not shared or scored into
+        Overall Fit — it only adjusts your Personalized Fit.
+      </Typography>
+      <Box sx={{ px: 1.5, mb: 1 }}>
+        <Slider
+          value={score}
+          min={0}
+          max={100}
+          step={1}
+          valueLabelDisplay="on"
+          onChange={(_, v) => setScore(v as number)}
+        />
+      </Box>
+      <TextField
+        fullWidth
+        size="small"
+        placeholder="Notes (optional)"
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        multiline
+        minRows={2}
+        sx={{ mb: 1 }}
+      />
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+        <Button variant="contained" size="small" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save grade'}
+        </Button>
+        {saved && !saving && (
+          <Typography variant="caption" color="success.main">Saved</Typography>
+        )}
+        {error && <Typography variant="caption" color="error.main">{error}</Typography>}
+      </Box>
+    </Box>
+  );
+}
+
 // ── Minutes override ("what if this player got more/fewer minutes?", issue #61) ──
 
 function MinutesOverridePanel({
@@ -448,6 +557,7 @@ function MinutesOverridePanel({
   const [error, setError] = useState('');
   const [roleResult, setRoleResult] = useState<PlayingTimeOverrideResponse | null>(null);
   const [ratingResult, setRatingResult] = useState<TeamRatingOverrideResponse | null>(null);
+  const [boxScoreResult, setBoxScoreResult] = useState<Record<string, number> | null>(null);
 
   async function runOverride(value: number) {
     setPending(true);
@@ -470,6 +580,16 @@ function MinutesOverridePanel({
       setError('Could not compute this scenario — no scored projection for this pair yet.');
     } finally {
       setPending(false);
+    }
+
+    // Separate try/catch — a player can have a playing-time projection without
+    // a destination box-score projection yet (different population scopes), and
+    // that shouldn't blank out the role/rating results above.
+    try {
+      const projection = await getPlayerProjection(playerId, schoolId, value);
+      setBoxScoreResult(projection.projected_box_score_at_minutes);
+    } catch {
+      setBoxScoreResult(null);
     }
   }
 
@@ -544,6 +664,27 @@ function MinutesOverridePanel({
               </Typography>
             </Box>
           )}
+          {boxScoreResult && Object.keys(boxScoreResult).length > 0 && (
+            <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, gridColumn: '1 / -1' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                Projected Box Score at {minutes} MPG
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(72px, 1fr))' }}>
+                {Object.entries(BOX_SCORE_LABELS_PER_GAME).map(([key, label]) =>
+                  boxScoreResult[key] !== undefined ? (
+                    <Box key={key} sx={{ textAlign: 'center' }}>
+                      <Typography variant="body1" sx={{ fontWeight: 700 }}>
+                        {boxScoreResult[key].toFixed(1)}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {label}
+                      </Typography>
+                    </Box>
+                  ) : null,
+                )}
+              </Box>
+            </Box>
+          )}
         </Box>
       )}
     </SectionPaper>
@@ -602,7 +743,7 @@ export default function FitScorePage() {
 
   if (isLoading) {
     return (
-      <Box sx={{ maxWidth: 720 }}>
+      <Box sx={{ width: '100%', maxWidth: { xs: '100%', xl: 1200 } }}>
         <Skeleton width={300} height={28} sx={{ mb: 2 }} />
         <Skeleton width={200} height={44} sx={{ mb: 1 }} />
         <Skeleton variant="rectangular" height={140} sx={{ mb: 2, borderRadius: 1 }} />
@@ -717,6 +858,7 @@ export default function FitScorePage() {
         personalized={fit.personalized_fit}
         confidence={fit.overall_confidence}
         modelVersion={fit.model_version}
+        isProgramFitGraded={fit.program_fit_user_input !== null}
       />
 
       {/* System Match breakdown — headline is calibrated; the category scores
@@ -889,11 +1031,34 @@ export default function FitScorePage() {
         )}
       </SectionPaper>
 
-      {/* Program Fit — not live yet, see FIT_COMPONENTS.program_fit in definitions.ts */}
+      {/* Program Fit — real once you've graded this pair (program_fit_user_inputs),
+          per-user: your grade shows here and feeds your Personalized Fit, but is
+          never shared with other users or folded into the canonical Overall Fit. */}
       <SectionPaper>
-        <ScoreHeader label="Program Fit" score={fit.program_fit} weight="20%" component="program_fit" />
+        <ScoreHeader
+          label="Program Fit"
+          score={fit.program_fit}
+          weight="20%"
+          component="program_fit"
+          isGraded={fit.program_fit_user_input !== null}
+        />
         <Divider sx={{ mb: 2 }} />
-        <Alert severity="info">{FIT_COMPONENTS.program_fit.short}</Alert>
+        <Alert severity="info">
+          {fit.program_fit_user_input !== null
+            ? 'This is your own qualitative grade for this pair — personal to you, not shared with other users or folded into the canonical Overall Fit above.'
+            : FIT_COMPONENTS.program_fit.short}
+        </Alert>
+        {schoolId !== null && (
+          <ProgramFitInputEditor
+            key={`${playerId}-${schoolId}`}
+            playerId={playerId}
+            schoolId={schoolId}
+            season={fit.season}
+            initialScore={fit.program_fit_user_input}
+            initialNotes={fit.program_fit_user_input_notes}
+            onSaved={() => fitQuery.refetch()}
+          />
+        )}
       </SectionPaper>
 
       {/* Player Projection — adjusted for this program, not part of the 4-component score above */}
