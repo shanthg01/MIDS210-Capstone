@@ -17,6 +17,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import type { RecommendationItem } from '../types/api';
 import FitScoreBar from './FitScoreBar';
+import ValueDriverChip from './ValueDriverChip';
 import { addToShortlist } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 
@@ -57,6 +58,8 @@ export default function RecommendationCard({ item }: Props) {
     }
   }
 
+  const hasDrivers = item.biggest_strength || item.biggest_weakness;
+
   return (
     <Card variant="outlined" sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
@@ -92,10 +95,33 @@ export default function RecommendationCard({ item }: Props) {
           </Box>
         </Box>
 
-        {/* Reasoning blurb */}
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, flexGrow: 1 }}>
-          {item.reasoning}
-        </Typography>
+        {/* Biggest strength / weakness — same chips as ProjectionCard */}
+        <Box sx={{ mb: 2, flexGrow: 1, minHeight: 40 }}>
+          {hasDrivers ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+              {item.biggest_strength && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 72 }}>
+                    Strength
+                  </Typography>
+                  <ValueDriverChip driver={item.biggest_strength} polarity="positive" />
+                </Box>
+              )}
+              {item.biggest_weakness && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ minWidth: 72 }}>
+                    Weakness
+                  </Typography>
+                  <ValueDriverChip driver={item.biggest_weakness} polarity="negative" />
+                </Box>
+              )}
+            </Box>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              {item.reasoning}
+            </Typography>
+          )}
+        </Box>
 
         {/* Component bars 2×2 grid */}
         <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5, mb: 2 }}>

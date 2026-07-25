@@ -15,22 +15,7 @@ import type { PlayerProjectionResponse } from '../types/api';
 import { scoreColor } from './FitScoreBar';
 import { BOX_SCORE, SKILLS, VALUE_PER_100, DESTINATION_VALUE_PER_100 } from '../constants/definitions';
 import DefinitionTooltip from './DefinitionTooltip';
-
-// Mirrors modeling/player_projection.py SKILLS (master 11-skill list) — kept in
-// sync manually, same convention as SettingsPage's ARCHETYPES/FitScoreBar's LABEL_MAP.
-const SKILL_LABELS: Record<string, string> = {
-  shooting_3p: '3PT Shooting',
-  shooting_2p_finishing: '2PT Finishing',
-  free_throw_touch: 'Free Throw Touch',
-  shot_creation_usage: 'Shot Creation',
-  passing_creation: 'Passing / Creation',
-  turnover_avoidance: 'Turnover Avoidance',
-  offensive_rebounding: 'Off. Rebounding',
-  defensive_rebounding: 'Def. Rebounding',
-  steal_disruption: 'Steal Disruption',
-  block_rim_protection: 'Rim Protection',
-  foul_discipline: 'Foul Discipline',
-};
+import ValueDriverChip, { SKILL_LABELS, type ValueDriver } from './ValueDriverChip';
 
 // Neutral mode reports pace-neutral per-40 rates; destination mode reports
 // per-game numbers instead, scaled to real expected minutes at that program
@@ -68,12 +53,6 @@ function ordinal(n: number): string {
     case 3: return `${rounded}rd`;
     default: return `${rounded}th`;
   }
-}
-
-interface ValueDriver {
-  feature: string;
-  component: string;
-  total_value_contribution: number;
 }
 
 export default function ProjectionCard({ projection }: { projection: PlayerProjectionResponse }) {
@@ -203,32 +182,12 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
             Top Value Drivers
           </Typography>
           <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-            {valueDrivers.top_positive?.map((d) => {
-              const skillKey = d.feature.replace('skill_', '');
-              return (
-                <Tooltip key={d.feature} title={SKILLS[skillKey]?.short ?? ''}>
-                  <Chip
-                    size="small"
-                    color="success"
-                    variant="outlined"
-                    label={`${SKILL_LABELS[skillKey] ?? d.feature} +${fmt(d.total_value_contribution, 2)}`}
-                  />
-                </Tooltip>
-              );
-            })}
-            {valueDrivers.top_negative?.map((d) => {
-              const skillKey = d.feature.replace('skill_', '');
-              return (
-                <Tooltip key={d.feature} title={SKILLS[skillKey]?.short ?? ''}>
-                  <Chip
-                    size="small"
-                    color="error"
-                    variant="outlined"
-                    label={`${SKILL_LABELS[skillKey] ?? d.feature} ${fmt(d.total_value_contribution, 2)}`}
-                  />
-                </Tooltip>
-              );
-            })}
+            {valueDrivers.top_positive?.map((d) => (
+              <ValueDriverChip key={d.feature} driver={d} polarity="positive" />
+            ))}
+            {valueDrivers.top_negative?.map((d) => (
+              <ValueDriverChip key={d.feature} driver={d} polarity="negative" />
+            ))}
           </Box>
         </Box>
       ) : null}

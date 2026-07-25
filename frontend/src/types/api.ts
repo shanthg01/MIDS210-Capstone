@@ -468,6 +468,11 @@ export interface FitComponents {
   team_impact_fit: number; // M6 delta_adjEM → 0-100; replaces program_fit (descoped)
 }
 
+export interface ValueDriverSummary {
+  feature: string;
+  total_value_contribution: number;
+}
+
 export interface RecommendationItem {
   rank: number;
   player_id: string; // string, not number — see PlayerProfile.player_id comment
@@ -482,6 +487,9 @@ export interface RecommendationItem {
   value_per_100: number | null;
   projected_minutes: number | null;
   projected_usage: number | null;
+  // From projection explanation.value_drivers — null/absent when missing.
+  biggest_strength?: ValueDriverSummary | null;
+  biggest_weakness?: ValueDriverSummary | null;
 }
 
 export interface RecommendationsResponse {

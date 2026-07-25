@@ -147,6 +147,37 @@ export const DESTINATION_VALUE_PER_100: Definition = {
   short: "This player's talent value adjusted for expected role, style/skill fit, roster context, and competition tier at this specific program — not the same as their context-neutral value, and not one of the 4 fit components.",
 };
 
+// Extra features that can appear in projection explanation.value_drivers
+// alongside skill_* columns (FORECAST_OFF/DEF_EXTRA_FEATURES in player_projection.py).
+export const VALUE_DRIVERS: Record<string, Definition> = {
+  source_value_per_100: {
+    label: 'Prior Total Value',
+    short: "Carryover from last season's total value per 100 possessions — a strong prior the forecast model uses when projecting this season's overall impact.",
+  },
+  source_off_value_per_100: {
+    label: 'Prior Offensive Value',
+    short: "Carryover from last season's offensive value per 100 possessions — how much the forecast leans on known offensive production.",
+  },
+  source_def_value_per_100: {
+    label: 'Prior Defensive Value',
+    short: "Carryover from last season's defensive value per 100 possessions — how much the forecast leans on known defensive impact (lower raw RAPM is better; contribution is signed for total value).",
+  },
+};
+
+/** Human-readable label for any value-driver feature (skill_* or source_*). */
+export function valueDriverLabel(feature: string): string {
+  if (VALUE_DRIVERS[feature]) return VALUE_DRIVERS[feature].label;
+  const key = feature.replace(/^skill_/, '');
+  return SKILLS[key]?.label ?? feature;
+}
+
+/** Tooltip description for any value-driver feature. */
+export function valueDriverTooltip(feature: string): string {
+  if (VALUE_DRIVERS[feature]) return VALUE_DRIVERS[feature].short;
+  const key = feature.replace(/^skill_/, '');
+  return SKILLS[key]?.short ?? '';
+}
+
 export const CONFIDENCE_INTERVAL: Definition = {
   label: 'Confidence Interval',
   short: 'The range this estimate is expected to fall within, given modeling uncertainty.',

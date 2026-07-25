@@ -16,6 +16,13 @@ class FitComponents(BaseModel):
     team_impact_fit: float = Field(..., ge=0, le=100)
 
 
+class ValueDriverSummary(BaseModel):
+    """Top positive/negative skill contribution from destination projection explanation."""
+
+    feature: str
+    total_value_contribution: float
+
+
 class RecommendationItem(BaseModel):
     rank: int
     player_id: str  # str, not int — see player.py's PlayerBase.player_id comment
@@ -31,6 +38,9 @@ class RecommendationItem(BaseModel):
     value_per_100: float | None = None
     projected_minutes: float | None = None
     projected_usage: float | None = None
+    # From projection explanation.value_drivers — None when no destination row / drivers.
+    biggest_strength: ValueDriverSummary | None = None
+    biggest_weakness: ValueDriverSummary | None = None
 
 
 class RecommendationsResponse(BaseModel):

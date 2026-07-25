@@ -19,6 +19,14 @@ import GlossaryPage from './pages/GlossaryPage';
 import RosterImpactPage from './pages/RosterImpactPage';
 import AgentActivityPage from './pages/AgentActivityPage';
 
+// Soft slate-navy: lifted from near-black so tables/cards read clearly while
+// keeping the dark sports-analytics feel and the orange/blue accents.
+const BG = '#1B2838';
+const PAPER = '#263849';
+const TEXT_MUTED = '#A8B9CC';
+const BORDER = 'rgba(255, 255, 255, 0.14)';
+const CREAM = '#f3e5d0'; // warm accent from slide deck
+
 const theme = createTheme({
   palette: {
     mode: 'dark',
@@ -29,25 +37,25 @@ const theme = createTheme({
       contrastText: '#FFFFFF',
     },
     secondary: {
-      main: '#4A90E2',
-      light: '#76acea',
-      dark: '#2d6bbf',
+      main: '#5BA3E8',
+      light: '#8bbef0',
+      dark: '#3d7fc4',
       contrastText: '#FFFFFF',
     },
     background: {
-      default: '#0D1B2A',
-      paper: '#1A2E42',
+      default: BG,
+      paper: PAPER,
     },
     text: {
-      primary: '#FFFFFF',
-      secondary: '#B0C4DE',
-      disabled: 'rgba(255, 255, 255, 0.38)',
+      primary: '#F2F6FA',
+      secondary: TEXT_MUTED,
+      disabled: 'rgba(242, 246, 250, 0.38)',
     },
     success: { main: '#4CAF50', contrastText: '#fff' },
     error:   { main: '#F44336', contrastText: '#fff' },
     warning: { main: '#FF9800', contrastText: '#fff' },
-    info:    { main: '#4A90E2', contrastText: '#fff' },
-    divider: 'rgba(255, 255, 255, 0.12)',
+    info:    { main: '#5BA3E8', contrastText: '#fff' },
+    divider: BORDER,
   },
   typography: {
     fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
@@ -61,40 +69,41 @@ const theme = createTheme({
     h4: { fontWeight: 700 },
     h5: { fontWeight: 700 },
     h6: { fontWeight: 600 },
-    body2: { color: '#B0C4DE' },
-    caption: { color: '#B0C4DE', fontSize: '0.7rem' },
-    overline: { color: '#B0C4DE', letterSpacing: '0.1em' },
+    body2: { color: TEXT_MUTED },
+    caption: { color: TEXT_MUTED, fontSize: '0.7rem' },
+    overline: { color: TEXT_MUTED, letterSpacing: '0.1em' },
   },
   shape: { borderRadius: 4 },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
         body: {
-          backgroundColor: '#0D1B2A',
+          backgroundColor: BG,
           scrollbarWidth: 'thin',
-          scrollbarColor: 'rgba(255,255,255,0.2) transparent',
+          scrollbarColor: 'rgba(243,229,208,0.35) transparent',
+          '&::selection': { backgroundColor: CREAM, color: '#1B2838' },
           '&::-webkit-scrollbar': { width: 6 },
           '&::-webkit-scrollbar-track': { background: 'transparent' },
-          '&::-webkit-scrollbar-thumb': { background: 'rgba(255,255,255,0.2)', borderRadius: 3 },
+          '&::-webkit-scrollbar-thumb': { background: 'rgba(243,229,208,0.35)', borderRadius: 3 },
         },
       },
     },
     MuiAppBar: {
       styleOverrides: {
         root: {
-          backgroundColor: '#0D1B2A',
+          backgroundColor: BG,
           backgroundImage: 'none',
           boxShadow: 'none',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.10)',
+          borderBottom: `1px solid ${BORDER}`,
         },
       },
     },
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          backgroundColor: '#0D1B2A',
+          backgroundColor: BG,
           backgroundImage: 'none',
-          borderRight: '1px solid rgba(255, 255, 255, 0.10)',
+          borderRight: `1px solid ${BORDER}`,
         },
       },
     },
@@ -102,7 +111,7 @@ const theme = createTheme({
       defaultProps: { elevation: 0 },
       styleOverrides: {
         root: { backgroundImage: 'none' },
-        outlined: { borderColor: 'rgba(255, 255, 255, 0.12)' },
+        outlined: { borderColor: BORDER },
       },
     },
     MuiCard: {
@@ -110,7 +119,8 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           backgroundImage: 'none',
-          borderColor: 'rgba(255, 255, 255, 0.12)',
+          backgroundColor: PAPER,
+          borderColor: BORDER,
         },
       },
     },
@@ -134,9 +144,9 @@ const theme = createTheme({
             '&:hover': { borderColor: '#e55a24', backgroundColor: 'rgba(255,107,53,0.08)' },
           }),
           ...(ownerState.variant === 'outlined' && ownerState.color === 'secondary' && {
-            borderColor: '#4A90E2',
-            color: '#4A90E2',
-            '&:hover': { backgroundColor: 'rgba(74,144,226,0.08)' },
+            borderColor: '#5BA3E8',
+            color: '#5BA3E8',
+            '&:hover': { backgroundColor: 'rgba(91,163,232,0.08)' },
           }),
         }),
       },
@@ -154,9 +164,9 @@ const theme = createTheme({
           border: '1px solid rgba(255,107,53,0.4)',
         },
         colorSecondary: {
-          backgroundColor: 'rgba(74, 144, 226, 0.18)',
-          color: '#4A90E2',
-          border: '1px solid rgba(74,144,226,0.4)',
+          backgroundColor: 'rgba(91, 163, 232, 0.18)',
+          color: '#5BA3E8',
+          border: '1px solid rgba(91,163,232,0.4)',
         },
       },
     },
@@ -165,7 +175,7 @@ const theme = createTheme({
         // barColorSuccess/Warning/Error classKeys were removed from this MUI version's
         // override types — target the bar element by class inside an ownerState-based root.
         root: ({ ownerState }) => ({
-          backgroundColor: 'rgba(255, 255, 255, 0.12)',
+          backgroundColor: 'rgba(255, 255, 255, 0.14)',
           borderRadius: 2,
           ...(ownerState.color === 'success' && { '& .MuiLinearProgress-bar': { backgroundColor: '#4CAF50' } }),
           ...(ownerState.color === 'warning' && { '& .MuiLinearProgress-bar': { backgroundColor: '#FF9800' } }),
@@ -177,33 +187,33 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           '& .MuiTableCell-head': {
-            backgroundColor: 'rgba(255, 255, 255, 0.04)',
+            backgroundColor: 'rgba(255, 255, 255, 0.07)',
             fontWeight: 700,
             fontSize: '0.7rem',
             textTransform: 'uppercase',
             letterSpacing: '0.08em',
-            color: '#B0C4DE',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.12)',
+            color: TEXT_MUTED,
+            borderBottom: `1px solid ${BORDER}`,
           },
         },
       },
     },
     MuiTableCell: {
       styleOverrides: {
-        root: { borderBottom: '1px solid rgba(255, 255, 255, 0.07)' },
+        root: { borderBottom: '1px solid rgba(255, 255, 255, 0.09)' },
       },
     },
     MuiTableRow: {
       styleOverrides: {
         root: {
-          '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.03)' },
+          '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.05)' },
         },
       },
     },
     MuiSlider: {
       styleOverrides: {
         root: { color: '#FF6B35' },
-        rail: { backgroundColor: 'rgba(255, 255, 255, 0.18)' },
+        rail: { backgroundColor: 'rgba(255, 255, 255, 0.22)' },
       },
     },
     MuiAlert: {
@@ -212,7 +222,7 @@ const theme = createTheme({
         // override types — ownerState-based root function is the current supported pattern.
         root: ({ ownerState }) => ({
           borderRadius: 4,
-          ...(ownerState.variant === 'standard' && ownerState.severity === 'info' && { backgroundColor: 'rgba(74,144,226,0.12)', color: '#4A90E2' }),
+          ...(ownerState.variant === 'standard' && ownerState.severity === 'info' && { backgroundColor: 'rgba(91,163,232,0.14)', color: '#5BA3E8' }),
           ...(ownerState.variant === 'standard' && ownerState.severity === 'success' && { backgroundColor: 'rgba(76,175,80,0.12)', color: '#4CAF50' }),
           ...(ownerState.variant === 'standard' && ownerState.severity === 'warning' && { backgroundColor: 'rgba(255,152,0,0.12)', color: '#FF9800' }),
           ...(ownerState.variant === 'standard' && ownerState.severity === 'error' && { backgroundColor: 'rgba(244,67,54,0.12)', color: '#F44336' }),
@@ -223,8 +233,8 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           '& .MuiOutlinedInput-root': {
-            '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.23)' },
-            '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.4)' },
+            '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.28)' },
+            '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.45)' },
             '&.Mui-focused fieldset': { borderColor: '#FF6B35' },
           },
           '& label.Mui-focused': { color: '#FF6B35' },
@@ -234,7 +244,7 @@ const theme = createTheme({
     MuiCheckbox: {
       styleOverrides: {
         root: {
-          color: 'rgba(255, 255, 255, 0.35)',
+          color: 'rgba(255, 255, 255, 0.4)',
           '&.Mui-checked': { color: '#FF6B35' },
         },
       },
@@ -243,43 +253,43 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           borderRadius: 4,
-          '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.05)' },
+          '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.06)' },
         },
       },
     },
     MuiDivider: {
       styleOverrides: {
-        root: { borderColor: 'rgba(255, 255, 255, 0.10)' },
+        root: { borderColor: BORDER },
       },
     },
     MuiLink: {
       styleOverrides: {
-        root: { color: '#4A90E2' },
+        root: { color: '#5BA3E8' },
       },
     },
     MuiTooltip: {
       styleOverrides: {
         tooltip: {
-          backgroundColor: '#1A2E42',
-          border: '1px solid rgba(255,255,255,0.12)',
+          backgroundColor: PAPER,
+          border: `1px solid ${BORDER}`,
           fontSize: '0.72rem',
-          color: '#B0C4DE',
+          color: TEXT_MUTED,
         },
       },
     },
     MuiBreadcrumbs: {
       styleOverrides: {
-        separator: { color: 'rgba(255,255,255,0.3)' },
+        separator: { color: 'rgba(255,255,255,0.35)' },
       },
     },
     MuiSkeleton: {
       styleOverrides: {
-        root: { backgroundColor: 'rgba(255, 255, 255, 0.08)' },
+        root: { backgroundColor: 'rgba(255, 255, 255, 0.1)' },
       },
     },
     MuiInputAdornment: {
       styleOverrides: {
-        root: { color: '#B0C4DE' },
+        root: { color: TEXT_MUTED },
       },
     },
   },

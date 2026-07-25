@@ -15,6 +15,7 @@ import {
   GAP_FEATURES,
   SUB_METRICS,
   VALUE_PER_100,
+  VALUE_DRIVERS,
   CONFIDENCE_INTERVAL,
   DATA_STATUS,
   type Definition,
@@ -78,7 +79,7 @@ export default function GlossaryPage() {
       />
       <Section
         title="Projection & Value"
-        defs={[VALUE_PER_100, CONFIDENCE_INTERVAL, ...Object.values(BOX_SCORE)]}
+        defs={[VALUE_PER_100, CONFIDENCE_INTERVAL, ...Object.values(VALUE_DRIVERS), ...Object.values(BOX_SCORE)]}
       />
       <Section title="Skill Percentiles" defs={Object.values(SKILLS)} />
       <Section title="Stat Gap Features" defs={Object.values(GAP_FEATURES)} />

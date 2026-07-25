@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import OnboardingWizard from './OnboardingWizard';
 
 const DRAWER_WIDTH = 228;
+const APPBAR_HEIGHT = 116; // fits 2x logo (104px) with padding
 
 const NAV_ITEMS = [
   { label: 'Overview',      icon: <InfoOutlinedIcon fontSize="small" />, to: '/overview' },
@@ -56,7 +57,7 @@ export default function AppLayout() {
 
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <AppBar position="fixed" sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
-        <Toolbar disableGutters sx={{ minHeight: '56px !important' }}>
+        <Toolbar disableGutters sx={{ minHeight: `${APPBAR_HEIGHT}px !important` }}>
           {/* Logo panel — exact same width as the drawer */}
           <Box
             sx={{
@@ -66,7 +67,7 @@ export default function AppLayout() {
               alignItems: 'center',
               justifyContent: 'center',
               borderRight: '1px solid rgba(255,255,255,0.10)',
-              height: 56,
+              height: APPBAR_HEIGHT,
               boxSizing: 'border-box',
               overflow: 'hidden',
             }}
@@ -74,7 +75,7 @@ export default function AppLayout() {
             <img
               src="/portalpoint_textonly_logo_transparent.png"
               alt="PortalPoint"
-              style={{ height: 52, objectFit: 'contain', display: 'block' }}
+              style={{ height: 104, objectFit: 'contain', display: 'block' }}
             />
           </Box>
 
@@ -87,7 +88,7 @@ export default function AppLayout() {
               color="inherit"
               onClick={handleLogout}
               size="small"
-              sx={{ mr: 1, color: '#B0C4DE', '&:hover': { color: '#FF6B35' } }}
+              sx={{ mr: 1, color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
             >
               <LogoutIcon fontSize="small" />
             </IconButton>
@@ -105,7 +106,7 @@ export default function AppLayout() {
         }}
       >
         {/* Spacer beneath the fixed AppBar */}
-        <Toolbar sx={{ minHeight: '56px !important' }} />
+        <Toolbar sx={{ minHeight: `${APPBAR_HEIGHT}px !important` }} />
 
         <Divider />
 
@@ -121,15 +122,15 @@ export default function AppLayout() {
                 sx={{
                   py: 0.9,
                   px: 1.5,
-                  color: '#B0C4DE',
-                  '& .MuiListItemIcon-root': { color: '#B0C4DE' },
+                  color: 'text.secondary',
+                  '& .MuiListItemIcon-root': { color: 'text.secondary' },
                   '& .MuiListItemText-primary': {
                     fontSize: '0.85rem',
                     fontWeight: 400,
-                    color: '#B0C4DE',
+                    color: 'text.secondary',
                   },
                   '&.active': {
-                    bgcolor: 'rgba(255, 107, 53, 0.10)',
+                    bgcolor: 'rgba(243, 229, 208, 0.15)',
                     borderLeft: '3px solid #FF6B35',
                     pl: '9px',
                     '& .MuiListItemIcon-root': { color: '#FF6B35' },
@@ -163,7 +164,7 @@ export default function AppLayout() {
           minHeight: '100vh',
         }}
       >
-        <Toolbar sx={{ minHeight: '56px !important' }} />
+        <Toolbar sx={{ minHeight: `${APPBAR_HEIGHT}px !important` }} />
         <Outlet />
       </Box>
     </Box>

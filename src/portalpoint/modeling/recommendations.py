@@ -53,6 +53,17 @@ MODEL_VERSION = "rec-v1.2"
 # second one exists).
 DESTINATION_PROJECTION_MODEL_VERSION = "player-destination-proj-v1"
 
+# Destination rows own dashboard value/minutes; strength/weakness chips come from
+# neutral projection explanation.value_drivers (destination explanations are
+# context-delta payloads and do not carry value_drivers — see
+# destination_projection.build_explanation_payload).
+NEUTRAL_PROJECTION_MODEL_PRIORITY = (
+    "player-proj-phase2a-fcast-v1",
+    "player-projection-phase2a-v2",
+    "player-projection-phase2a-v1",
+    "player-projection-shrinkage-v2",
+)
+
 CANDIDATE_SQL = f"""
 SELECT
     ptf.player_id,
@@ -67,7 +78,9 @@ SELECT
     trp.delta_adj_em,
     pr.value_per_100,
     pr.projected_minutes,
-    pr.projected_usage
+    pr.projected_usage,
+    np.biggest_strength,
+    np.biggest_weakness
 FROM player_team_fit_scores ptf
 JOIN players p
     ON p.id = ptf.player_id
@@ -82,6 +95,26 @@ LEFT JOIN player_projections pr
    AND pr.season          = ptf.season
    AND pr.projection_mode = 'destination'
    AND pr.model_version   = '{DESTINATION_PROJECTION_MODEL_VERSION}'
+LEFT JOIN LATERAL (
+    SELECT
+        n.explanation->'value_drivers'->'top_positive'->0 AS biggest_strength,
+        n.explanation->'value_drivers'->'top_negative'->0 AS biggest_weakness
+    FROM player_projections n
+    WHERE n.player_id = ptf.player_id
+      AND n.school_id IS NULL
+      AND n.projection_mode = 'neutral'
+      AND n.season = ptf.season
+      AND n.model_version IN {NEUTRAL_PROJECTION_MODEL_PRIORITY!r}
+      AND n.explanation ? 'value_drivers'
+    ORDER BY
+      CASE n.model_version
+        WHEN 'player-proj-phase2a-fcast-v1' THEN 0
+        WHEN 'player-projection-phase2a-v2' THEN 1
+        WHEN 'player-projection-phase2a-v1' THEN 2
+        ELSE 3
+      END
+    LIMIT 1
+) np ON true
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
   AND ptf.is_portal_candidate = true
