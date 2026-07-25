@@ -31,8 +31,11 @@ class ProgramEventItem(BaseModel):
     id: int
     event_type: str
     school_id: int | None = None
+    school_name: str | None = None
     player_id: int | None = None
+    player_name: str | None = None
     coach_id: int | None = None
+    coach_name: str | None = None
     event_date: date | None = None
     source: str
     confidence: float | None = None
