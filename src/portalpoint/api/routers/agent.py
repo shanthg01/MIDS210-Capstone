@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -29,7 +30,14 @@ from portalpoint.api.schemas.agent import (
     ProgramEventItem,
     ProgramEventsResponse,
 )
-from portalpoint.db.models import ProgramEvent
+from portalpoint.db.models import Coach, Player, ProgramEvent, School
+
+# Agent writes coach name into raw_text but does not set coach_id today —
+# recover a display name so Agent Activity is not blank for coach_departed.
+_COACH_NAME_FROM_RAW = re.compile(
+    r"(?:\[demo\]\s*)?News agent detected coaching departure:\s*(.+?)\s+from\s+",
+    re.IGNORECASE,
+)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 log = logging.getLogger(__name__)
@@ -187,23 +195,44 @@ async def get_news_monitoring_events(
     limit: int = Query(default=25, ge=1, le=100),
 ) -> ProgramEventsResponse:
     """Recent program_events the agent has written — 'what did it find' feed."""
-    stmt = select(ProgramEvent).order_by(ProgramEvent.created_at.desc()).limit(limit)
+    stmt = (
+        select(
+            ProgramEvent,
+            School.name.label("school_name"),
+            Player.full_name.label("player_name"),
+            Coach.full_name.label("coach_name"),
+        )
+        .outerjoin(School, ProgramEvent.school_id == School.id)
+        .outerjoin(Player, ProgramEvent.player_id == Player.id)
+        .outerjoin(Coach, ProgramEvent.coach_id == Coach.id)
+        .order_by(ProgramEvent.created_at.desc())
+        .limit(limit)
+    )
     if school_id is not None:
         stmt = stmt.where(ProgramEvent.school_id == school_id)
-    rows = (await db.execute(stmt)).scalars().all()
-    events = [
-        ProgramEventItem(
-            id=r.id,
-            event_type=r.event_type,
-            school_id=r.school_id,
-            player_id=r.player_id,
-            coach_id=r.coach_id,
-            event_date=r.event_date,
-            source=r.source,
-            confidence=r.confidence,
-            match_status=r.match_status,
-            created_at=r.created_at,
+    rows = (await db.execute(stmt)).all()
+    events: list[ProgramEventItem] = []
+    for event, school_name, player_name, coach_name in rows:
+        resolved_coach = coach_name
+        if resolved_coach is None and event.raw_text:
+            match = _COACH_NAME_FROM_RAW.search(event.raw_text)
+            if match:
+                resolved_coach = match.group(1).strip() or None
+        events.append(
+            ProgramEventItem(
+                id=event.id,
+                event_type=event.event_type,
+                school_id=event.school_id,
+                school_name=school_name,
+                player_id=event.player_id,
+                player_name=player_name,
+                coach_id=event.coach_id,
+                coach_name=resolved_coach,
+                event_date=event.event_date,
+                source=event.source,
+                confidence=event.confidence,
+                match_status=event.match_status,
+                created_at=event.created_at,
+            )
         )
-        for r in rows
-    ]
     return ProgramEventsResponse(events=events, total=len(events))

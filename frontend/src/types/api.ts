@@ -559,8 +559,11 @@ export interface ProgramEventItem {
   id: number;
   event_type: string;
   school_id: number | null;
+  school_name: string | null;
   player_id: number | null;
+  player_name: string | null;
   coach_id: number | null;
+  coach_name: string | null;
   event_date: string | null;
   source: string;
   confidence: number | null;

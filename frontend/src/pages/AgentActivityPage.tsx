@@ -27,6 +27,14 @@ function fmtDateTime(iso: string | null): string {
   });
 }
 
+function displayName(
+  primary: string | null | undefined,
+  secondary: string | null | undefined,
+  fallbackId: number | null | undefined,
+): string {
+  return primary ?? secondary ?? (fallbackId != null ? String(fallbackId) : '—');
+}
+
 const STATUS_COLOR: Record<string, 'default' | 'warning' | 'success' | 'error'> = {
   running: 'warning',
   completed: 'success',
@@ -176,8 +184,8 @@ export default function AgentActivityPage() {
                   <TableCell>
                     <Chip label={e.event_type.replace(/_/g, ' ')} size="small" />
                   </TableCell>
-                  <TableCell>{e.school_id ?? '—'}</TableCell>
-                  <TableCell>{e.player_id ?? e.coach_id ?? '—'}</TableCell>
+                  <TableCell>{displayName(e.school_name, null, e.school_id)}</TableCell>
+                  <TableCell>{displayName(e.player_name, e.coach_name, e.player_id ?? e.coach_id)}</TableCell>
                   <TableCell>{e.event_date ?? '—'}</TableCell>
                   <TableCell>{e.source}</TableCell>
                   <TableCell>{e.confidence !== null ? `${(e.confidence * 100).toFixed(0)}%` : '—'}</TableCell>
