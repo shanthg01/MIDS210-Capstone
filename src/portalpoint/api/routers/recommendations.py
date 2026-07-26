@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -10,6 +11,7 @@ from portalpoint.api.schemas.recommendation import (
     RecommendationExplanationResponse,
     RecommendationItem,
     RecommendationsResponse,
+    ValueDriverSummary,
 )
 from portalpoint.api.services import fit_score_service
 from portalpoint.api.services.context_staleness import get_context_staleness
@@ -58,6 +60,26 @@ def _opt_float(value) -> float | None:
     """None on a LEFT JOIN miss (no destination player_projections row yet) —
     NaN in pandas terms — rather than a fabricated 0.0."""
     return float(value) if pd.notna(value) else None
+
+
+def _parse_driver(raw) -> ValueDriverSummary | None:
+    """Parse a single top_positive / top_negative JSON object from SQL/pandas."""
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(raw, dict) or "feature" not in raw:
+        return None
+    try:
+        return ValueDriverSummary(
+            feature=str(raw["feature"]),
+            total_value_contribution=float(raw["total_value_contribution"]),
+        )
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def _build_reasoning(row: pd.Series) -> str:
@@ -192,6 +214,8 @@ async def get_recommendations(
             value_per_100=_opt_float(row.get("value_per_100")),
             projected_minutes=_opt_float(row.get("projected_minutes")),
             projected_usage=_opt_float(row.get("projected_usage")),
+            biggest_strength=_parse_driver(row.get("biggest_strength")),
+            biggest_weakness=_parse_driver(row.get("biggest_weakness")),
         )
         for _, row in top10.iterrows()
     ]

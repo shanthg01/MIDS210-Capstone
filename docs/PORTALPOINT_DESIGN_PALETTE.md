@@ -10,14 +10,15 @@
 
 | Token | Hex | Usage |
 |---|---|---|
-| `--color-bg-primary` | `#0D1B2A` | Main slide / page background (deep navy) |
-| `--color-bg-secondary` | `#1A2E42` | Card backgrounds, secondary panels |
+| `--color-bg-primary` | `#1B2838` | Main slide / page background (slate navy) |
+| `--color-bg-secondary` | `#263849` | Card backgrounds, secondary panels |
 | `--color-bg-surface` | `#FFFFFF1A` | Translucent white surface (≈10% opacity white on dark bg) — used for content cards |
 | `--color-accent-orange` | `#FF6B35` | Primary accent: CTAs, section labels, left-edge accent bars, bullet markers |
-| `--color-accent-blue` | `#4A90E2` | Secondary accent: section headers ("Progress/Updates"), numbered steps, links |
-| `--color-text-primary` | `#FFFFFF` | All primary body text, headings on dark backgrounds |
-| `--color-text-secondary` | `#B0C4DE` | Supporting / descriptive text (light steel blue) — captions, sub-bullets |
-| `--color-text-muted` | `#FFFFFF99` | Tertiary text, metadata, timestamps (≈60% opacity white) |
+| `--color-accent-blue` | `#5BA3E8` | Secondary accent: section headers ("Progress/Updates"), numbered steps, links |
+| `--color-accent-cream` | `#f3e5d0` | Warm accent from slide deck: text selection, scrollbar thumb, active route highlight |
+| `--color-text-primary` | `#F2F6FA` | All primary body text, headings on dark backgrounds |
+| `--color-text-secondary` | `#A8B9CC` | Supporting / descriptive text (muted steel blue) — captions, sub-bullets |
+| `--color-text-muted` | `rgba(242, 246, 250, 0.60)` | Tertiary text, metadata, timestamps (≈60% opacity white) |
 
 ### Status Colors
 
@@ -28,7 +29,7 @@ Used in build status views, pipeline tracking, and any pass/fail indicators.
 | `--color-status-success` | `#4CAF50` | Complete ✓ — green |
 | `--color-status-error` | `#F44336` | Not started ✗ — red |
 | `--color-status-warning` | `#FF9800` | In progress / stub ⚠ — amber |
-| `--color-status-info` | `#4A90E2` | Informational highlights — blue (same as accent-blue) |
+| `--color-status-info` | `#5BA3E8` | Informational highlights — blue (same as accent-blue) |
 
 ### Functional Overlays
 
@@ -36,10 +37,11 @@ Used in build status views, pipeline tracking, and any pass/fail indicators.
 |---|---|---|
 | `--color-overlay-card` | `rgba(255,255,255,0.10)` | Translucent card background on dark bg |
 | `--color-overlay-card-accent` | `rgba(255,107,53,0.12)` | Orange-tinted card (highlighted/active state) |
-| `--color-overlay-card-blue` | `rgba(74,144,226,0.12)` | Blue-tinted card (informational state) |
+| `--color-overlay-card-blue` | `rgba(91,163,232,0.12)` | Blue-tinted card (informational state) |
+| `--color-overlay-card-cream` | `rgba(243,229,208,0.15)` | Cream-tinted surface (active route highlight) |
 | `--color-border-orange` | `#FF6B35` | Card border, active states, left-edge accent |
-| `--color-border-blue` | `#4A90E2` | Comparison/before-state card border |
-| `--color-border-subtle` | `rgba(255,255,255,0.12)` | Subtle dividers, inactive borders |
+| `--color-border-blue` | `#5BA3E8` | Comparison/before-state card border |
+| `--color-border-subtle` | `rgba(255,255,255,0.14)` | Subtle dividers, inactive borders |
 
 ---
 
@@ -85,7 +87,7 @@ Derived from PPTX `sz` values (sz in hundredths of a point → divide by 100 for
   font-weight: 900;         /* Inter Black */
   font-style: italic;
   font-size: 25px;
-  color: #FFFFFF;
+  color: #F2F6FA;
   line-height: 1.15;
 }
 
@@ -104,7 +106,7 @@ Derived from PPTX `sz` values (sz in hundredths of a point → divide by 100 for
   font-family: 'Inter', sans-serif;
   font-weight: 700;
   font-size: 13px;
-  color: #4A90E2;
+  color: #5BA3E8;
   letter-spacing: 0.04em;
 }
 
@@ -113,7 +115,7 @@ Derived from PPTX `sz` values (sz in hundredths of a point → divide by 100 for
   font-family: 'Inter', sans-serif;
   font-weight: 600;
   font-size: 12px;
-  color: #FFFFFF;
+  color: #F2F6FA;
 }
 
 /* Body / descriptive copy */
@@ -121,7 +123,7 @@ Derived from PPTX `sz` values (sz in hundredths of a point → divide by 100 for
   font-family: 'Inter', sans-serif;
   font-weight: 300;         /* Inter Light */
   font-size: 11px;
-  color: #B0C4DE;
+  color: #A8B9CC;
   line-height: 1.5;
 }
 
@@ -130,7 +132,7 @@ Derived from PPTX `sz` values (sz in hundredths of a point → divide by 100 for
   font-family: 'Inter', sans-serif;
   font-weight: 600;
   font-size: 12px;
-  color: #4A90E2;
+  color: #5BA3E8;
 }
 
 /* Status: success */
@@ -190,7 +192,7 @@ Left-accent bar:
 ```
 ┌─────────────────────────────────────────────────┐
 │ ▌  Hero Title (Inter Black, italic, 25px white) │
-│    Subtitle line (Inter Light, 11px #B0C4DE)    │
+│    Subtitle line (Inter Light, 11px #A8B9CC)    │
 └─────────────────────────────────────────────────┘
 
 ▌ = 6px wide left-edge accent bar in #FF6B35
@@ -210,7 +212,7 @@ letter-spacing: 0.04em;
 margin-bottom: 12px;
 
 /* Blue variant — secondary / right-column sections */
-color: #4A90E2;
+color: #5BA3E8;
 ```
 
 ### Content Card
@@ -236,7 +238,7 @@ Semi-transparent surface on the dark background. Two border variants:
 /* Blue-accented card (informational / before-state) */
 .card-accent-blue {
   background: rgba(74, 144, 226, 0.12);
-  border: 1.5px solid #4A90E2;
+  border: 1.5px solid #5BA3E8;
   border-radius: 4px;
   padding: 16px 20px;
 }
@@ -255,20 +257,20 @@ li::before {
 /* Blue star bullet (key takeaway / highlighted insight) */
 li.highlight::before {
   content: '★';
-  color: #4A90E2;
+  color: #5BA3E8;
 }
 
 /* List item header */
 li .item-header {
   font-weight: 600;
-  color: #FFFFFF;
+  color: #F2F6FA;
   font-size: 12px;
 }
 
 /* List item description */
 li .item-desc {
   font-weight: 300;
-  color: #B0C4DE;
+  color: #A8B9CC;
   font-size: 11px;
   margin-top: 2px;
 }
@@ -282,34 +284,34 @@ Used in build trackers, pipeline views, model status lists.
 ✓  Complete      #4CAF50  font-weight: 400
 ✗  Not started   #F44336  font-weight: 400
 ⚠  In progress   #FF9800  font-weight: 400
-★  Key insight   #4A90E2  font-weight: 600
+★  Key insight   #5BA3E8  font-weight: 600
 ```
 
 ```css
 .status-success { color: #4CAF50; }
 .status-error   { color: #F44336; }
 .status-warning { color: #FF9800; }
-.status-info    { color: #4A90E2; font-weight: 600; }
+.status-info    { color: #5BA3E8; font-weight: 600; }
 ```
 
 ### Numbered Step (Critical Path)
 
 ```css
 .step-number {
-  color: #4A90E2;
+  color: #5BA3E8;
   font-weight: 700;
   font-size: 12px;
   margin-right: 6px;
 }
 
 .step-label {
-  color: #FFFFFF;
+  color: #F2F6FA;
   font-weight: 700;
   font-size: 12px;
 }
 
 .step-desc {
-  color: #B0C4DE;
+  color: #A8B9CC;
   font-weight: 300;
   font-size: 11px;
   margin-left: 18px;    /* indent under step label */
@@ -323,7 +325,7 @@ Used in build trackers, pipeline views, model status lists.
 ┌──────────────────────────┐     →     ┌──────────────────────────┐
 │  BEFORE                  │           │  AFTER ✓                 │
 │  (blue border)           │           │  (orange border + tint)  │
-│  color: #4A90E2          │           │  color: #FF6B35          │
+│  color: #5BA3E8          │           │  color: #FF6B35          │
 └──────────────────────────┘           └──────────────────────────┘
 ```
 
@@ -342,13 +344,13 @@ Low-opacity tinted strip pinned to the bottom of a view, summarizing key metrics
 
 .footer-banner .label {
   font-weight: 700;
-  color: #FFFFFF;
+  color: #F2F6FA;
   font-size: 11px;
 }
 
 .footer-banner .value {
   font-weight: 300;
-  color: #B0C4DE;
+  color: #A8B9CC;
   font-size: 11px;
 }
 ```
@@ -362,31 +364,33 @@ Paste this into your global stylesheet or design token file:
 ```css
 :root {
   /* ── Backgrounds ── */
-  --color-bg-primary:          #0D1B2A;
-  --color-bg-secondary:        #1A2E42;
+  --color-bg-primary:          #1B2838;
+  --color-bg-secondary:        #263849;
   --color-bg-surface:          rgba(255, 255, 255, 0.10);
   --color-bg-surface-orange:   rgba(255, 107, 53, 0.12);
-  --color-bg-surface-blue:     rgba(74, 144, 226, 0.12);
+  --color-bg-surface-blue:     rgba(91, 163, 232, 0.12);
+  --color-bg-surface-cream:    rgba(243, 229, 208, 0.15);
 
   /* ── Accents ── */
   --color-accent-orange:       #FF6B35;
-  --color-accent-blue:         #4A90E2;
+  --color-accent-blue:         #5BA3E8;
+  --color-accent-cream:        #f3e5d0;
 
   /* ── Text ── */
-  --color-text-primary:        #FFFFFF;
-  --color-text-secondary:      #B0C4DE;
-  --color-text-muted:          rgba(255, 255, 255, 0.60);
+  --color-text-primary:        #F2F6FA;
+  --color-text-secondary:      #A8B9CC;
+  --color-text-muted:          rgba(242, 246, 250, 0.60);
 
   /* ── Borders ── */
   --color-border-orange:       #FF6B35;
-  --color-border-blue:         #4A90E2;
-  --color-border-subtle:       rgba(255, 255, 255, 0.12);
+  --color-border-blue:         #5BA3E8;
+  --color-border-subtle:       rgba(255, 255, 255, 0.14);
 
   /* ── Status ── */
   --color-status-success:      #4CAF50;
   --color-status-error:        #F44336;
   --color-status-warning:      #FF9800;
-  --color-status-info:         #4A90E2;
+  --color-status-info:         #5BA3E8;
 
   /* ── Typography ── */
   --font-family-base:          'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -431,11 +435,12 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        'pp-navy':       '#0D1B2A',
-        'pp-navy-light': '#1A2E42',
+        'pp-navy':       '#1B2838',
+        'pp-navy-light': '#263849',
         'pp-orange':     '#FF6B35',
-        'pp-blue':       '#4A90E2',
-        'pp-slate':      '#B0C4DE',
+        'pp-blue':       '#5BA3E8',
+        'pp-cream':      '#f3e5d0',
+        'pp-slate':      '#A8B9CC',
         'pp-success':    '#4CAF50',
         'pp-error':      '#F44336',
         'pp-warning':    '#FF9800',
@@ -477,15 +482,17 @@ module.exports = {
 ## Do's and Don'ts
 
 **Do:**
-- Always use `#0D1B2A` as the page background — never white or grey
+- Always use `#1B2838` as the page background — never white or grey
 - Use `#FF6B35` sparingly: CTAs, section labels, accent bars, bullet markers only
-- Use `#B0C4DE` for all supporting / descriptive text (not pure white)
+- Use `#5BA3E8` for secondary section headers, links, and numbered steps
+- Use `#f3e5d0` as a warm accent for selection, scrollbars, and active-route highlights
+- Use `#A8B9CC` for all supporting / descriptive text (not pure white)
 - Apply Inter Light (`300`) for body copy and Inter SemiBold (`600`) for list headers
 - Use translucent cards (`rgba(255,255,255,0.10)`) rather than opaque boxes
 - Include the 6px orange left-edge accent bar on page/section headers
 
 **Don't:**
-- Don't use white (`#FFFFFF`) as body copy color — use `#B0C4DE` for secondary text
+- Don't use white (`#F2F6FA`) as body copy color — use `#A8B9CC` for secondary text
 - Don't use orange and blue together as background fills — they are accent-only
 - Don't use border-radius > 4px — the deck aesthetic is near-flat, not rounded
 - Don't add decorative dividers or horizontal rules — use whitespace

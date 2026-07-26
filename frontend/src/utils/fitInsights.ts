@@ -1,5 +1,5 @@
 import type { FitScoreResponse, PlayerProjectionResponse } from '../types/api';
-import { FIT_COMPONENTS, GAP_FEATURES, SKILLS } from '../constants/definitions';
+import { FIT_COMPONENTS, GAP_FEATURES, valueDriverLabel } from '../constants/definitions';
 
 export interface Insight {
   headline: string;
@@ -42,11 +42,6 @@ interface ValueDriver {
   total_value_contribution: number;
 }
 
-function skillLabel(feature: string): string {
-  const key = feature.replace('skill_', '');
-  return SKILLS[key]?.label ?? feature;
-}
-
 // Scoped to context-neutral projection data only — PlayerProfilePage never
 // fetches the 4 fit components, so this can't speak to Gap/Scheme/Role/Program.
 export function buildProjectionInsight(projection: PlayerProjectionResponse): Insight {
@@ -65,10 +60,10 @@ export function buildProjectionInsight(projection: PlayerProjectionResponse): In
   const topPos = valueDrivers?.top_positive?.[0];
   const topNeg = valueDrivers?.top_negative?.[0];
   if (topPos) {
-    bullets.push(`Biggest strength: ${skillLabel(topPos.feature)} (+${topPos.total_value_contribution.toFixed(2)}).`);
+    bullets.push(`Biggest strength: ${valueDriverLabel(topPos.feature)} (+${topPos.total_value_contribution.toFixed(2)}).`);
   }
   if (topNeg) {
-    bullets.push(`Biggest weakness: ${skillLabel(topNeg.feature)} (${topNeg.total_value_contribution.toFixed(2)}).`);
+    bullets.push(`Biggest weakness: ${valueDriverLabel(topNeg.feature)} (${topNeg.total_value_contribution.toFixed(2)}).`);
   }
 
   return { headline, bullets };
