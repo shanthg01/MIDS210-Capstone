@@ -19,6 +19,7 @@ from portalpoint.modeling.recommendations import (
     CANDIDATE_SQL,
     DEFAULT_FIT_WEIGHTS,
     MODEL_VERSION,
+    apply_user_filters,
     explain_candidate_ranking,
     fixed_team_impact_preferences,
     generate_top_50_candidates,
@@ -37,7 +38,8 @@ SELECT
     u.school_id,
     COALESCE(up.weight_scheme, 0.25) AS weight_scheme,
     COALESCE(up.weight_gap,    0.30) AS weight_gap,
-    COALESCE(up.weight_role,   0.25) AS weight_role
+    COALESCE(up.weight_role,   0.25) AS weight_role,
+    COALESCE(up.filters, '{}'::jsonb) AS filters
 FROM users u
 LEFT JOIN user_preferences up ON up.user_id = u.id
 WHERE u.id = :user_id
@@ -54,6 +56,16 @@ _COMPONENT_LABELS = {
 def _check_auth(user_id: int, current_user: int) -> None:
     if user_id != current_user:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def _parse_filters(user_row) -> dict:
+    """user_preferences.filters (UserFilters JSONB) — asyncpg returns raw JSON
+    text for a bare ::jsonb cast in a text() query (no codec registered on
+    this engine), so this may arrive as a str or an already-parsed dict."""
+    raw = user_row["filters"]
+    if isinstance(raw, str):
+        return json.loads(raw) if raw else {}
+    return raw or {}
 
 
 def _opt_float(value) -> float | None:
@@ -120,6 +132,7 @@ async def get_recommendation_explanation(
         )
     ).mappings().all()
     pool = pd.DataFrame(pool_rows)
+    pool = apply_user_filters(pool, _parse_filters(user_row))
     if not pool.empty:
         pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
     preferences = fixed_team_impact_preferences(
@@ -183,6 +196,18 @@ async def get_recommendations(
         )
 
     pool = pd.DataFrame(pool_rows)
+    pool = apply_user_filters(pool, _parse_filters(user_row))
+    if pool.empty:
+        return RecommendationsResponse(
+            program_id=user_id,
+            recommendations=[],
+            total=0,
+            generated_at=now,
+            model_version=MODEL_VERSION,
+            context_staleness=await get_context_staleness(
+                db, user_row["school_id"], season
+            ),
+        )
     pool["team_impact_fit"] = team_impact_fit(pool["delta_adj_em"].fillna(0.0))
 
     top50 = generate_top_50_candidates(pool, weights=DEFAULT_FIT_WEIGHTS)

@@ -245,7 +245,7 @@ function OverallPanel({
       <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 1, flex: '1 1 200px' }}>
           {[
-            { label: 'Roster Need', value: gap, component: 'gap_match' },
+            { label: 'Roster Fit', value: gap, component: 'gap_match' },
             { label: 'System', value: scheme, component: 'scheme_fit' },
             { label: 'Role Fit', value: role, component: 'role_fit' },
             { label: 'Program Fit', value: program, component: 'program_fit' },
@@ -283,7 +283,7 @@ function OverallPanel({
           <FitRadarChart
             size={180}
             data={[
-              { label: 'Roster Need', value: gap, component: 'gap_match' },
+              { label: 'Roster Fit', value: gap, component: 'gap_match' },
               { label: 'System', value: scheme, component: 'scheme_fit' },
               { label: 'Role Fit', value: role, component: 'role_fit' },
               { label: 'Program Fit', value: program, component: 'program_fit' },
@@ -506,7 +506,9 @@ function ProgramFitInputEditor({
         coachability) match this program? This is personal to you, not shared or scored into
         Overall Fit — it only adjusts your Personalized Fit.
       </Typography>
-      <Box sx={{ px: 1.5, mb: 1 }}>
+      {/* pt leaves room for valueLabelDisplay="on"'s permanent label above the thumb,
+          which otherwise overlaps the caption text above (it was clashing into it). */}
+      <Box sx={{ px: 1.5, pt: 3, mb: 1 }}>
         <Slider
           value={score}
           min={0}
@@ -554,33 +556,45 @@ function MinutesOverridePanel({
 }) {
   const [minutes, setMinutes] = useState(storedMinutes);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
+  const [roleError, setRoleError] = useState('');
+  const [ratingError, setRatingError] = useState('');
   const [roleResult, setRoleResult] = useState<PlayingTimeOverrideResponse | null>(null);
   const [ratingResult, setRatingResult] = useState<TeamRatingOverrideResponse | null>(null);
   const [boxScoreResult, setBoxScoreResult] = useState<Record<string, number> | null>(null);
 
+  // Independent try/catch per call (issue: a single shared catch couldn't say
+  // which of role/rating/box-score failed — role_fit and team_rating_projections
+  // are separate tables with separate coverage, so one can 404 while the other
+  // succeeds, e.g. no playing_time_projections row for this pair yet, or its
+  // 7-day TTL expired with no scheduled refresh in place).
   async function runOverride(value: number) {
     setPending(true);
-    setError('');
-    try {
-      const [role, rating] = await Promise.all([
-        overridePlayingTime(playerId, { school_id: schoolId, minutes_override: value }),
-        teamRatingSeason !== null
-          ? overrideTeamRating({
-              player_id: playerId,
-              school_id: schoolId,
-              season: teamRatingSeason,
-              minutes_override: value,
-            })
-          : Promise.resolve(null),
-      ]);
-      setRoleResult(role);
-      setRatingResult(rating);
-    } catch {
-      setError('Could not compute this scenario — no scored projection for this pair yet.');
-    } finally {
-      setPending(false);
-    }
+    setRoleError('');
+    setRatingError('');
+
+    const rolePromise = overridePlayingTime(playerId, { school_id: schoolId, minutes_override: value })
+      .then((role) => setRoleResult(role))
+      .catch(() => {
+        setRoleResult(null);
+        setRoleError('Could not compute Role Fit for this scenario — no scored playing-time projection for this pair yet.');
+      });
+
+    const ratingPromise = teamRatingSeason !== null
+      ? overrideTeamRating({
+          player_id: playerId,
+          school_id: schoolId,
+          season: teamRatingSeason,
+          minutes_override: value,
+        })
+          .then((rating) => setRatingResult(rating))
+          .catch(() => {
+            setRatingResult(null);
+            setRatingError('Could not compute Team Rating impact for this scenario — no scored projection for this pair yet.');
+          })
+      : Promise.resolve(setRatingResult(null));
+
+    await Promise.all([rolePromise, ratingPromise]);
+    setPending(false);
 
     // Separate try/catch — a player can have a playing-time projection without
     // a destination box-score projection yet (different population scopes), and
@@ -624,7 +638,8 @@ function MinutesOverridePanel({
         />
       </Box>
 
-      {error && <Alert severity="warning" sx={{ mt: 1 }}>{error}</Alert>}
+      {roleError && <Alert severity="warning" sx={{ mt: 1 }}>{roleError}</Alert>}
+      {ratingError && <Alert severity="warning" sx={{ mt: 1 }}>{ratingError}</Alert>}
 
       {pending && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
@@ -861,11 +876,11 @@ export default function FitScorePage() {
         isProgramFitGraded={fit.program_fit_user_input !== null}
       />
 
-      {/* System Match breakdown — headline is calibrated; the category scores
+      {/* System Fit breakdown — headline is calibrated; the category scores
           below remain raw model diagnostics. */}
       <SectionPaper>
         <ScoreHeader
-          label="System Match"
+          label="System Fit"
           score={schemeDisplay}
           weight="25%"
           component="scheme_fit"
@@ -970,14 +985,14 @@ export default function FitScorePage() {
         teamRatingSeason={proj?.season ?? null}
       />
 
-      {/* Roster Need breakdown */}
+      {/* Roster Fit breakdown */}
       <SectionPaper>
-        <ScoreHeader label="Roster Need" score={fit.gap_match} weight="30%" component="gap_match" />
+        <ScoreHeader label="Roster Fit" score={fit.gap_match} weight="30%" component="gap_match" />
         <Divider sx={{ mb: 2 }} />
         <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 2, mb: 2 }}>
           <Box>
             <DefinitionTooltip title={SUB_METRICS.archetype_needed.short}>
-              <Typography variant="caption" color="text.secondary">
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                 Archetype Needed
               </Typography>
             </DefinitionTooltip>

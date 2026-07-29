@@ -110,7 +110,7 @@ async def compare_players(
             best_player_id=best_scheme.player.player_id,
         ),
         TradeOff(
-            factor="Gap Match",
+            factor="Roster Fit",
             description=f"{best_gap.player.full_name} best fills the program's current roster needs.",
             best_player_name=best_gap.player.full_name,
             best_player_id=best_gap.player.player_id,

@@ -18,11 +18,11 @@ export const FIT_COMPONENTS: Record<
   Definition
 > = {
   gap_match: {
-    label: 'Roster Need',
+    label: 'Roster Fit',
     short: 'How well this player fills a statistical hole on your current roster (e.g. rebounding, shot creation) at their position.',
   },
   scheme_fit: {
-    label: 'System Match',
+    label: 'System Fit',
     short: "How closely this player's shot distribution and play-type tendencies match your program's system.",
   },
   role_fit: {
@@ -41,7 +41,7 @@ export const FIT_COMPONENTS: Record<
 
 export const OVERALL_FIT: Definition = {
   label: 'Overall Fit',
-  short: 'The canonical calibrated blend of System Match (25%), Roster Need (30%), Role Fit (25%), and Program Fit (20%). Program Fit remains a neutral 50 placeholder.',
+  short: 'The canonical calibrated blend of System Fit (25%), Roster Fit (30%), Role Fit (25%), and Program Fit (20%). Program Fit remains a neutral 50 placeholder.',
 };
 
 export const SKILLS: Record<string, Definition> = {
@@ -129,7 +129,7 @@ export const HE_PLAY_TYPES: Record<string, Definition> = {
 
 export const SHOT_DISTRIBUTION_MATCH: Definition = {
   label: 'Shot Distribution Match',
-  short: 'Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — one of two categories averaged into System Match\'s headline score (with Play Type Match).',
+  short: 'Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — one of two categories averaged into System Fit\'s headline score (with Play Type Match).',
 };
 
 export const PLAY_TYPE_MATCH: Definition = {

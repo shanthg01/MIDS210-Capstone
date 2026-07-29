@@ -98,16 +98,16 @@ interface FitWeightsPct {
 }
 
 const FIT_WEIGHT_FIELDS: Array<{ key: keyof FitWeightsPct; label: string; description?: string }> = [
-  { key: 'gap', label: 'Roster Need' },
-  { key: 'scheme', label: 'System Match' },
+  { key: 'gap', label: 'Roster Fit' },
+  { key: 'scheme', label: 'System Fit' },
   { key: 'role_fit', label: 'Role Fit' },
   { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
 ];
 
 const IMPORTANCE_FIELDS: Array<{ key: keyof ImportanceWeights; label: string; description: string }> = [
-  { key: 'scheme_fit', label: 'System Match', description: 'How much player style must match your system' },
+  { key: 'scheme_fit', label: 'System Fit', description: 'How much player style must match your system' },
   { key: 'role_fit', label: 'Role Fit', description: 'Importance of minutes availability' },
-  { key: 'gap_match', label: 'Roster Need', description: 'Priority of filling roster archetype holes' },
+  { key: 'gap_match', label: 'Roster Fit', description: 'Priority of filling roster archetype holes' },
   { key: 'program_fit', label: 'Program Fit', description: FIT_COMPONENTS.program_fit.short },
 ];
 
@@ -423,7 +423,7 @@ export default function SettingsPage() {
           Program
         </Typography>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-          System Match, Roster Need, and every other school-scoped score are computed against this school
+          System Fit, Roster Fit, and every other school-scoped score are computed against this school
         </Typography>
         <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
           <Autocomplete
