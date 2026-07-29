@@ -432,7 +432,7 @@ Final model (all 2021-2026): off_resid_std=2.008, def_resid_std=2.057.
 
 **Bug 3: System-level `DATABASE_URL` env var bypasses SSH tunnel**
 - System `DATABASE_URL` pointed at RDS hostname directly; `get_sync_engine()` reads it before checking `.env`.
-- Fix (per-session): `$env:DATABASE_URL = "postgresql+psycopg2://portalpoint_app:pp_midsommer2026!@127.0.0.1:5433/portalpoint?sslmode=require"` before running any script. Must be done each new PowerShell session.
+- Fix (per-session): `$env:DATABASE_URL = "postgresql+psycopg2://portalpoint_app:<password>@127.0.0.1:5433/portalpoint?sslmode=require"` before running any script (see CLAUDE.md, gitignored, for the real password). Must be done each new PowerShell session.
 - Underlying fix: `modeling/io.get_sync_engine()` now strips `ssl(mode)=require` from the URL query string and passes it via `connect_args` for psycopg2 compatibility.
 
 ### Performance: 200× Step 6 speedup

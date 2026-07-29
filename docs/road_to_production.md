@@ -257,9 +257,10 @@ Must clear before onboarding real program users, independent of infra readiness:
 
 1. NCAA/FERPA compliance review for player data (CLAUDE.md Open Design Question #2) — legal, not
    engineering, but blocks beta regardless of how ready the infra is.
-2. Confirm `portalpoint-bastion.pem` and `pp_midsommer2026!` (currently in CLAUDE.md/docs in plaintext
-   for dev convenience) are rotated/removed from any doc that becomes public once this repo or its
-   docs are shared beyond the team.
+2. Confirm `portalpoint-bastion.pem` and the `portalpoint_app` RDS password (previously in CLAUDE.md/docs
+   in plaintext for dev convenience — CLAUDE.md is gitignored and was never committed; the docs
+   references were scrubbed 2026-07-29 when this repo went public, though the old value remains in
+   pre-2026-07-29 git history) are rotated before this password is treated as live/trustworthy again.
 3. Audit log (`audit_log` table exists in schema) — confirm it's actually written to before beta, not
    just modeled.
 
