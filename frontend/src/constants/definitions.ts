@@ -31,7 +31,7 @@ export const FIT_COMPONENTS: Record<
   },
   program_fit: {
     label: 'Program Fit',
-    short: "Your own qualitative grade of off-court alignment (culture, work ethic, coachability). Enter a grade below — until you do, this shows a neutral placeholder.",
+    short: "Your own qualitative grade of off-court alignment (culture, work ethic, coachability). Enter a grade below - until you do, this shows a neutral placeholder.",
   },
   team_impact_fit: {
     label: 'Team Rating',
@@ -82,7 +82,7 @@ export const GAP_FEATURES: Record<string, Definition> = {
   usage_rate: { label: 'Usage Rate', short: 'Share of team possessions used while on the floor.' },
   true_shooting_pct: { label: 'True Shooting %', short: 'Shooting efficiency accounting for 2s, 3s, and free throws.' },
   assist_rate: { label: 'Assist Rate', short: 'Share of teammate field goals this player assisted.' },
-  tov_pct_inverse: { label: 'Turnover Avoidance', short: 'Inverse of turnover rate — higher is better ball security.' },
+  tov_pct_inverse: { label: 'Turnover Avoidance', short: 'Inverse of turnover rate - higher is better ball security.' },
   off_reb_pct: { label: 'Off. Rebound %', short: 'Share of available offensive rebounds grabbed.' },
   def_reb_pct: { label: 'Def. Rebound %', short: 'Share of available defensive rebounds grabbed.' },
   block_pct: { label: 'Block %', short: 'Share of opponent 2-point attempts blocked.' },
@@ -108,7 +108,7 @@ export const SUB_METRICS: Record<string, Definition> = {
   depth_chart_position: { label: 'Depth Chart Position', short: 'Lower number = higher on the depth chart at this position.' },
   gap_reliability: {
     label: 'Gap Confidence',
-    short: "Confidence in the gap score itself — blends how reliable this player's position assignment, sample size, and stat features are.",
+    short: "Confidence in the gap score itself - blends how reliable this player's position assignment, sample size, and stat features are.",
   },
   archetype_needed: { label: 'Archetype Needed', short: 'Whether this player matches a playing-style archetype your roster is missing.' },
   position_depth_score: { label: 'Position Depth Score', short: 'How thin your roster currently is at this position (higher = more open opportunity).' },
@@ -129,7 +129,7 @@ export const HE_PLAY_TYPES: Record<string, Definition> = {
 
 export const SHOT_DISTRIBUTION_MATCH: Definition = {
   label: 'Shot Distribution Match',
-  short: 'Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program — one of two categories averaged into System Fit\'s headline score (with Play Type Match).',
+  short: 'Cosine similarity of shot-location tendencies (3PT, rim, mid-range) between player and program - one of two categories averaged into System Fit\'s headline score (with Play Type Match).',
 };
 
 export const PLAY_TYPE_MATCH: Definition = {
@@ -139,12 +139,12 @@ export const PLAY_TYPE_MATCH: Definition = {
 
 export const VALUE_PER_100: Definition = {
   label: 'Value per 100 possessions',
-  short: "This player's context-neutral talent value, independent of any specific program's scheme or roster — not one of the 4 fit components.",
+  short: "This player's context-neutral talent value, independent of any specific program's scheme or roster - not one of the 4 fit components.",
 };
 
 export const DESTINATION_VALUE_PER_100: Definition = {
   label: 'Value per 100 possessions',
-  short: "This player's talent value adjusted for expected role, style/skill fit, roster context, and competition tier at this specific program — not the same as their context-neutral value, and not one of the 4 fit components.",
+  short: "This player's talent value adjusted for expected role, style/skill fit, roster context, and competition tier at this specific program - not the same as their context-neutral value, and not one of the 4 fit components.",
 };
 
 // Extra features that can appear in projection explanation.value_drivers
@@ -152,15 +152,15 @@ export const DESTINATION_VALUE_PER_100: Definition = {
 export const VALUE_DRIVERS: Record<string, Definition> = {
   source_value_per_100: {
     label: 'Prior Total Value',
-    short: "Carryover from last season's total value per 100 possessions — a strong prior the forecast model uses when projecting this season's overall impact.",
+    short: "Carryover from last season's total value per 100 possessions - a strong prior the forecast model uses when projecting this season's overall impact.",
   },
   source_off_value_per_100: {
     label: 'Prior Offensive Value',
-    short: "Carryover from last season's offensive value per 100 possessions — how much the forecast leans on known offensive production.",
+    short: "Carryover from last season's offensive value per 100 possessions - how much the forecast leans on known offensive production.",
   },
   source_def_value_per_100: {
     label: 'Prior Defensive Value',
-    short: "Carryover from last season's defensive value per 100 possessions — how much the forecast leans on known defensive impact (lower raw RAPM is better; contribution is signed for total value).",
+    short: "Carryover from last season's defensive value per 100 possessions - how much the forecast leans on known defensive impact (lower raw RAPM is better; contribution is signed for total value).",
   },
 };
 
@@ -186,10 +186,10 @@ export const CONFIDENCE_INTERVAL: Definition = {
 export const DATA_STATUS = {
   live: {
     label: 'Live',
-    short: 'Backed by a real model — scores reflect actual data.',
+    short: 'Backed by a real model - scores reflect actual data.',
   } as Definition,
   placeholder: {
     label: 'Placeholder',
-    short: 'Placeholder — model not built yet, value is a fixed stub.',
+    short: 'Placeholder - model not built yet, value is a fixed stub.',
   } as Definition,
 };

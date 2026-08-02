@@ -69,15 +69,15 @@ function isBadNumber(n: unknown): boolean {
 }
 
 function fmt1(n: number): string {
-  return isBadNumber(n) ? '—' : n.toFixed(1);
+  return isBadNumber(n) ? 'N/A' : n.toFixed(1);
 }
 
 function fmtScore(n: number): string {
-  return isBadNumber(n) ? '—' : n.toFixed(0);
+  return isBadNumber(n) ? 'N/A' : n.toFixed(0);
 }
 
 function fmtAdjEM(n: number): string {
-  return isBadNumber(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
+  return isBadNumber(n) ? 'N/A' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
 }
 
 function ScoreHeader({
@@ -173,7 +173,7 @@ function SchemeCategoryHeader({ label, score, note }: { label: string; score: nu
   return (
     <Box sx={{ mb: 1 }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-        {label} — {fmtScore(score)}/100
+        {label} - {fmtScore(score)}/100
       </Typography>
       {note && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -407,7 +407,7 @@ function ProjectionPanel({ data }: { data: TeamRatingProjectionResponse }) {
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
             {data.confidence_interval
               ? `${fmtAdjEM(data.confidence_interval[0])} to ${fmtAdjEM(data.confidence_interval[1])}`
-              : '—'}
+              : 'N/A'}
           </Typography>
         </Box>
         <Box>
@@ -493,7 +493,7 @@ function ProgramFitInputEditor({
       setSaved(true);
       onSaved();
     } catch {
-      setError('Could not save this grade — try again.');
+      setError('Could not save this grade - try again.');
     } finally {
       setSaving(false);
     }
@@ -502,9 +502,9 @@ function ProgramFitInputEditor({
   return (
     <Box sx={{ mt: 2 }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-        Your grade — how well does this player's off-the-court fit (culture, work ethic,
+        Your grade - how well does this player's off-the-court fit (culture, work ethic,
         coachability) match this program? This is personal to you, not shared or scored into
-        Overall Fit — it only adjusts your Personalized Fit.
+        Overall Fit - it only adjusts your Personalized Fit.
       </Typography>
       {/* pt leaves room for valueLabelDisplay="on"'s permanent label above the thumb,
           which otherwise overlaps the caption text above (it was clashing into it). */}
@@ -576,7 +576,7 @@ function MinutesOverridePanel({
       .then((role) => setRoleResult(role))
       .catch(() => {
         setRoleResult(null);
-        setRoleError('Could not compute Role Fit for this scenario — no scored playing-time projection for this pair yet.');
+        setRoleError('Could not compute Role Fit for this scenario - no scored playing-time projection for this pair yet.');
       });
 
     const ratingPromise = teamRatingSeason !== null
@@ -589,7 +589,7 @@ function MinutesOverridePanel({
           .then((rating) => setRatingResult(rating))
           .catch(() => {
             setRatingResult(null);
-            setRatingError('Could not compute Team Rating impact for this scenario — no scored projection for this pair yet.');
+            setRatingError('Could not compute Team Rating impact for this scenario - no scored projection for this pair yet.');
           })
       : Promise.resolve(setRatingResult(null));
 
@@ -616,7 +616,7 @@ function MinutesOverridePanel({
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 3 }}>
         Drag to see how Role Fit and Team Rating impact change under a different minutes projection.
-        This doesn't change the stored scores — it's a live scenario check.
+        This doesn't change the stored scores - it's a live scenario check.
       </Typography>
 
       <Box sx={{ px: 1.5, mb: 1 }}>
@@ -840,13 +840,13 @@ export default function FitScorePage() {
 
       {fit.is_current_school && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          This player is already on your roster — scores reflect current fit, not a recruit evaluation.
+          This player is already on your roster - scores reflect current fit, not a recruit evaluation.
         </Alert>
       )}
 
       {fit.scheme_fit_stale && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          Coaching change detected — scheme fit scores may not reflect the current system.
+          Coaching change detected - scheme fit scores may not reflect the current system.
           {fit.scheme_fit_stale_reason && ` (${fit.scheme_fit_stale_reason})`}
         </Alert>
       )}
@@ -899,7 +899,7 @@ export default function FitScorePage() {
         <SchemeCategoryHeader
           label="Shot Distribution Match"
           score={fit.raw_components.scheme_fit}
-          note="Cosine similarity of overall shot-location style — the bars below show closeness on each dimension individually; they don't average to this number."
+          note="Cosine similarity of overall shot-location style - the bars below show closeness on each dimension individually; they don't average to this number."
         />
         <SubBar label="3-Point Match" value={fit.breakdown.scheme.three_point_match} metricKey="three_point_match" />
         <SubBar label="Rim Attack" value={fit.breakdown.scheme.rim_attack_match} metricKey="rim_attack_match" />
@@ -912,7 +912,7 @@ export default function FitScorePage() {
             <SchemeCategoryHeader
               label="Play Type Match"
               score={fit.breakdown.scheme.he_scheme_fit!}
-              note="Cosine similarity of overall play-type style — the bars below show closeness on each play type individually; they don't average to this number."
+              note="Cosine similarity of overall play-type style - the bars below show closeness on each play type individually; they don't average to this number."
             />
             {Object.entries(fit.breakdown.scheme.he_breakdown ?? {}).map(([feat, value]) => (
               <SubBar
@@ -925,7 +925,7 @@ export default function FitScorePage() {
           </>
         ) : (
           <Alert severity="info">
-            No play-type data available for this pair — {PLAY_TYPE_MATCH.short}
+            No play-type data available for this pair - {PLAY_TYPE_MATCH.short}
           </Alert>
         )}
       </SectionPaper>
@@ -1060,7 +1060,7 @@ export default function FitScorePage() {
         <Divider sx={{ mb: 2 }} />
         <Alert severity="info">
           {fit.program_fit_user_input !== null
-            ? 'This is your own qualitative grade for this pair — personal to you, not shared with other users or folded into the canonical Overall Fit above.'
+            ? 'This is your own qualitative grade for this pair - personal to you, not shared with other users or folded into the canonical Overall Fit above.'
             : FIT_COMPONENTS.program_fit.short}
         </Alert>
         {schoolId !== null && (
@@ -1080,7 +1080,7 @@ export default function FitScorePage() {
       {playerProjectionQuery.data && (
         <Box sx={{ mb: 3 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            The projection below is <strong>adjusted for fit at this program</strong> — this
+            The projection below is <strong>adjusted for fit at this program</strong> - this
             player's projected talent/value here specifically, incorporating role, usage, and
             roster context. It is a separate signal from the 4 fit components above, not folded
             into Overall Fit.

@@ -57,7 +57,7 @@ function ImpactRow({ item, rank }: { item: RosterImpactItem; rank: number }) {
         </Typography>
       </TableCell>
       <TableCell>
-        <Chip label={item.position || '—'} size="small" color="primary" />
+        <Chip label={item.position || 'N/A'} size="small" color="primary" />
       </TableCell>
       <TableCell>
         <DeltaChip delta={item.delta_adjEM} />
@@ -116,7 +116,7 @@ export default function RosterImpactPage() {
           Roster Impact Rankings
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Portal candidates ranked by projected AdjEM delta — who moves the needle most for your program
+          Portal candidates ranked by projected AdjEM delta - who moves the needle most for your program
           {data && ` · ${players.length} of ${data.total} players`}
         </Typography>
       </Box>

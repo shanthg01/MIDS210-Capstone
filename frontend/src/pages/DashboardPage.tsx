@@ -236,10 +236,10 @@ export default function DashboardPage() {
                   <TableCell>
                     {item.value_per_100 !== null
                       ? `${item.value_per_100 >= 0 ? '+' : ''}${item.value_per_100.toFixed(1)}`
-                      : '—'}
+                      : 'N/A'}
                   </TableCell>
                   <TableCell>
-                    {item.projected_minutes !== null ? item.projected_minutes.toFixed(1) : '—'}
+                    {item.projected_minutes !== null ? item.projected_minutes.toFixed(1) : 'N/A'}
                   </TableCell>
                   <TableCell align="right">
                     <Button

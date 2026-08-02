@@ -39,17 +39,17 @@ function StatCell({ label, value }: { label: string; value: string | number }) {
 }
 
 function fmt(n: number | null | undefined, decimals = 1): string {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined) return 'N/A';
   return n.toFixed(decimals);
 }
 
 function fmtPct(n: number | null | undefined): string {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined) return 'N/A';
   return `${(n * 100).toFixed(1)}%`;
 }
 
 function fmtBpm(n: number | null | undefined): string {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined) return 'N/A';
   return `${n >= 0 ? '+' : ''}${n.toFixed(1)}`;
 }
 

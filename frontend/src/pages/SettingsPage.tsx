@@ -457,7 +457,7 @@ export default function SettingsPage() {
         )}
         {!schoolId && (
           <Alert severity="warning" sx={{ mt: 1.5 }}>
-            No school set yet — fit scores can't be computed until you pick one.
+            No school set yet - fit scores can't be computed until you pick one.
           </Alert>
         )}
         {systemProfile && (
@@ -543,7 +543,7 @@ export default function SettingsPage() {
       <MechanismHeader
         icon={<TuneIcon />}
         title="Prioritize"
-        description="Re-ranks candidates who pass the filters below — doesn't remove anyone"
+        description="Re-ranks candidates who pass the filters below - doesn't remove anyone"
         color="info.main"
       />
 
@@ -618,7 +618,7 @@ export default function SettingsPage() {
       <MechanismHeader
         icon={<FilterAltIcon />}
         title="Eliminate"
-        description="Removes candidates outright before scoring ever runs — a hard cutoff, not a preference"
+        description="Removes candidates outright before scoring ever runs - a hard cutoff, not a preference"
         color="warning.main"
       />
 
@@ -673,7 +673,7 @@ export default function SettingsPage() {
                 </Button>
               }
             >
-              Suggested: <strong>{rosterGap.suggested_position}</strong> — your biggest open-minutes hole
+              Suggested: <strong>{rosterGap.suggested_position}</strong> - your biggest open-minutes hole
               ({rosterGap.suggested_open_minutes?.toFixed(1)}% of team minutes share)
             </Alert>
           )}
@@ -767,7 +767,7 @@ export default function SettingsPage() {
           </Box>
 
           <Alert severity="info" sx={{ mt: 0.5 }}>
-            NIL budget filtering won't affect results yet — NIL valuation data isn't populated. Saved here so it
+            NIL budget filtering won't affect results yet - NIL valuation data isn't populated. Saved here so it
             applies automatically once it is.
           </Alert>
         </Stack>

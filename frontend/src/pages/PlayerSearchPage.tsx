@@ -56,7 +56,7 @@ export default function PlayerSearchPage() {
           Player Search
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Search 4,500+ players — type at least 2 characters
+          Search 4,500+ players - type at least 2 characters
         </Typography>
         {minStats.length > 0 && (
           <Chip

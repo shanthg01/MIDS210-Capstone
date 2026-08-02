@@ -21,7 +21,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getNewsMonitoringEvents, getNewsMonitoringRun, startNewsMonitoringRun } from '../api/agent';
 
 function fmtDateTime(iso: string | null): string {
-  if (!iso) return '—';
+  if (!iso) return 'N/A';
   return new Date(iso).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
@@ -32,7 +32,7 @@ function displayName(
   secondary: string | null | undefined,
   fallbackId: number | null | undefined,
 ): string {
-  return primary ?? secondary ?? (fallbackId != null ? String(fallbackId) : '—');
+  return primary ?? secondary ?? (fallbackId != null ? String(fallbackId) : 'N/A');
 }
 
 const STATUS_COLOR: Record<string, 'default' | 'warning' | 'success' | 'error'> = {
@@ -91,7 +91,7 @@ export default function AgentActivityPage() {
             Agent Activity
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            News-monitoring agent — portal entries, commitments, and coaching changes it has detected.
+            News-monitoring agent - portal entries, commitments, and coaching changes it has detected.
           </Typography>
         </Box>
         <Button
@@ -115,7 +115,7 @@ export default function AgentActivityPage() {
           hasReviewItems ? 'warning' : 'success';
         return (
           <Alert severity={severity} sx={{ mb: 2 }}>
-            {runQuery.data.status === 'running' && 'Agent run in progress — searching news, classifying events…'}
+            {runQuery.data.status === 'running' && 'Agent run in progress - searching news, classifying events…'}
             {runQuery.data.status === 'completed' && runQuery.data.summary && (
               <Box>
                 <Typography variant="body2">
@@ -125,14 +125,14 @@ export default function AgentActivityPage() {
                 {hasReviewItems && (
                   <Box sx={{ mt: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {reviewNeeded.length} item{reviewNeeded.length !== 1 ? 's' : ''} need manual review —
+                      {reviewNeeded.length} item{reviewNeeded.length !== 1 ? 's' : ''} need manual review -
                       no confident player match found in the database:
                     </Typography>
                     <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2.5 }}>
                       {reviewNeeded.map((item, i) => (
                         <Typography component="li" variant="body2" key={i}>
                           "{item.queried_name ?? 'unknown'}"{item.school_from ? ` from ${item.school_from}` : ''}
-                          {' — '}{item.status === 'ambiguous' ? 'multiple possible matches' : 'no matching player found'}
+                          {' - '}{item.status === 'ambiguous' ? 'multiple possible matches' : 'no matching player found'}
                         </Typography>
                       ))}
                     </Box>
@@ -140,7 +140,7 @@ export default function AgentActivityPage() {
                 )}
               </Box>
             )}
-            {runQuery.data.status === 'failed' && (runQuery.data.error || 'Run failed — see server logs.')}
+            {runQuery.data.status === 'failed' && (runQuery.data.error || 'Run failed - see server logs.')}
           </Alert>
         );
       })()}
@@ -186,9 +186,9 @@ export default function AgentActivityPage() {
                   </TableCell>
                   <TableCell>{displayName(e.school_name, null, e.school_id)}</TableCell>
                   <TableCell>{displayName(e.player_name, e.coach_name, e.player_id ?? e.coach_id)}</TableCell>
-                  <TableCell>{e.event_date ?? '—'}</TableCell>
+                  <TableCell>{e.event_date ?? 'N/A'}</TableCell>
                   <TableCell>{e.source}</TableCell>
-                  <TableCell>{e.confidence !== null ? `${(e.confidence * 100).toFixed(0)}%` : '—'}</TableCell>
+                  <TableCell>{e.confidence !== null ? `${(e.confidence * 100).toFixed(0)}%` : 'N/A'}</TableCell>
                   <TableCell>
                     <Chip
                       label={e.match_status}
