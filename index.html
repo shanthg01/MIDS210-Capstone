@@ -79,6 +79,16 @@
   }
   .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-3); flex-shrink: 0; }
 
+  .logo-block { margin: 0 0 28px; }
+  .logo-block img {
+    height: 56px;
+    width: auto;
+    display: block;
+    border-radius: 10px;
+    background: #05070a;
+    padding: 10px 16px;
+  }
+
   h1 {
     font-size: clamp(2.2rem, 5vw, 3.4rem);
     line-height: 1.08;
@@ -159,6 +169,12 @@
   .ic-d { background: rgba(255,138,61,0.14); color: var(--accent); }
   .ic-e { background: rgba(74,144,226,0.14); color: var(--accent-2); }
   .ic-f { background: rgba(76,175,80,0.14); color: var(--accent-3); }
+  .ic-g { background: rgba(255,138,61,0.14); color: var(--accent); }
+  .ic-h { background: rgba(74,144,226,0.14); color: var(--accent-2); }
+  .ic-i { background: rgba(76,175,80,0.14); color: var(--accent-3); }
+  .ic-j { background: rgba(255,138,61,0.14); color: var(--accent); }
+  .ic-k { background: rgba(74,144,226,0.14); color: var(--accent-2); }
+  .ic-l { background: rgba(76,175,80,0.14); color: var(--accent-3); }
 
   .stack-row {
     display: grid;
@@ -206,6 +222,50 @@
   }
   .flow .arrow { color: var(--text-dimmer); }
 
+  .diagram-panel {
+    background: #05070a;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    margin-top: 8px;
+    overflow-x: auto;
+  }
+  .diagram-panel .mermaid { display: flex; justify-content: center; min-width: 640px; }
+  .diagram-caption {
+    font-size: 0.85rem;
+    color: var(--text-dimmer);
+    margin-top: 14px;
+    text-align: center;
+  }
+
+  .team-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 18px;
+  }
+  .team-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .team-card .name { font-weight: 700; font-size: 1.02rem; color: var(--text); }
+  .team-card .role { font-size: 0.86rem; color: var(--text-dim); margin-bottom: 10px; }
+  .team-card .li-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--accent-2);
+    text-decoration: none;
+    width: fit-content;
+  }
+  .team-card .li-link:hover { text-decoration: underline; }
+
   .disclaimer {
     font-size: 0.85rem;
     color: var(--text-dimmer);
@@ -231,6 +291,7 @@
   @media (max-width: 640px) {
     header.hero { padding: 64px 0 48px; }
     section { padding: 48px 0; }
+    .logo-block img { height: 42px; }
   }
 </style>
 </head>
@@ -239,6 +300,7 @@
 <header class="hero">
   <div class="wrap">
     <div class="eyebrow"><span class="dot"></span> Live in production</div>
+    <div class="logo-block"><img src="logo.png" alt="PortalPoint" /></div>
     <h1>Transfer portal scouting,<br>backed by <span class="accent">real models</span>, not gut feel.</h1>
     <p class="lede">
       PortalPoint helps college basketball coaching staffs identify and recruit the right
@@ -314,6 +376,48 @@
   </div>
 </section>
 
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">In The App</p>
+      <h2>What a coaching staff actually does with it</h2>
+      <p>Six workflows, all backed by the models above - not a spreadsheet with a coat of paint.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="icon ic-g">★</div>
+        <h3>Top Recommendations</h3>
+        <p>A ranked, live list of the best-fit portal players for your program, blended from scheme fit, gap match, role fit, and projected team impact.</p>
+      </div>
+      <div class="card">
+        <div class="icon ic-h">⌕</div>
+        <h3>Search Any Player</h3>
+        <p>Search and filter across 13,300+ Division I players by position, stats, and portal availability.</p>
+      </div>
+      <div class="card">
+        <div class="icon ic-i">▤</div>
+        <h3>Your Pipeline</h3>
+        <p>Shortlist candidates and track them through your staff's evaluation process, from first look to commit.</p>
+      </div>
+      <div class="card">
+        <div class="icon ic-j">▲</div>
+        <h3>Fit With Your Team</h3>
+        <p>See exactly how a player would perform in your system: the full fit-score breakdown plus projected effect on your roster's efficiency margin.</p>
+      </div>
+      <div class="card">
+        <div class="icon ic-k">⇄</div>
+        <h3>Compare Players</h3>
+        <p>Side-by-side comparison of stats, fit scores, and projections across multiple candidates at once.</p>
+      </div>
+      <div class="card">
+        <div class="icon ic-l">⚙</div>
+        <h3>Settings</h3>
+        <p>Tune how fit scores are weighted and set filters - position, conference, archetype - to match how your staff actually evaluates talent.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section>
   <div class="wrap">
     <div class="section-head">
@@ -330,6 +434,7 @@
           <li>Hoop Explorer - RAPM, play types</li>
           <li>hoopR / ESPN play-by-play</li>
           <li>247Sports - transfer portal events</li>
+          <li>BartTorvik roster snapshots</li>
         </ul>
       </div>
       <div class="stack-col">
@@ -354,19 +459,103 @@
       </div>
     </div>
 
-    <div class="architecture">
-      <div class="flow">
-        <div class="step">Ingest (5 sources)</div>
-        <div class="arrow">→</div>
-        <div class="step">Postgres + pgvector</div>
-        <div class="arrow">→</div>
-        <div class="step">Feature pipeline</div>
-        <div class="arrow">→</div>
-        <div class="step">ML models (MLflow)</div>
-        <div class="arrow">→</div>
-        <div class="step">FastAPI</div>
-        <div class="arrow">→</div>
-        <div class="step">React app</div>
+    <div class="diagram-panel">
+      <pre class="mermaid">
+flowchart LR
+    SRC["5 Data Sources\nBartTorvik · Hoop Explorer\nhoopR/ESPN · 247Sports\nRoster Snapshots"]
+    ING["Ingest Scripts"]
+    PG[("PostgreSQL 15\n+ pgvector\n~27 tables")]
+    FEAT["Feature Engineering\nplayer + team style vectors"]
+    MOD["9 ML Models\n(see model pipeline below)"]
+    SRC --> ING --> PG --> FEAT --> MOD
+      </pre>
+      <p class="diagram-caption">Five independent sources land in Postgres, get joined into feature sets, and feed every downstream model.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Under The Hood</p>
+      <h2>Nine models, one dependency chain</h2>
+      <p>Every model downstream consumes the model before it - this is what actually produces a fit score.</p>
+    </div>
+    <div class="diagram-panel">
+      <pre class="mermaid">
+flowchart TD
+    A["Player &amp; Team Clustering\nK-Means archetypes + system profiles"]
+    B["Scheme Fit + Gap Matching\ncosine similarity vs. system &amp; roster holes"]
+    C["Playing Time Predictor\nminutes / usage to Role Fit"]
+    D["Player Projection\nshrinkage + Ridge, then Kalman state-space"]
+    E["Destination-Adjusted Projection\ntranslates talent into this-roster context"]
+    F["Team Rating Projection\nroster counterfactual efficiency impact"]
+    G["Transfer Success Predictor\ndid similar past moves work out"]
+    H["Recommendation Engine\n2-stage rank, ranked list in the app"]
+    A --> B --> C --> D --> E --> F --> G --> H
+      </pre>
+      <p class="diagram-caption">Clustering feeds fit scoring; fit scoring and projections feed team impact; everything rolls up into one ranked recommendation.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Under The Hood</p>
+      <h2>System architecture</h2>
+      <p>What's actually deployed - not an aspirational diagram.</p>
+    </div>
+    <div class="diagram-panel">
+      <pre class="mermaid">
+flowchart LR
+    subgraph REQ["Live request path"]
+        direction LR
+        BR["Browser\nReact SPA"] --> CF["CloudFront + S3"] --> ALB["ALB"] --> ECS["ECS Fargate\nFastAPI"]
+        ECS --> RDS[("RDS Postgres\n+ pgvector")]
+        ECS --> REDIS[("ElastiCache\nRedis")]
+    end
+    subgraph OPS["Deploy / MLOps plane"]
+        direction LR
+        GHA["GitHub Actions\nOIDC"] --> ECR["Build + push\nto ECR"] --> MIG["alembic migrate\nblocking gate"] --> UPD["Deploy to\nECS Fargate"]
+        MLF["MLflow + S3\nartifact store"]
+    end
+    UPD -.-> ECS
+    MIG -.-> RDS
+    MLF -.-> ECS
+      </pre>
+      <p class="diagram-caption">Top lane serves a coach's request right now. Bottom lane ships code and models - it never touches a live request.</p>
+    </div>
+  </div>
+</section>
+
+<section id="team">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Who Built This</p>
+      <h2>The team</h2>
+      <p>PortalPoint - a MIDS 210 capstone project.</p>
+    </div>
+    <div class="team-grid">
+      <div class="team-card">
+        <span class="name">Shanth Gopalswamy</span>
+        <span class="role">Architect &amp; Data Engineer</span>
+        <a class="li-link" href="https://www.linkedin.com/in/shanth-gopalswamy-1450b51b8/" target="_blank" rel="noopener">LinkedIn ↗</a>
+      </div>
+      <div class="team-card">
+        <span class="name">Ajay Patel</span>
+        <span class="role">ML Engineer &amp; Product</span>
+        <a class="li-link" href="https://www.linkedin.com/in/ajay-patel-a88273216/" target="_blank" rel="noopener">LinkedIn ↗</a>
+      </div>
+      <div class="team-card">
+        <span class="name">Yoko Morishita</span>
+        <span class="role">ML Engineer</span>
+        <a class="li-link" href="https://www.linkedin.com/in/yoko-morishita/" target="_blank" rel="noopener">LinkedIn ↗</a>
+      </div>
+      <div class="team-card">
+        <span class="name">Justin Nhan</span>
+        <span class="role">Product &amp; Agent Engineer</span>
+        <a class="li-link" href="https://www.linkedin.com/in/justin-nhan-7a3176133/" target="_blank" rel="noopener">LinkedIn ↗</a>
       </div>
     </div>
   </div>
@@ -380,6 +569,26 @@
     </div>
   </div>
 </footer>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      background: "#05070a",
+      primaryColor: "#131b24",
+      primaryTextColor: "#eef2f6",
+      primaryBorderColor: "#ff8a3d",
+      lineColor: "#4a90e2",
+      secondaryColor: "#10161d",
+      tertiaryColor: "#10161d",
+      fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
+      fontSize: "14px"
+    },
+    flowchart: { curve: "basis", htmlLabels: true }
+  });
+</script>
 
 </body>
 </html>
