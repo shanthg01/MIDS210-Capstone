@@ -3,8 +3,8 @@ import { DATA_STATUS, FIT_COMPONENTS, ROLE_FIT_LIVE_MODEL_VERSION } from '../con
 import DefinitionTooltip from './DefinitionTooltip';
 
 const LABEL_MAP: Record<string, string> = {
-  gap_match: 'Roster Need',
-  scheme_fit: 'System Match',
+  gap_match: 'Roster Fit',
+  scheme_fit: 'System Fit',
   role_fit: 'Role Fit',
   program_fit: 'Program Fit',    // real per-user grade once program_fit_user_inputs exists for this pair
   team_impact_fit: 'Team Rating', // RecommendationCard — M6 delta_adjEM normalized

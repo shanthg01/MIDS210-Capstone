@@ -17,7 +17,6 @@ import {
   Checkbox,
   FormControlLabel,
   Divider,
-  Tooltip,
 } from '@mui/material';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -28,7 +27,7 @@ import { comparePlayers } from '../api/compare';
 import { useAuth } from '../context/AuthContext';
 import { scoreColor, DataStatusChip } from '../components/FitScoreBar';
 import DefinitionTooltip from '../components/DefinitionTooltip';
-import { FIT_COMPONENTS, OVERALL_FIT } from '../constants/definitions';
+import { FIT_COMPONENTS, OVERALL_FIT, ROLE_FIT_LIVE_MODEL_VERSION } from '../constants/definitions';
 import { buildVerdict } from '../utils/compareInsights';
 import DivergingBar from '../components/DivergingBar';
 import type { CompareResponse, ComparisonMatrix } from '../types/api';
@@ -38,30 +37,11 @@ import type { CompareResponse, ComparisonMatrix } from '../types/api';
 // overall_fit has no single component key, so it gets no component status chip.
 const METRICS: Array<{ key: keyof ComparisonMatrix; label: string }> = [
   { key: 'overall_fit', label: 'Overall Fit' },
-  { key: 'scheme_fit', label: 'System Match' },
-  { key: 'gap_match', label: 'Roster Need' },
+  { key: 'scheme_fit', label: 'System Fit' },
+  { key: 'gap_match', label: 'Roster Fit' },
   { key: 'role_fit', label: 'Role Fit' },
   { key: 'program_fit', label: 'Program Fit' },
 ];
-
-// Mirrors modeling/gap_matching.py GAP_FEATURES — kept in sync manually, same
-// convention as FitScorePage's own GAP_FEATURE_LABELS/SettingsPage's STAT_LABELS.
-const GAP_FEATURE_LABELS: Record<string, string> = {
-  usage_rate: 'Usage Rate',
-  true_shooting_pct: 'True Shooting %',
-  assist_rate: 'Assist Rate',
-  tov_pct_inverse: 'Turnover Avoidance',
-  off_reb_pct: 'Off. Rebound %',
-  def_reb_pct: 'Def. Rebound %',
-  block_pct: 'Block %',
-  steal_pct: 'Steal %',
-  free_throw_rate: 'Free Throw Rate',
-  three_point_rate: '3PT Rate',
-  rim_rate: 'Rim Rate',
-  mid_range_rate: 'Mid-Range Rate',
-  fg3_pct: '3PT %',
-  rim_pct: 'Rim %',
-};
 
 // ── Comparison results ────────────────────────────────────────────────────────
 
@@ -128,8 +108,16 @@ function ComparisonResults({
               </TableRow>
             </TableHead>
             <TableBody>
+              {/* Live/Placeholder for the whole row — "live if any compared player's row is
+                  live," since role_fit/program_fit liveness is per-row/per-user, not a fixed
+                  property of the component (see isComponentLive). Previously always rendered
+                  "Placeholder" for both, since no modelVersion/isGraded was passed at all. */}
               {METRICS.map(({ key, label }) => {
                 const row = result.comparison_matrix[key];
+                const rowModelVersion = entries.find(
+                  (e) => e.fit_score.model_version === ROLE_FIT_LIVE_MODEL_VERSION,
+                )?.fit_score.model_version;
+                const rowIsGraded = entries.some((e) => e.fit_score.program_fit_user_input !== null);
                 return (
                   <TableRow key={key} hover>
                     <TableCell sx={{ color: 'text.secondary', fontWeight: 500, verticalAlign: 'top', pt: 1.5 }}>
@@ -139,7 +127,9 @@ function ComparisonResults({
                         >
                           <span>{label}</span>
                         </DefinitionTooltip>
-                        {key !== 'overall_fit' && <DataStatusChip component={key} />}
+                        {key !== 'overall_fit' && (
+                          <DataStatusChip component={key} modelVersion={rowModelVersion} isGraded={rowIsGraded} />
+                        )}
                       </Box>
                     </TableCell>
                     <TableCell colSpan={entries.length}>
@@ -150,31 +140,6 @@ function ComparisonResults({
                           value: row[e.player.full_name] ?? 0,
                         }))}
                       />
-                      {/* Why gap match differs — top_gap_features per player (issue #61) */}
-                      {key === 'gap_match' && (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 1 }}>
-                          {entries.map((e) => {
-                            const feats = e.fit_score.breakdown.gap.top_gap_features;
-                            if (feats.length === 0) return null;
-                            return (
-                              <Box key={e.player.player_id} sx={{ display: 'flex', gap: 0.75, alignItems: 'center', flexWrap: 'wrap' }}>
-                                <Typography variant="caption" color="text.secondary" sx={{ width: 88, flexShrink: 0, textAlign: 'right' }}>
-                                  {e.player.full_name.split(' ').pop()} fills:
-                                </Typography>
-                                {feats.slice(0, 3).map((f) => (
-                                  <Chip
-                                    key={f.feature}
-                                    size="small"
-                                    variant="outlined"
-                                    color="success"
-                                    label={`${GAP_FEATURE_LABELS[f.feature] ?? f.feature} (${f.gap.toFixed(2)})`}
-                                  />
-                                ))}
-                              </Box>
-                            );
-                          })}
-                        </Box>
-                      )}
                     </TableCell>
                   </TableRow>
                 );
@@ -193,17 +158,6 @@ function ComparisonResults({
                       value: e.prediction.success_probability * 100,
                     }))}
                   />
-                  <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', mt: 0.75 }}>
-                    {entries.map((e) => (
-                      <Tooltip key={e.player.player_id} title={e.prediction.explanation}>
-                        <Chip
-                          label={`${e.player.full_name.split(' ').pop()}: ${e.prediction.success_tier}`}
-                          size="small"
-                          variant="outlined"
-                        />
-                      </Tooltip>
-                    ))}
-                  </Box>
                 </TableCell>
               </TableRow>
             </TableBody>

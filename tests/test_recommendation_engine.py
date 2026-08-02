@@ -15,6 +15,7 @@ from portalpoint.modeling.recommendations import (
     DEFAULT_FIT_WEIGHTS,
     DELTA_ADJ_EM_CLIP,
     TEAM_IMPACT_FIT_NEUTRAL,
+    apply_user_filters,
     calculate_overall_fit,
     explain_candidate_ranking,
     fixed_team_impact_preferences,
@@ -493,3 +494,74 @@ class TestRefineToTop10:
     #     for _, row in result.iterrows():
     #         expected_penalty = max(0.0, 0.70 - row["data_confidence"]) * 2.0
     #         assert row["confidence_penalty"] == pytest.approx(expected_penalty, abs=1e-9)
+
+
+# ── apply_user_filters (Settings' UserFilters -> CANDIDATE_SQL pool) ──────────
+
+class TestApplyUserFilters:
+    """Real bug this closes: user_preferences.filters was saved but never read
+    anywhere server-side — positions/conferences/regions/archetypes/min_stats
+    had zero effect on who made the Top-10. nil_budget is intentionally not
+    covered here — no real NIL data source exists (same descope as Program Fit)."""
+
+    @pytest.fixture()
+    def pool(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "player_name": ["Alice", "Bob", "Carol"],
+                "position": ["PG", "SG", "SF"],
+                "origin_conference": ["Big Ten", "SEC", "Big Ten"],
+                "origin_region": ["Midwest", "Southeast", "Midwest"],
+                "archetype_label": ["3&D Wing", "Lead Scoring Playmaker", "3&D Wing"],
+                "usage_rate": [28.0, 15.0, 22.0],
+                "fg3_pct": [0.40, 0.30, np.nan],
+            }
+        )
+
+    def test_no_filters_is_noop(self, pool):
+        assert len(apply_user_filters(pool, {})) == 3
+        assert len(apply_user_filters(pool, None)) == 3
+
+    def test_position_filter(self, pool):
+        result = apply_user_filters(pool, {"positions": ["PG", "SF"]})
+        assert set(result["player_name"]) == {"Alice", "Carol"}
+
+    def test_conference_filter(self, pool):
+        result = apply_user_filters(pool, {"conferences": ["SEC"]})
+        assert set(result["player_name"]) == {"Bob"}
+
+    def test_region_filter(self, pool):
+        result = apply_user_filters(pool, {"recruiting_regions": ["Midwest"]})
+        assert set(result["player_name"]) == {"Alice", "Carol"}
+
+    def test_archetype_filter(self, pool):
+        result = apply_user_filters(pool, {"target_archetypes": ["Lead Scoring Playmaker"]})
+        assert set(result["player_name"]) == {"Bob"}
+
+    def test_min_stats_filter_ands_thresholds(self, pool):
+        result = apply_user_filters(
+            pool, {"min_stats": [{"stat": "usage_rate", "min_value": 20.0}]}
+        )
+        assert set(result["player_name"]) == {"Alice", "Carol"}
+
+    def test_min_stats_nan_excluded_not_erroring(self, pool):
+        """Carol's fg3_pct is NaN — a hard floor must exclude her, not crash or pass her."""
+        result = apply_user_filters(
+            pool, {"min_stats": [{"stat": "fg3_pct", "min_value": 0.35}]}
+        )
+        assert set(result["player_name"]) == {"Alice"}
+
+    def test_filters_combine_with_and(self, pool):
+        result = apply_user_filters(
+            pool, {"positions": ["PG", "SF"], "recruiting_regions": ["Midwest"], "min_stats": [{"stat": "usage_rate", "min_value": 25.0}]}
+        )
+        assert set(result["player_name"]) == {"Alice"}
+
+    def test_unknown_stat_key_ignored_not_erroring(self, pool):
+        """_MIN_STAT_COLUMNS guards against a bad/future stat key reaching a raw column lookup."""
+        result = apply_user_filters(pool, {"min_stats": [{"stat": "not_a_real_column", "min_value": 1.0}]})
+        assert len(result) == 3
+
+    def test_empty_pool_returns_empty(self):
+        empty = pd.DataFrame()
+        assert apply_user_filters(empty, {"positions": ["PG"]}).empty

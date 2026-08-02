@@ -148,23 +148,43 @@ def test_create_preference_profile_duplicate_name_conflicts(client, user_id, H):
 
 
 def test_activate_preference_profile_overwrites_active_preferences(client, user_id, H):
+    """Activating a profile overwrites the shared user's live user_preferences row
+    (by design — see UserPreferenceProfile's docstring), so this test must restore
+    it afterward. Real bug found via this gap: _PROFILE_BODY's filters.positions=["SF"]
+    leaked into user_id's live preferences with no teardown, silently breaking
+    test_recommendations.py's "always 10 items" assumption once filters started
+    being applied server-side (recommendations.py's apply_user_filters) — invisible
+    before that, since nothing read filters downstream."""
     created = client.post(
         f"/api/users/{user_id}/preference-profiles",
         json={**_PROFILE_BODY, "name": "Activate test"},
         headers=H,
     ).json()
 
-    r = client.post(f"/api/users/{user_id}/preference-profiles/{created['id']}/activate", headers=H)
-    assert r.status_code == 200
-    active = r.json()
-    assert active["fit_weights"]["scheme"] == 0.5
-    assert active["importance_weights"]["scheme_fit"] == 9
+    try:
+        r = client.post(f"/api/users/{user_id}/preference-profiles/{created['id']}/activate", headers=H)
+        assert r.status_code == 200
+        active = r.json()
+        assert active["fit_weights"]["scheme"] == 0.5
+        assert active["importance_weights"]["scheme_fit"] == 9
 
-    # Confirms activation persisted to the single UserPreference row, not just the response.
-    refetched = client.get(f"/api/users/{user_id}/preferences", headers=H).json()
-    assert refetched["fit_weights"]["scheme"] == 0.5
-
-    client.delete(f"/api/users/{user_id}/preference-profiles/{created['id']}", headers=H)
+        # Confirms activation persisted to the single UserPreference row, not just the response.
+        refetched = client.get(f"/api/users/{user_id}/preferences", headers=H).json()
+        assert refetched["fit_weights"]["scheme"] == 0.5
+    finally:
+        client.delete(f"/api/users/{user_id}/preference-profiles/{created['id']}", headers=H)
+        client.put(
+            f"/api/users/{user_id}/preferences",
+            json={
+                "fit_weights": {"gap": 0.30, "scheme": 0.25, "role_fit": 0.25, "program_fit": 0.20},
+                "importance_weights": {"scheme_fit": 7, "role_fit": 5, "gap_match": 5, "program_fit": 5},
+                "filters": {
+                    "recruiting_regions": [], "conferences": [], "positions": [],
+                    "target_archetypes": [], "nil_budget_min": None, "nil_budget_max": None, "min_stats": None,
+                },
+            },
+            headers=H,
+        )
 
 
 def test_delete_preference_profile_returns_404_when_missing(client, user_id, H):

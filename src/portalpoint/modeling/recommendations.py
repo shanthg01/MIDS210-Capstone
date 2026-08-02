@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CANDIDATE_SQL",
     "MODEL_VERSION",
+    "apply_user_filters",
     "calculate_overall_fit",
     "fixed_team_impact_preferences",
     "explain_candidate_ranking",
@@ -80,7 +81,13 @@ SELECT
     pr.projected_minutes,
     pr.projected_usage,
     np.biggest_strength,
-    np.biggest_weakness
+    np.biggest_weakness,
+    arch.archetype_label,
+    origin.origin_conference,
+    origin.origin_region,
+    stats.usage_rate, stats.fg3_pct, stats.ft_pct, stats.rim_pct, stats.assist_rate,
+    stats.tov_pct, stats.off_reb_pct, stats.def_reb_pct, stats.steal_pct,
+    stats.block_pct, stats.min_pct
 FROM player_team_fit_scores ptf
 JOIN players p
     ON p.id = ptf.player_id
@@ -115,10 +122,71 @@ LEFT JOIN LATERAL (
       END
     LIMIT 1
 ) np ON true
+-- Recruiting-filter context (Settings' UserFilters, applied by apply_user_filters()
+-- below) — each is the player's most-recent row, not tied to ptf.season, same
+-- "latest season" convention players.py's /search and /{{player_id}} routes use.
+LEFT JOIN LATERAL (
+    SELECT pa2.archetype_label
+    FROM player_archetypes pa2
+    WHERE pa2.player_id = ptf.player_id
+    ORDER BY pa2.season DESC
+    LIMIT 1
+) arch ON true
+LEFT JOIN LATERAL (
+    SELECT sch.conference AS origin_conference, sch.region AS origin_region
+    FROM player_school_seasons pss
+    JOIN schools sch ON sch.id = pss.school_id
+    WHERE pss.player_id = ptf.player_id
+    ORDER BY pss.season DESC
+    LIMIT 1
+) origin ON true
+LEFT JOIN LATERAL (
+    SELECT s.usage_rate, s.fg3_pct, s.ft_pct, s.rim_pct, s.assist_rate, s.tov_pct,
+           s.off_reb_pct, s.def_reb_pct, s.steal_pct, s.block_pct, s.min_pct
+    FROM player_season_stats s
+    WHERE s.player_id = ptf.player_id
+    ORDER BY s.season DESC
+    LIMIT 1
+) stats ON true
 WHERE ptf.school_id          = :school_id
   AND ptf.season             = :season
   AND ptf.is_portal_candidate = true
 """
+
+# StatKey values are exactly the player_season_stats column names selected
+# above — kept in sync manually, same convention as api/schemas/user.py's
+# StatKey docstring already documents for players.py's /search endpoint.
+_MIN_STAT_COLUMNS = frozenset({
+    "usage_rate", "fg3_pct", "ft_pct", "rim_pct", "assist_rate", "tov_pct",
+    "off_reb_pct", "def_reb_pct", "steal_pct", "block_pct", "min_pct",
+})
+
+
+def apply_user_filters(pool: pd.DataFrame, filters: Optional[dict]) -> pd.DataFrame:
+    """Restrict the CANDIDATE_SQL pool to a program's saved recruiting filters
+    (user_preferences.filters, UserFilters shape) before Stage 1 ranking runs.
+
+    nil_budget_min/max is intentionally not applied — no real NIL data source
+    exists yet, same reason Program Fit itself is descoped (see CLAUDE.md).
+    Saved but inert, exactly like Program Fit's own placeholder convention.
+    """
+    if not filters or pool.empty:
+        return pool
+    out = pool
+    if filters.get("positions"):
+        out = out[out["position"].isin(filters["positions"])]
+    if filters.get("conferences"):
+        out = out[out["origin_conference"].isin(filters["conferences"])]
+    if filters.get("recruiting_regions"):
+        out = out[out["origin_region"].isin(filters["recruiting_regions"])]
+    if filters.get("target_archetypes"):
+        out = out[out["archetype_label"].isin(filters["target_archetypes"])]
+    for threshold in filters.get("min_stats") or []:
+        stat = threshold["stat"]
+        if stat not in _MIN_STAT_COLUMNS:
+            continue
+        out = out[out[stat].fillna(float("-inf")) >= threshold["min_value"]]
+    return out
 
 # AdjEM points; ~2.5x Team Rating Projection's fold em_rmse of ~1.8-2.0 —
 # clip range wide enough that only genuinely extreme deltas saturate 0/100.

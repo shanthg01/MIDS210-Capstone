@@ -43,18 +43,6 @@ function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
 
-function ordinal(n: number): string {
-  const rounded = Math.round(n);
-  const mod100 = rounded % 100;
-  if (mod100 >= 11 && mod100 <= 13) return `${rounded}th`;
-  switch (rounded % 10) {
-    case 1: return `${rounded}st`;
-    case 2: return `${rounded}nd`;
-    case 3: return `${rounded}rd`;
-    default: return `${rounded}th`;
-  }
-}
-
 export default function ProjectionCard({ projection }: { projection: PlayerProjectionResponse }) {
   const {
     value_per_100, value_ci_lower, value_ci_upper, projected_box_score,
@@ -158,7 +146,7 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
                       </DefinitionTooltip>
                       <Typography variant="caption" sx={{ fontWeight: 700 }}>
                         {stateVal !== undefined ? `${fmt(stateVal, 3)} · ` : ''}
-                        {ordinal(pct)}
+                        {Math.round(pct)}%
                       </Typography>
                     </Box>
                     <LinearProgress
