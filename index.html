@@ -79,15 +79,19 @@
   }
   .eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-3); flex-shrink: 0; }
 
-  .logo-block { margin: 0 0 28px; }
+  .logo-block { margin: 0 0 32px; }
   .logo-block img {
-    height: 56px;
+    height: clamp(90px, 12vw, 160px);
     width: auto;
     display: block;
-    border-radius: 10px;
-    background: #05070a;
-    padding: 10px 16px;
   }
+  /* logo text is white+orange with no background - needs a dark chip
+     behind it in light mode or the white half disappears */
+  @media (prefers-color-scheme: light) {
+    .logo-block img { background: #05070a; border-radius: 12px; padding: 14px 20px; }
+  }
+  :root[data-theme="light"] .logo-block img { background: #05070a; border-radius: 12px; padding: 14px 20px; }
+  :root[data-theme="dark"] .logo-block img { background: none; padding: 0; }
 
   h1 {
     font-size: clamp(2.2rem, 5vw, 3.4rem);
@@ -291,7 +295,7 @@
   @media (max-width: 640px) {
     header.hero { padding: 64px 0 48px; }
     section { padding: 48px 0; }
-    .logo-block img { height: 42px; }
+    .logo-block img { height: 72px; }
   }
 </style>
 </head>
