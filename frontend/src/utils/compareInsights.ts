@@ -19,7 +19,7 @@ export function buildVerdict(result: CompareResponse): Verdict {
 
   const headline =
     second && margin < CLOSE_MARGIN
-      ? `${topName} and ${second[0]} are roughly even overall (${topVal.toFixed(0)} vs ${second[1].toFixed(0)}) — see the breakdown below.`
+      ? `${topName} and ${second[0]} are roughly even overall (${topVal.toFixed(0)} vs ${second[1].toFixed(0)}) - see the breakdown below.`
       : `${topName} is the stronger fit overall (${topVal.toFixed(0)}/100).`;
 
   const bullets = result.trade_offs

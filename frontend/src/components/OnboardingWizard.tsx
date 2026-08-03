@@ -59,7 +59,7 @@ export default function OnboardingWizard() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
           PortalPoint scores transfer-portal players against your program using two things you
           control: what to prioritize, and what to rule out entirely. We've started you on
-          sensible defaults — fine-tune both anytime from Settings.
+          sensible defaults - fine-tune both anytime from Settings.
         </Typography>
 
         <Box sx={{ display: 'flex', gap: 1.5, mb: 2 }}>
@@ -83,7 +83,7 @@ export default function OnboardingWizard() {
               Eliminate
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Hard filters (region, conference, position, archetype, NIL budget). None set yet —
+              Hard filters (region, conference, position, archetype, NIL budget). None set yet -
               every candidate is in scope by default.
             </Typography>
           </Box>
@@ -102,7 +102,7 @@ export default function OnboardingWizard() {
         </Box>
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2.5 }}>
-        <Button onClick={dismiss}>Looks good — get started</Button>
+        <Button onClick={dismiss}>Looks good - get started</Button>
         <Button variant="contained" onClick={handleCustomize}>
           Customize now
         </Button>

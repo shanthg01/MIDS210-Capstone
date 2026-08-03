@@ -18,7 +18,7 @@ export function buildFitInsight(fit: FitScoreResponse): Insight {
   const weakest = components.reduce((a, b) => (b.value < a.value ? b : a));
 
   const headline =
-    `Overall fit ${Math.round(fit.overall_fit)}/100 — strongest in ${FIT_COMPONENTS[strongest.key].label} ` +
+    `Overall fit ${Math.round(fit.overall_fit)}/100 - strongest in ${FIT_COMPONENTS[strongest.key].label} ` +
     `(${Math.round(strongest.value)}), weakest in ${FIT_COMPONENTS[weakest.key].label} (${Math.round(weakest.value)}).`;
 
   const bullets: string[] = [];

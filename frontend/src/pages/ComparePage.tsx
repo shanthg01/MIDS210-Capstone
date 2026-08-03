@@ -350,7 +350,7 @@ export default function ComparePage() {
                       </Typography>
                     ) : (
                       <Typography variant="body2" color="text.disabled">
-                        —
+                        N/A
                       </Typography>
                     )}
                   </Box>

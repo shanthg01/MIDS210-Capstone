@@ -211,7 +211,7 @@ export default function PipelinePage() {
         </Typography>
         <Typography variant="body2" color="text.secondary">
           {players.length > 0
-            ? `${players.length} player${players.length !== 1 ? 's' : ''} shortlisted — sorted by fit score`
+            ? `${players.length} player${players.length !== 1 ? 's' : ''} shortlisted - sorted by fit score`
             : 'Players you shortlist appear here'}
         </Typography>
       </Box>

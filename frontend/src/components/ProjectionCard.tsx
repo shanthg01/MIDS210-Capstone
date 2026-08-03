@@ -68,8 +68,8 @@ export default function ProjectionCard({ projection }: { projection: PlayerProje
         <Tooltip
           title={
             isDestination
-              ? 'Backed by a real model — Destination Projection (Playing Time + Cross-Season blend)'
-              : 'Backed by a real model — Cross-Season Kalman forecast'
+              ? 'Backed by a real model - Destination Projection (Playing Time + Cross-Season blend)'
+              : 'Backed by a real model - Cross-Season Kalman forecast'
           }
         >
           <Chip label="Live" size="small" color="success" sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }} />

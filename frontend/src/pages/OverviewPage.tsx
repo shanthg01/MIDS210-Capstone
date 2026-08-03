@@ -14,7 +14,7 @@ const TILES = [
   {
     icon: <InsightsIcon color="secondary" />,
     title: 'Understand the "why"',
-    body: 'Every score breaks down into plain-language components — no black-box number to take on faith.',
+    body: 'Every score breaks down into plain-language components - no black-box number to take on faith.',
   },
   {
     icon: <CompareArrowsIcon color="success" />,
@@ -32,7 +32,7 @@ export default function OverviewPage() {
         Welcome to PortalPoint
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 4, maxWidth: 640 }}>
-        PortalPoint helps your program evaluate transfer-portal players quickly — combining how a
+        PortalPoint helps your program evaluate transfer-portal players quickly - combining how a
         player's stats fill a gap on your roster, how their style fits your system, and off-court
         factors like NIL and academics into one transparent fit score.
       </Typography>
